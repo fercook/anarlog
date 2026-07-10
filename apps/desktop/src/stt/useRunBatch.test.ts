@@ -426,6 +426,11 @@ describe("useRunBatch", () => {
       }),
       expect.any(Object),
     );
+    expect(isSupportedLanguagesBatchMock).toHaveBeenCalledWith(
+      "custom",
+      "large-v3",
+      expect.any(Array),
+    );
     expect(sonnerToastMessageMock).not.toHaveBeenCalled();
   });
 

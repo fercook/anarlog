@@ -87,9 +87,7 @@ function baseLanguageCode(language: string) {
 }
 
 function languageSupportProvider(provider: string) {
-  return provider === "custom" || provider === "cloudflare_workers_ai"
-    ? "deepgram"
-    : provider;
+  return provider === "cloudflare_workers_ai" ? "deepgram" : provider;
 }
 
 export async function isSupportedLanguagesLive(

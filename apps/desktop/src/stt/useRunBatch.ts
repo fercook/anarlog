@@ -120,7 +120,7 @@ export function getBatchFallbackTarget({
 }
 
 async function canUseBatchTarget(
-  provider: TranscriptionParams["provider"],
+  provider: string,
   model: string,
   languages: readonly string[],
 ) {
@@ -233,13 +233,14 @@ export const useRunBatch = (sessionId: string) => {
               label: selectedModel,
             }
           : null;
-      const selectedTargetSupported = selectedTarget
-        ? await canUseBatchTarget(
-            selectedTarget.provider,
-            selectedTarget.model,
-            languages,
-          )
-        : false;
+      const selectedTargetSupported =
+        conn && selectedTarget
+          ? await canUseBatchTarget(
+              conn.provider,
+              selectedTarget.model,
+              languages,
+            )
+          : false;
       const fallbackTarget = getBatchFallbackTarget({
         isPaid: billing.isPaid,
         accessToken: auth?.session?.access_token,
