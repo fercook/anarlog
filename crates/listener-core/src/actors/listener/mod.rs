@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
-use ractor::{Actor, ActorName, ActorProcessingErr, ActorRef, SupervisionEvent};
+use ractor::{Actor, ActorName, ActorProcessingErr, ActorRef, RpcReplyPort, SupervisionEvent};
 use tokio::time::error::Elapsed;
 use tracing::Instrument;
 
@@ -22,21 +22,30 @@ use adapters::spawn_rx_task;
 
 pub(super) const LISTEN_STREAM_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub(super) const FINALIZE_STREAM_TIMEOUT: Duration = Duration::from_secs(5);
+const STREAM_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(7);
 pub(super) const DEVICE_FINGERPRINT_HEADER: &str = "x-device-fingerprint";
 
 pub enum ListenerMsg {
-    AudioSingle(Bytes),
-    AudioDual(Bytes, Bytes),
+    AudioSingle(Bytes, RpcReplyPort<ListenerAudioResult>),
+    AudioDual(Bytes, Bytes, RpcReplyPort<ListenerAudioResult>),
     UpdateConfig(ListenerConfigUpdate),
-    StreamResponse(StreamResponse),
+    StreamResponse(StreamResponse, RpcReplyPort<()>),
     StreamError(String),
     StreamEnded,
     StreamTimeout(Elapsed),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ListenerAudioResult {
+    Accepted,
+    Backpressured,
+    Closed,
+    ModeMismatch,
+}
+
 #[derive(Clone)]
 pub struct ListenerConfigUpdate {
-    pub languages: Vec<hypr_language::Language>,
+    pub languages: Vec<anlg_language::Language>,
     pub participant_human_ids: Vec<String>,
     pub self_human_id: Option<String>,
 }
@@ -44,7 +53,7 @@ pub struct ListenerConfigUpdate {
 #[derive(Clone)]
 pub struct ListenerArgs {
     pub runtime: Arc<dyn ListenerRuntime>,
-    pub languages: Vec<hypr_language::Language>,
+    pub languages: Vec<anlg_language::Language>,
     pub onboarding: bool,
     pub model: String,
     pub base_url: String,
@@ -64,7 +73,7 @@ pub struct ListenerState {
     pub args: ListenerArgs,
     transcript: LiveTranscriptEngine,
     tx: ChannelSender,
-    rx_task: tokio::task::JoinHandle<()>,
+    rx_task: tokio::task::JoinHandle<Vec<StreamResponse>>,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
@@ -82,18 +91,34 @@ impl ListenerActor {
 }
 
 #[derive(Debug)]
-pub(super) struct ListenerInitError(pub(super) String);
+pub(super) struct ListenerInitError {
+    pub(super) message: String,
+    pub(super) degraded: Option<DegradedError>,
+}
 
 impl std::fmt::Display for ListenerInitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.message)
     }
 }
 
 impl std::error::Error for ListenerInitError {}
 
 pub(super) fn actor_error(msg: impl Into<String>) -> ActorProcessingErr {
-    Box::new(ListenerInitError(msg.into()))
+    Box::new(ListenerInitError {
+        message: msg.into(),
+        degraded: None,
+    })
+}
+
+pub(super) fn actor_error_with_degraded(
+    msg: impl Into<String>,
+    degraded: DegradedError,
+) -> ActorProcessingErr {
+    Box::new(ListenerInitError {
+        message: msg.into(),
+        degraded: Some(degraded),
+    })
 }
 
 #[ractor::async_trait]
@@ -149,9 +174,15 @@ impl Actor for ListenerActor {
         _myself: ActorRef<Self::Msg>,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        if let Some(shutdown_tx) = state.shutdown_tx.take() {
-            let _ = shutdown_tx.send(());
-            let _ = (&mut state.rx_task).await;
+        let final_responses = stop_stream_task(
+            &mut state.shutdown_tx,
+            &mut state.rx_task,
+            STREAM_TASK_SHUTDOWN_TIMEOUT,
+        )
+        .await;
+
+        for response in final_responses {
+            let _ = process_stream_response(state, response);
         }
 
         if let Some(update) = state.transcript.flush() {
@@ -188,19 +219,59 @@ impl Actor for ListenerActor {
         let _guard = span.enter();
 
         match message {
-            ListenerMsg::AudioSingle(audio) => match &state.tx {
-                ChannelSender::Single(tx) => {
-                    let _ = tx.try_send(MixedMessage::Audio(audio));
+            ListenerMsg::AudioSingle(audio, reply) => {
+                let result = match &state.tx {
+                    ChannelSender::Single(tx) => match tx.try_send(MixedMessage::Audio(audio)) {
+                        Ok(()) => ListenerAudioResult::Accepted,
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            ListenerAudioResult::Backpressured
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            ListenerAudioResult::Closed
+                        }
+                    },
+                    ChannelSender::Dual(_) => ListenerAudioResult::ModeMismatch,
+                };
+                let _ = reply.send(result);
+                if matches!(
+                    result,
+                    ListenerAudioResult::Closed | ListenerAudioResult::ModeMismatch
+                ) {
+                    stop_with_degraded_error(
+                        &myself,
+                        DegradedError::StreamError {
+                            message: "listener audio channel unavailable".to_string(),
+                        },
+                    );
                 }
-                ChannelSender::Dual(_) => {}
-            },
+            }
 
-            ListenerMsg::AudioDual(mic, spk) => match &state.tx {
-                ChannelSender::Dual(tx) => {
-                    let _ = tx.try_send(MixedMessage::Audio((mic, spk)));
+            ListenerMsg::AudioDual(mic, spk, reply) => {
+                let result = match &state.tx {
+                    ChannelSender::Dual(tx) => match tx.try_send(MixedMessage::Audio((mic, spk))) {
+                        Ok(()) => ListenerAudioResult::Accepted,
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            ListenerAudioResult::Backpressured
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            ListenerAudioResult::Closed
+                        }
+                    },
+                    ChannelSender::Single(_) => ListenerAudioResult::ModeMismatch,
+                };
+                let _ = reply.send(result);
+                if matches!(
+                    result,
+                    ListenerAudioResult::Closed | ListenerAudioResult::ModeMismatch
+                ) {
+                    stop_with_degraded_error(
+                        &myself,
+                        DegradedError::StreamError {
+                            message: "listener audio channel unavailable".to_string(),
+                        },
+                    );
                 }
-                ChannelSender::Single(_) => {}
-            },
+            }
 
             ListenerMsg::UpdateConfig(update) => {
                 state.args.languages = update.languages;
@@ -212,72 +283,11 @@ impl Actor for ListenerActor {
                 );
             }
 
-            ListenerMsg::StreamResponse(mut response) => {
-                if let StreamResponse::ErrorResponse {
-                    error_code,
-                    error_message,
-                    provider,
-                } = &response
-                {
-                    tracing::error!(
-                        ?error_code,
-                        %error_message,
-                        %provider,
-                        "stream_provider_error"
-                    );
-                    state
-                        .args
-                        .runtime
-                        .emit_error(SessionErrorEvent::ConnectionError {
-                            session_id: state.args.session_id.clone(),
-                            error: format!(
-                                "[{}] {} (code: {})",
-                                provider,
-                                error_message,
-                                error_code
-                                    .map(|c| c.to_string())
-                                    .unwrap_or_else(|| "none".to_string())
-                            ),
-                        });
-                    let degraded = match *error_code {
-                        Some(401) | Some(403) => DegradedError::AuthenticationFailed {
-                            provider: provider.clone(),
-                        },
-                        _ => DegradedError::StreamError {
-                            message: format!("{}: {}", provider, error_message),
-                        },
-                    };
+            ListenerMsg::StreamResponse(response, reply) => {
+                let degraded = process_stream_response(state, response);
+                let _ = reply.send(());
+                if let Some(degraded) = degraded {
                     stop_with_degraded_error(&myself, degraded);
-                    return Ok(());
-                }
-
-                match state.args.mode {
-                    crate::actors::ChannelMode::MicOnly => {
-                        response.remap_channel_index(0, 2);
-                    }
-                    crate::actors::ChannelMode::SpeakerOnly => {
-                        response.remap_channel_index(1, 2);
-                    }
-                    crate::actors::ChannelMode::MicAndSpeaker => {}
-                }
-
-                if let Some(update) = state.transcript.process(&response) {
-                    state
-                        .args
-                        .runtime
-                        .emit_data(SessionDataEvent::TranscriptDelta {
-                            session_id: state.args.session_id.clone(),
-                            delta: Box::new(update.transcript_delta),
-                        });
-                    if let Some(segment_delta) = update.segment_delta {
-                        state
-                            .args
-                            .runtime
-                            .emit_data(SessionDataEvent::TranscriptSegmentDelta {
-                                session_id: state.args.session_id.clone(),
-                                delta: Box::new(segment_delta),
-                            });
-                    }
                 }
             }
 
@@ -325,7 +335,203 @@ impl Actor for ListenerActor {
     }
 }
 
+async fn stop_stream_task(
+    shutdown_tx: &mut Option<tokio::sync::oneshot::Sender<()>>,
+    rx_task: &mut tokio::task::JoinHandle<Vec<StreamResponse>>,
+    timeout: Duration,
+) -> Vec<StreamResponse> {
+    let Some(shutdown_tx) = shutdown_tx.take() else {
+        return Vec::new();
+    };
+
+    let _ = shutdown_tx.send(());
+    match tokio::time::timeout(timeout, &mut *rx_task).await {
+        Ok(Ok(responses)) => discard_final_stream_errors(responses),
+        Ok(Err(error)) => {
+            tracing::warn!(error.message = ?error, "listener_stream_task_join_failed");
+            Vec::new()
+        }
+        Err(_) => {
+            tracing::warn!("listener_stream_task_shutdown_timed_out");
+            rx_task.abort();
+            Vec::new()
+        }
+    }
+}
+
+fn discard_final_stream_errors(responses: Vec<StreamResponse>) -> Vec<StreamResponse> {
+    responses
+        .into_iter()
+        .filter_map(|response| match response {
+            StreamResponse::ErrorResponse {
+                error_code,
+                provider,
+                ..
+            } => {
+                let error_code =
+                    error_code.map_or_else(|| "unknown".to_string(), |code| code.to_string());
+                tracing::warn!(
+                    error.code = %error_code,
+                    anarlog.stt.provider.name = %provider,
+                    "stream_provider_error_during_shutdown"
+                );
+                None
+            }
+            response => Some(response),
+        })
+        .collect()
+}
+
+fn process_stream_response(
+    state: &mut ListenerState,
+    mut response: StreamResponse,
+) -> Option<DegradedError> {
+    if let StreamResponse::ErrorResponse {
+        error_code,
+        error_message,
+        provider,
+    } = &response
+    {
+        let error_code_tag =
+            error_code.map_or_else(|| "unknown".to_string(), |code| code.to_string());
+        tracing::error!(
+            error.code = %error_code_tag,
+            error.message = %error_message,
+            anarlog.stt.provider.name = %provider,
+            "stream_provider_error"
+        );
+        state
+            .args
+            .runtime
+            .emit_error(SessionErrorEvent::ConnectionError {
+                session_id: state.args.session_id.clone(),
+                error: format!(
+                    "[{}] {} (code: {})",
+                    provider,
+                    error_message,
+                    error_code
+                        .map(|code| code.to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                ),
+            });
+        return Some(classify_provider_error(
+            *error_code,
+            error_message,
+            provider,
+        ));
+    }
+
+    match state.args.mode {
+        crate::actors::ChannelMode::MicOnly => response.remap_channel_index(0, 2),
+        crate::actors::ChannelMode::SpeakerOnly => response.remap_channel_index(1, 2),
+        crate::actors::ChannelMode::MicAndSpeaker => {}
+    }
+
+    if let Some(update) = state.transcript.process(&response) {
+        state
+            .args
+            .runtime
+            .emit_data(SessionDataEvent::TranscriptDelta {
+                session_id: state.args.session_id.clone(),
+                delta: Box::new(update.transcript_delta),
+            });
+        if let Some(segment_delta) = update.segment_delta {
+            state
+                .args
+                .runtime
+                .emit_data(SessionDataEvent::TranscriptSegmentDelta {
+                    session_id: state.args.session_id.clone(),
+                    delta: Box::new(segment_delta),
+                });
+        }
+    }
+
+    None
+}
+
+fn classify_provider_error(
+    error_code: Option<i32>,
+    error_message: &str,
+    provider: &str,
+) -> DegradedError {
+    match error_code {
+        Some(401) | Some(403) => DegradedError::AuthenticationFailed {
+            provider: provider.to_string(),
+        },
+        Some(400) | Some(402) | Some(404) | Some(422) => DegradedError::ProviderConfiguration {
+            provider: provider.to_string(),
+            message: error_message.to_string(),
+        },
+        _ => DegradedError::StreamError {
+            message: format!("{provider}: {error_message}"),
+        },
+    }
+}
+
 fn stop_with_degraded_error(myself: &ActorRef<ListenerMsg>, error: DegradedError) {
     let reason = serde_json::to_string(&error).ok();
     myself.stop(reason);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stream_task_shutdown_aborts_a_hung_task_after_the_deadline() {
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
+        let mut shutdown_tx = Some(shutdown_tx);
+        let mut task = tokio::spawn(std::future::pending::<Vec<StreamResponse>>());
+
+        let responses =
+            stop_stream_task(&mut shutdown_tx, &mut task, Duration::from_millis(20)).await;
+
+        assert!(responses.is_empty());
+        assert!(shutdown_tx.is_none());
+        let join_result = tokio::time::timeout(Duration::from_secs(1), &mut task)
+            .await
+            .expect("aborted stream task should stop promptly");
+        assert!(join_result.unwrap_err().is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn stream_task_shutdown_discards_queued_provider_errors() {
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel();
+        let mut shutdown_tx = Some(shutdown_tx);
+        let mut task = tokio::spawn(async {
+            vec![StreamResponse::ErrorResponse {
+                error_code: Some(400),
+                error_message: "invalid request".to_string(),
+                provider: "openai".to_string(),
+            }]
+        });
+
+        let responses = stop_stream_task(&mut shutdown_tx, &mut task, Duration::from_secs(1)).await;
+
+        assert!(responses.is_empty());
+    }
+
+    #[test]
+    fn permanent_provider_errors_do_not_use_the_retryable_stream_error() {
+        assert!(matches!(
+            classify_provider_error(Some(401), "invalid key", "openai"),
+            DegradedError::AuthenticationFailed { .. }
+        ));
+        assert!(matches!(
+            classify_provider_error(Some(400), "invalid model", "openai"),
+            DegradedError::ProviderConfiguration { .. }
+        ));
+        assert!(matches!(
+            classify_provider_error(Some(402), "quota exhausted", "openai"),
+            DegradedError::ProviderConfiguration { .. }
+        ));
+        assert!(matches!(
+            classify_provider_error(Some(429), "rate limited", "openai"),
+            DegradedError::StreamError { .. }
+        ));
+        assert!(matches!(
+            classify_provider_error(Some(500), "server error", "openai"),
+            DegradedError::StreamError { .. }
+        ));
+    }
 }

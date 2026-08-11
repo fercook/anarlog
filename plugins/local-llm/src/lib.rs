@@ -5,17 +5,21 @@ use std::sync::Mutex;
 use tauri::Wry;
 use tokio::sync::Mutex as TokioMutex;
 
-use hypr_model_downloader::ModelDownloadManager;
+use anlg_model_downloader::ModelDownloadManager;
 
 mod commands;
 mod error;
 mod ext;
+mod foundation_models;
 mod migrate;
 
+pub use anlg_local_llm_core::{
+    CustomModelInfo, ModelIdentifier, ModelInfo, SUPPORTED_MODELS, SupportedModel,
+};
 pub use error::*;
 pub use ext::*;
-pub use hypr_local_llm_core::{
-    CustomModelInfo, ModelIdentifier, ModelInfo, SUPPORTED_MODELS, SupportedModel,
+pub use foundation_models::{
+    FoundationModelAvailability, FoundationModelRequest, FoundationModelResponse,
 };
 
 const PLUGIN_NAME: &str = "local-llm";
@@ -25,7 +29,7 @@ pub type SharedState = std::sync::Arc<TokioMutex<State>>;
 pub struct State {
     pub model_downloader: ModelDownloadManager<SupportedModel>,
     pub download_channels: Arc<Mutex<HashMap<String, tauri::ipc::Channel<i8>>>>,
-    pub server: Option<hypr_local_llm_core::LlmServer>,
+    pub server: Option<anlg_local_llm_core::LlmServer>,
 }
 
 fn make_specta_builder<R: tauri::Runtime>() -> tauri_specta::Builder<R> {
@@ -42,6 +46,10 @@ fn make_specta_builder<R: tauri::Runtime>() -> tauri_specta::Builder<R> {
             commands::list_downloaded_model::<Wry>,
             commands::list_custom_models::<Wry>,
             commands::server_url::<Wry>,
+            commands::foundation_model_availability,
+            commands::foundation_model_begin,
+            commands::foundation_model_cancel,
+            commands::foundation_model_generate,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Result)
 }

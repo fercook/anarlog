@@ -13,18 +13,28 @@ import { Route as UpdatePasswordRouteImport } from './routes/update-password'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as DiscordRouteImport } from './routes/discord'
+import { Route as ConfirmAuthRouteImport } from './routes/confirm-auth'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as ViewRouteRouteImport } from './routes/_view/route'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as YcIndexRouteImport } from './routes/yc/index'
+import { Route as PricingIndexRouteImport } from './routes/pricing/index'
+import { Route as EnterpriseIndexRouteImport } from './routes/enterprise/index'
 import { Route as ChangelogIndexRouteImport } from './routes/changelog/index'
 import { Route as BlogIndexRouteImport } from './routes/blog/index'
+import { Route as ShareShareIdRouteImport } from './routes/share/$shareId'
 import { Route as ChangelogVersionRouteImport } from './routes/changelog/$version'
 import { Route as BlogSlugRouteImport } from './routes/blog/$slug'
 import { Route as ApiTemplatesRouteImport } from './routes/api/templates'
 import { Route as ApiShortcutsRouteImport } from './routes/api/shortcuts'
 import { Route as ApiMediaUploadRouteImport } from './routes/api/media-upload'
 import { Route as ViewAppRouteRouteImport } from './routes/_view/app/route'
+import { Route as ViewDownloadIndexRouteImport } from './routes/_view/download/index'
 import { Route as ViewAppIndexRouteImport } from './routes/_view/app/index'
+import { Route as SharePublicPublicSlugRouteImport } from './routes/share/public/$publicSlug'
+import { Route as ShareLinkShareIdRouteImport } from './routes/share/link/$shareId'
+import { Route as ShareInviteInvitationIdRouteImport } from './routes/share/invite/$invitationId'
 import { Route as ApiWebhooksSlackInteractiveRouteImport } from './routes/api/webhooks/slack-interactive'
 import { Route as ApiTweetIdRouteImport } from './routes/api/tweet.$id'
 import { Route as ApiAssetsSplatRouteImport } from './routes/api/assets.$'
@@ -70,6 +80,8 @@ import { Route as ApiAdminContentDeleteRouteImport } from './routes/api/admin/co
 import { Route as ApiAdminContentCreateRouteImport } from './routes/api/admin/content/create'
 import { Route as ApiAdminContentAuditRouteImport } from './routes/api/admin/content/audit'
 import { Route as ApiAdminBlogUploadImageRouteImport } from './routes/api/admin/blog/upload-image'
+import { Route as ApiOgSharePublicPublicSlugRouteImport } from './routes/api/og/share/public/$publicSlug'
+import { Route as ApiOgShareLinkShareIdRouteImport } from './routes/api/og/share/link/$shareId'
 
 const UpdatePasswordRoute = UpdatePasswordRouteImport.update({
   id: '/update-password',
@@ -91,6 +103,16 @@ const PrivacyRoute = PrivacyRouteImport.update({
   path: '/privacy',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DiscordRoute = DiscordRouteImport.update({
+  id: '/discord',
+  path: '/discord',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConfirmAuthRoute = ConfirmAuthRouteImport.update({
+  id: '/confirm-auth',
+  path: '/confirm-auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
   path: '/auth',
@@ -105,6 +127,21 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const YcIndexRoute = YcIndexRouteImport.update({
+  id: '/yc/',
+  path: '/yc/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PricingIndexRoute = PricingIndexRouteImport.update({
+  id: '/pricing/',
+  path: '/pricing/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EnterpriseIndexRoute = EnterpriseIndexRouteImport.update({
+  id: '/enterprise/',
+  path: '/enterprise/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ChangelogIndexRoute = ChangelogIndexRouteImport.update({
   id: '/changelog/',
   path: '/changelog/',
@@ -113,6 +150,11 @@ const ChangelogIndexRoute = ChangelogIndexRouteImport.update({
 const BlogIndexRoute = BlogIndexRouteImport.update({
   id: '/blog/',
   path: '/blog/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ShareShareIdRoute = ShareShareIdRouteImport.update({
+  id: '/share/$shareId',
+  path: '/share/$shareId',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ChangelogVersionRoute = ChangelogVersionRouteImport.update({
@@ -145,10 +187,30 @@ const ViewAppRouteRoute = ViewAppRouteRouteImport.update({
   path: '/app',
   getParentRoute: () => ViewRouteRoute,
 } as any)
+const ViewDownloadIndexRoute = ViewDownloadIndexRouteImport.update({
+  id: '/download/',
+  path: '/download/',
+  getParentRoute: () => ViewRouteRoute,
+} as any)
 const ViewAppIndexRoute = ViewAppIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => ViewAppRouteRoute,
+} as any)
+const SharePublicPublicSlugRoute = SharePublicPublicSlugRouteImport.update({
+  id: '/share/public/$publicSlug',
+  path: '/share/public/$publicSlug',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ShareLinkShareIdRoute = ShareLinkShareIdRouteImport.update({
+  id: '/share/link/$shareId',
+  path: '/share/link/$shareId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ShareInviteInvitationIdRoute = ShareInviteInvitationIdRouteImport.update({
+  id: '/share/invite/$invitationId',
+  path: '/share/invite/$invitationId',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const ApiWebhooksSlackInteractiveRoute =
   ApiWebhooksSlackInteractiveRouteImport.update({
@@ -382,10 +444,23 @@ const ApiAdminBlogUploadImageRoute = ApiAdminBlogUploadImageRouteImport.update({
   path: '/api/admin/blog/upload-image',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiOgSharePublicPublicSlugRoute =
+  ApiOgSharePublicPublicSlugRouteImport.update({
+    id: '/api/og/share/public/$publicSlug',
+    path: '/api/og/share/public/$publicSlug',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiOgShareLinkShareIdRoute = ApiOgShareLinkShareIdRouteImport.update({
+  id: '/api/og/share/link/$shareId',
+  path: '/api/og/share/link/$shareId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/confirm-auth': typeof ConfirmAuthRoute
+  '/discord': typeof DiscordRoute
   '/privacy': typeof PrivacyRoute
   '/reset-password': typeof ResetPasswordRoute
   '/terms': typeof TermsRoute
@@ -396,8 +471,12 @@ export interface FileRoutesByFullPath {
   '/api/templates': typeof ApiTemplatesRoute
   '/blog/$slug': typeof BlogSlugRoute
   '/changelog/$version': typeof ChangelogVersionRoute
+  '/share/$shareId': typeof ShareShareIdRoute
   '/blog/': typeof BlogIndexRoute
   '/changelog/': typeof ChangelogIndexRoute
+  '/enterprise/': typeof EnterpriseIndexRoute
+  '/pricing/': typeof PricingIndexRoute
+  '/yc/': typeof YcIndexRoute
   '/app/account': typeof ViewAppAccountRoute
   '/app/checkout': typeof ViewAppCheckoutRoute
   '/app/integration': typeof ViewAppIntegrationRoute
@@ -412,7 +491,11 @@ export interface FileRoutesByFullPath {
   '/api/assets/$': typeof ApiAssetsSplatRoute
   '/api/tweet/$id': typeof ApiTweetIdRoute
   '/api/webhooks/slack-interactive': typeof ApiWebhooksSlackInteractiveRoute
+  '/share/invite/$invitationId': typeof ShareInviteInvitationIdRoute
+  '/share/link/$shareId': typeof ShareLinkShareIdRoute
+  '/share/public/$publicSlug': typeof SharePublicPublicSlugRoute
   '/app/': typeof ViewAppIndexRoute
+  '/download/': typeof ViewDownloadIndexRoute
   '/api/admin/blog/upload-image': typeof ApiAdminBlogUploadImageRoute
   '/api/admin/content/audit': typeof ApiAdminContentAuditRoute
   '/api/admin/content/create': typeof ApiAdminContentCreateRoute
@@ -444,10 +527,14 @@ export interface FileRoutesByFullPath {
   '/api/admin/stars/pipeline': typeof ApiAdminStarsPipelineRoute
   '/api/admin/stars/research': typeof ApiAdminStarsResearchRoute
   '/api/og/blog/$slug': typeof ApiOgBlogSlugRoute
+  '/api/og/share/link/$shareId': typeof ApiOgShareLinkShareIdRoute
+  '/api/og/share/public/$publicSlug': typeof ApiOgSharePublicPublicSlugRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/confirm-auth': typeof ConfirmAuthRoute
+  '/discord': typeof DiscordRoute
   '/privacy': typeof PrivacyRoute
   '/reset-password': typeof ResetPasswordRoute
   '/terms': typeof TermsRoute
@@ -457,8 +544,12 @@ export interface FileRoutesByTo {
   '/api/templates': typeof ApiTemplatesRoute
   '/blog/$slug': typeof BlogSlugRoute
   '/changelog/$version': typeof ChangelogVersionRoute
+  '/share/$shareId': typeof ShareShareIdRoute
   '/blog': typeof BlogIndexRoute
   '/changelog': typeof ChangelogIndexRoute
+  '/enterprise': typeof EnterpriseIndexRoute
+  '/pricing': typeof PricingIndexRoute
+  '/yc': typeof YcIndexRoute
   '/app/account': typeof ViewAppAccountRoute
   '/app/checkout': typeof ViewAppCheckoutRoute
   '/app/integration': typeof ViewAppIntegrationRoute
@@ -473,7 +564,11 @@ export interface FileRoutesByTo {
   '/api/assets/$': typeof ApiAssetsSplatRoute
   '/api/tweet/$id': typeof ApiTweetIdRoute
   '/api/webhooks/slack-interactive': typeof ApiWebhooksSlackInteractiveRoute
+  '/share/invite/$invitationId': typeof ShareInviteInvitationIdRoute
+  '/share/link/$shareId': typeof ShareLinkShareIdRoute
+  '/share/public/$publicSlug': typeof SharePublicPublicSlugRoute
   '/app': typeof ViewAppIndexRoute
+  '/download': typeof ViewDownloadIndexRoute
   '/api/admin/blog/upload-image': typeof ApiAdminBlogUploadImageRoute
   '/api/admin/content/audit': typeof ApiAdminContentAuditRoute
   '/api/admin/content/create': typeof ApiAdminContentCreateRoute
@@ -505,12 +600,16 @@ export interface FileRoutesByTo {
   '/api/admin/stars/pipeline': typeof ApiAdminStarsPipelineRoute
   '/api/admin/stars/research': typeof ApiAdminStarsResearchRoute
   '/api/og/blog/$slug': typeof ApiOgBlogSlugRoute
+  '/api/og/share/link/$shareId': typeof ApiOgShareLinkShareIdRoute
+  '/api/og/share/public/$publicSlug': typeof ApiOgSharePublicPublicSlugRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_view': typeof ViewRouteRouteWithChildren
   '/auth': typeof AuthRoute
+  '/confirm-auth': typeof ConfirmAuthRoute
+  '/discord': typeof DiscordRoute
   '/privacy': typeof PrivacyRoute
   '/reset-password': typeof ResetPasswordRoute
   '/terms': typeof TermsRoute
@@ -521,8 +620,12 @@ export interface FileRoutesById {
   '/api/templates': typeof ApiTemplatesRoute
   '/blog/$slug': typeof BlogSlugRoute
   '/changelog/$version': typeof ChangelogVersionRoute
+  '/share/$shareId': typeof ShareShareIdRoute
   '/blog/': typeof BlogIndexRoute
   '/changelog/': typeof ChangelogIndexRoute
+  '/enterprise/': typeof EnterpriseIndexRoute
+  '/pricing/': typeof PricingIndexRoute
+  '/yc/': typeof YcIndexRoute
   '/_view/app/account': typeof ViewAppAccountRoute
   '/_view/app/checkout': typeof ViewAppCheckoutRoute
   '/_view/app/integration': typeof ViewAppIntegrationRoute
@@ -537,7 +640,11 @@ export interface FileRoutesById {
   '/api/assets/$': typeof ApiAssetsSplatRoute
   '/api/tweet/$id': typeof ApiTweetIdRoute
   '/api/webhooks/slack-interactive': typeof ApiWebhooksSlackInteractiveRoute
+  '/share/invite/$invitationId': typeof ShareInviteInvitationIdRoute
+  '/share/link/$shareId': typeof ShareLinkShareIdRoute
+  '/share/public/$publicSlug': typeof SharePublicPublicSlugRoute
   '/_view/app/': typeof ViewAppIndexRoute
+  '/_view/download/': typeof ViewDownloadIndexRoute
   '/api/admin/blog/upload-image': typeof ApiAdminBlogUploadImageRoute
   '/api/admin/content/audit': typeof ApiAdminContentAuditRoute
   '/api/admin/content/create': typeof ApiAdminContentCreateRoute
@@ -569,12 +676,16 @@ export interface FileRoutesById {
   '/api/admin/stars/pipeline': typeof ApiAdminStarsPipelineRoute
   '/api/admin/stars/research': typeof ApiAdminStarsResearchRoute
   '/api/og/blog/$slug': typeof ApiOgBlogSlugRoute
+  '/api/og/share/link/$shareId': typeof ApiOgShareLinkShareIdRoute
+  '/api/og/share/public/$publicSlug': typeof ApiOgSharePublicPublicSlugRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
     | '/auth'
+    | '/confirm-auth'
+    | '/discord'
     | '/privacy'
     | '/reset-password'
     | '/terms'
@@ -585,8 +696,12 @@ export interface FileRouteTypes {
     | '/api/templates'
     | '/blog/$slug'
     | '/changelog/$version'
+    | '/share/$shareId'
     | '/blog/'
     | '/changelog/'
+    | '/enterprise/'
+    | '/pricing/'
+    | '/yc/'
     | '/app/account'
     | '/app/checkout'
     | '/app/integration'
@@ -601,7 +716,11 @@ export interface FileRouteTypes {
     | '/api/assets/$'
     | '/api/tweet/$id'
     | '/api/webhooks/slack-interactive'
+    | '/share/invite/$invitationId'
+    | '/share/link/$shareId'
+    | '/share/public/$publicSlug'
     | '/app/'
+    | '/download/'
     | '/api/admin/blog/upload-image'
     | '/api/admin/content/audit'
     | '/api/admin/content/create'
@@ -633,10 +752,14 @@ export interface FileRouteTypes {
     | '/api/admin/stars/pipeline'
     | '/api/admin/stars/research'
     | '/api/og/blog/$slug'
+    | '/api/og/share/link/$shareId'
+    | '/api/og/share/public/$publicSlug'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/auth'
+    | '/confirm-auth'
+    | '/discord'
     | '/privacy'
     | '/reset-password'
     | '/terms'
@@ -646,8 +769,12 @@ export interface FileRouteTypes {
     | '/api/templates'
     | '/blog/$slug'
     | '/changelog/$version'
+    | '/share/$shareId'
     | '/blog'
     | '/changelog'
+    | '/enterprise'
+    | '/pricing'
+    | '/yc'
     | '/app/account'
     | '/app/checkout'
     | '/app/integration'
@@ -662,7 +789,11 @@ export interface FileRouteTypes {
     | '/api/assets/$'
     | '/api/tweet/$id'
     | '/api/webhooks/slack-interactive'
+    | '/share/invite/$invitationId'
+    | '/share/link/$shareId'
+    | '/share/public/$publicSlug'
     | '/app'
+    | '/download'
     | '/api/admin/blog/upload-image'
     | '/api/admin/content/audit'
     | '/api/admin/content/create'
@@ -694,11 +825,15 @@ export interface FileRouteTypes {
     | '/api/admin/stars/pipeline'
     | '/api/admin/stars/research'
     | '/api/og/blog/$slug'
+    | '/api/og/share/link/$shareId'
+    | '/api/og/share/public/$publicSlug'
   id:
     | '__root__'
     | '/'
     | '/_view'
     | '/auth'
+    | '/confirm-auth'
+    | '/discord'
     | '/privacy'
     | '/reset-password'
     | '/terms'
@@ -709,8 +844,12 @@ export interface FileRouteTypes {
     | '/api/templates'
     | '/blog/$slug'
     | '/changelog/$version'
+    | '/share/$shareId'
     | '/blog/'
     | '/changelog/'
+    | '/enterprise/'
+    | '/pricing/'
+    | '/yc/'
     | '/_view/app/account'
     | '/_view/app/checkout'
     | '/_view/app/integration'
@@ -725,7 +864,11 @@ export interface FileRouteTypes {
     | '/api/assets/$'
     | '/api/tweet/$id'
     | '/api/webhooks/slack-interactive'
+    | '/share/invite/$invitationId'
+    | '/share/link/$shareId'
+    | '/share/public/$publicSlug'
     | '/_view/app/'
+    | '/_view/download/'
     | '/api/admin/blog/upload-image'
     | '/api/admin/content/audit'
     | '/api/admin/content/create'
@@ -757,12 +900,16 @@ export interface FileRouteTypes {
     | '/api/admin/stars/pipeline'
     | '/api/admin/stars/research'
     | '/api/og/blog/$slug'
+    | '/api/og/share/link/$shareId'
+    | '/api/og/share/public/$publicSlug'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ViewRouteRoute: typeof ViewRouteRouteWithChildren
   AuthRoute: typeof AuthRoute
+  ConfirmAuthRoute: typeof ConfirmAuthRoute
+  DiscordRoute: typeof DiscordRoute
   PrivacyRoute: typeof PrivacyRoute
   ResetPasswordRoute: typeof ResetPasswordRoute
   TermsRoute: typeof TermsRoute
@@ -772,11 +919,18 @@ export interface RootRouteChildren {
   ApiTemplatesRoute: typeof ApiTemplatesRoute
   BlogSlugRoute: typeof BlogSlugRoute
   ChangelogVersionRoute: typeof ChangelogVersionRoute
+  ShareShareIdRoute: typeof ShareShareIdRoute
   BlogIndexRoute: typeof BlogIndexRoute
   ChangelogIndexRoute: typeof ChangelogIndexRoute
+  EnterpriseIndexRoute: typeof EnterpriseIndexRoute
+  PricingIndexRoute: typeof PricingIndexRoute
+  YcIndexRoute: typeof YcIndexRoute
   ApiAssetsSplatRoute: typeof ApiAssetsSplatRoute
   ApiTweetIdRoute: typeof ApiTweetIdRoute
   ApiWebhooksSlackInteractiveRoute: typeof ApiWebhooksSlackInteractiveRoute
+  ShareInviteInvitationIdRoute: typeof ShareInviteInvitationIdRoute
+  ShareLinkShareIdRoute: typeof ShareLinkShareIdRoute
+  SharePublicPublicSlugRoute: typeof SharePublicPublicSlugRoute
   ApiAdminBlogUploadImageRoute: typeof ApiAdminBlogUploadImageRoute
   ApiAdminContentAuditRoute: typeof ApiAdminContentAuditRoute
   ApiAdminContentCreateRoute: typeof ApiAdminContentCreateRoute
@@ -808,6 +962,8 @@ export interface RootRouteChildren {
   ApiAdminStarsPipelineRoute: typeof ApiAdminStarsPipelineRoute
   ApiAdminStarsResearchRoute: typeof ApiAdminStarsResearchRoute
   ApiOgBlogSlugRoute: typeof ApiOgBlogSlugRoute
+  ApiOgShareLinkShareIdRoute: typeof ApiOgShareLinkShareIdRoute
+  ApiOgSharePublicPublicSlugRoute: typeof ApiOgSharePublicPublicSlugRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -840,6 +996,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PrivacyRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/discord': {
+      id: '/discord'
+      path: '/discord'
+      fullPath: '/discord'
+      preLoaderRoute: typeof DiscordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/confirm-auth': {
+      id: '/confirm-auth'
+      path: '/confirm-auth'
+      fullPath: '/confirm-auth'
+      preLoaderRoute: typeof ConfirmAuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/auth': {
       id: '/auth'
       path: '/auth'
@@ -861,6 +1031,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/yc/': {
+      id: '/yc/'
+      path: '/yc'
+      fullPath: '/yc/'
+      preLoaderRoute: typeof YcIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/pricing/': {
+      id: '/pricing/'
+      path: '/pricing'
+      fullPath: '/pricing/'
+      preLoaderRoute: typeof PricingIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/enterprise/': {
+      id: '/enterprise/'
+      path: '/enterprise'
+      fullPath: '/enterprise/'
+      preLoaderRoute: typeof EnterpriseIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/changelog/': {
       id: '/changelog/'
       path: '/changelog'
@@ -873,6 +1064,13 @@ declare module '@tanstack/react-router' {
       path: '/blog'
       fullPath: '/blog/'
       preLoaderRoute: typeof BlogIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/share/$shareId': {
+      id: '/share/$shareId'
+      path: '/share/$shareId'
+      fullPath: '/share/$shareId'
+      preLoaderRoute: typeof ShareShareIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/changelog/$version': {
@@ -917,12 +1115,40 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ViewAppRouteRouteImport
       parentRoute: typeof ViewRouteRoute
     }
+    '/_view/download/': {
+      id: '/_view/download/'
+      path: '/download'
+      fullPath: '/download/'
+      preLoaderRoute: typeof ViewDownloadIndexRouteImport
+      parentRoute: typeof ViewRouteRoute
+    }
     '/_view/app/': {
       id: '/_view/app/'
       path: '/'
       fullPath: '/app/'
       preLoaderRoute: typeof ViewAppIndexRouteImport
       parentRoute: typeof ViewAppRouteRoute
+    }
+    '/share/public/$publicSlug': {
+      id: '/share/public/$publicSlug'
+      path: '/share/public/$publicSlug'
+      fullPath: '/share/public/$publicSlug'
+      preLoaderRoute: typeof SharePublicPublicSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/share/link/$shareId': {
+      id: '/share/link/$shareId'
+      path: '/share/link/$shareId'
+      fullPath: '/share/link/$shareId'
+      preLoaderRoute: typeof ShareLinkShareIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/share/invite/$invitationId': {
+      id: '/share/invite/$invitationId'
+      path: '/share/invite/$invitationId'
+      fullPath: '/share/invite/$invitationId'
+      preLoaderRoute: typeof ShareInviteInvitationIdRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/webhooks/slack-interactive': {
       id: '/api/webhooks/slack-interactive'
@@ -1239,6 +1465,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAdminBlogUploadImageRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/og/share/public/$publicSlug': {
+      id: '/api/og/share/public/$publicSlug'
+      path: '/api/og/share/public/$publicSlug'
+      fullPath: '/api/og/share/public/$publicSlug'
+      preLoaderRoute: typeof ApiOgSharePublicPublicSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/og/share/link/$shareId': {
+      id: '/api/og/share/link/$shareId'
+      path: '/api/og/share/link/$shareId'
+      fullPath: '/api/og/share/link/$shareId'
+      preLoaderRoute: typeof ApiOgShareLinkShareIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -1272,6 +1512,7 @@ interface ViewRouteRouteChildren {
   ViewCallbackSignoutRoute: typeof ViewCallbackSignoutRoute
   ViewDownloadAppleIntelRoute: typeof ViewDownloadAppleIntelRoute
   ViewDownloadAppleSiliconRoute: typeof ViewDownloadAppleSiliconRoute
+  ViewDownloadIndexRoute: typeof ViewDownloadIndexRoute
 }
 
 const ViewRouteRouteChildren: ViewRouteRouteChildren = {
@@ -1282,6 +1523,7 @@ const ViewRouteRouteChildren: ViewRouteRouteChildren = {
   ViewCallbackSignoutRoute: ViewCallbackSignoutRoute,
   ViewDownloadAppleIntelRoute: ViewDownloadAppleIntelRoute,
   ViewDownloadAppleSiliconRoute: ViewDownloadAppleSiliconRoute,
+  ViewDownloadIndexRoute: ViewDownloadIndexRoute,
 }
 
 const ViewRouteRouteWithChildren = ViewRouteRoute._addFileChildren(
@@ -1292,6 +1534,8 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ViewRouteRoute: ViewRouteRouteWithChildren,
   AuthRoute: AuthRoute,
+  ConfirmAuthRoute: ConfirmAuthRoute,
+  DiscordRoute: DiscordRoute,
   PrivacyRoute: PrivacyRoute,
   ResetPasswordRoute: ResetPasswordRoute,
   TermsRoute: TermsRoute,
@@ -1301,11 +1545,18 @@ const rootRouteChildren: RootRouteChildren = {
   ApiTemplatesRoute: ApiTemplatesRoute,
   BlogSlugRoute: BlogSlugRoute,
   ChangelogVersionRoute: ChangelogVersionRoute,
+  ShareShareIdRoute: ShareShareIdRoute,
   BlogIndexRoute: BlogIndexRoute,
   ChangelogIndexRoute: ChangelogIndexRoute,
+  EnterpriseIndexRoute: EnterpriseIndexRoute,
+  PricingIndexRoute: PricingIndexRoute,
+  YcIndexRoute: YcIndexRoute,
   ApiAssetsSplatRoute: ApiAssetsSplatRoute,
   ApiTweetIdRoute: ApiTweetIdRoute,
   ApiWebhooksSlackInteractiveRoute: ApiWebhooksSlackInteractiveRoute,
+  ShareInviteInvitationIdRoute: ShareInviteInvitationIdRoute,
+  ShareLinkShareIdRoute: ShareLinkShareIdRoute,
+  SharePublicPublicSlugRoute: SharePublicPublicSlugRoute,
   ApiAdminBlogUploadImageRoute: ApiAdminBlogUploadImageRoute,
   ApiAdminContentAuditRoute: ApiAdminContentAuditRoute,
   ApiAdminContentCreateRoute: ApiAdminContentCreateRoute,
@@ -1337,6 +1588,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminStarsPipelineRoute: ApiAdminStarsPipelineRoute,
   ApiAdminStarsResearchRoute: ApiAdminStarsResearchRoute,
   ApiOgBlogSlugRoute: ApiOgBlogSlugRoute,
+  ApiOgShareLinkShareIdRoute: ApiOgShareLinkShareIdRoute,
+  ApiOgSharePublicPublicSlugRoute: ApiOgSharePublicPublicSlugRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -10,6 +10,8 @@ Default permissions for the plugin
 - `allow-is-downloaded`
 - `allow-postinstall`
 - `allow-maybe-emit-updated`
+- `allow-set-automatic-updates-enabled`
+- `allow-set-meeting-active`
 
 ## Permission Table
 
@@ -172,6 +174,58 @@ Enables the postinstall command without any pre-configured scope.
 <td>
 
 Denies the postinstall command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`updater2:allow-set-automatic-updates-enabled`
+
+</td>
+<td>
+
+Enables the set_automatic_updates_enabled command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`updater2:deny-set-automatic-updates-enabled`
+
+</td>
+<td>
+
+Denies the set_automatic_updates_enabled command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`updater2:allow-set-meeting-active`
+
+</td>
+<td>
+
+Enables the set_meeting_active command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`updater2:deny-set-meeting-active`
+
+</td>
+<td>
+
+Denies the set_meeting_active command without any pre-configured scope.
 
 </td>
 </tr>

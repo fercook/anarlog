@@ -31,10 +31,13 @@ import {
 } from "react";
 import { useDebounceCallback } from "usehooks-ts";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
 import { EditorErrorBoundary } from "../editor-error-boundary";
 import {
+  type AttachmentResolver,
+  AttachmentEditingContext,
+  AttachmentResolverContext,
   FileAttachmentView,
   getNodeViewFallbackTag,
   MentionNodeView,
@@ -43,7 +46,6 @@ import {
   withNodeViewErrorBoundary,
 } from "../node-views";
 import {
-  appLinkPastePlugin,
   autolinkPlugin,
   type FileHandlerConfig,
   type PlaceholderFunction,
@@ -51,6 +53,8 @@ import {
   clearMarksOnEnterPlugin,
   clipboardPlugin,
   clipPastePlugin,
+  type CommentAnchorsEvent,
+  commentAnchorsPlugin,
   docChangeListenerPlugin,
   ensureImageTrailingParagraphs,
   fileHandlerPlugin,
@@ -61,6 +65,7 @@ import {
   linkBoundaryGuardPlugin,
   linkOpenPlugin,
   placeholderPlugin,
+  type PersistentPlaceholderFunction,
   searchPlugin,
   searchReplaceAll,
   searchReplaceCurrent,
@@ -90,10 +95,29 @@ import {
 } from "./linked-item-open-behavior";
 import { schema } from "./schema";
 import { normalizeTitleHeadingDoc, titleHeadingPlugin } from "./title-layout";
-import { trailingEmptyLineClickPlugin } from "./trailing-empty-line-click";
+import {
+  focusTrailingEmptyLine,
+  trailingEmptyLineClickPlugin,
+} from "./trailing-empty-line-click";
 
-export type { MentionConfig, FileHandlerConfig, PlaceholderFunction };
+export type {
+  MentionConfig,
+  FileHandlerConfig,
+  PlaceholderFunction,
+  PersistentPlaceholderFunction,
+};
+export { normalizePortableAttachmentUrls } from "./portable-attachments";
 export { schema };
+export {
+  type CommentAnchorInput,
+  type CommentAnchorsEvent,
+  commentAnchorsPluginKey,
+  getCommentAnchorRanges,
+  getCommentAnchorScreenPositions,
+  getSelectionScreenRect,
+  setActiveCommentAnchor,
+  setCommentAnchors,
+} from "../plugins/comment-anchors";
 export { useLinkedItemOpenBehavior };
 
 export interface JSONContent {
@@ -116,6 +140,7 @@ export interface SearchReplaceParams {
 export interface EditorCommands {
   focus: () => void;
   focusAtStart: () => void;
+  focusAtTrailingEmptyLine: () => void;
   focusAtPixelWidth: (pixelWidth: number) => void;
   insertAtStartAndFocus: (content: string) => void;
   replaceContent: (content: JSONContent) => void;
@@ -126,6 +151,7 @@ export interface EditorCommands {
 export interface NoteEditorRef {
   view: EditorView | null;
   commands: EditorCommands;
+  flushPendingChanges: () => void;
 }
 
 export type SessionMentionDropData = {
@@ -149,9 +175,12 @@ type NodeViewComponents = NonNullable<
 export interface NoteEditorProps {
   className?: string;
   handleChange?: (content: JSONContent) => void;
+  onDocumentChange?: (content: JSONContent) => void;
   initialContent?: JSONContent;
+  resolveAttachment?: AttachmentResolver;
   mentionConfig?: MentionConfig;
   placeholderComponent?: PlaceholderFunction;
+  persistentPlaceholderComponent?: PersistentPlaceholderFunction;
   fileHandlerConfig?: FileHandlerConfig;
   onNavigateToTitle?: (pixelWidth?: number) => void;
   onLinkOpen?: LinkOpenHandler;
@@ -160,10 +189,16 @@ export interface NoteEditorProps {
   extraNodeViews?: NodeViewComponents;
   sessionMentionDropConfig?: SessionMentionDropConfig;
   showFormatToolbar?: boolean;
+  showSlashCommand?: boolean;
+  readOnly?: boolean;
   onViewReady?: (view: EditorView) => void;
   onViewDisposed?: (view: EditorView) => void;
   syncContentWhenFocused?: boolean;
   enforceTitleHeading?: boolean;
+  /** Fixed at mount: plugins are not reconfigurable afterwards. */
+  commentAnchorsEnabled?: boolean;
+  onCommentAnchorsEvent?: (event: CommentAnchorsEvent) => void;
+  onCommentSelection?: () => void;
 }
 
 const baseNodeViews = {
@@ -183,6 +218,18 @@ const baseNodeViews = {
 };
 
 const COMPOSITION_SYNC_GRACE_MS = 500;
+
+// Stretching this delay does not reduce upload volume -- CloudSync stages a
+// row's current value, not one entry per write, so a sync tick ships the note
+// once however often it was written (crates/db-core/tests/write_coalescing.rs).
+// maxWait is the part that matters: trailing-only never fires while keystrokes
+// keep arriving under the delay, so a fluent burst could persist nothing for as
+// long as it lasted, losing all of it on an unclean exit and going stale for
+// readers that query session_documents instead of calling flushPendingChanges().
+// Must stay module-level -- useDebounceCallback memoizes on the options
+// identity, and a fresh object each render would drop the pending timer.
+const CHANGE_FLUSH_DEBOUNCE_MS = 500;
+const CHANGE_FLUSH_OPTIONS = { maxWait: 10_000, trailing: true } as const;
 
 export type CompositionState = {
   active: boolean;
@@ -275,6 +322,12 @@ function createCompositionStatePlugin(
         },
       },
     },
+  });
+}
+
+export function createReadOnlyPlugin() {
+  return new Plugin({
+    filterTransaction: (transaction) => !transaction.docChanged,
   });
 }
 
@@ -380,6 +433,7 @@ function ViewCapture({
 const noopCommands: EditorCommands = {
   focus: () => {},
   focusAtStart: () => {},
+  focusAtTrailingEmptyLine: () => {},
   focusAtPixelWidth: () => {},
   insertAtStartAndFocus: () => {},
   replaceContent: () => {},
@@ -408,6 +462,9 @@ function EditorCommandsBridge({
             view.state.tr.setSelection(Selection.atStart(view.state.doc)),
           );
           view.focus();
+        },
+        focusAtTrailingEmptyLine: () => {
+          focusTrailingEmptyLine(view);
         },
         focusAtPixelWidth: (pixelWidth: number) => {
           const blockStart = Selection.atStart(view.state.doc).from;
@@ -528,10 +585,13 @@ export const NoteEditor = forwardRef<NoteEditorRef, NoteEditorProps>(
   function NoteEditor(props, ref) {
     const {
       handleChange,
+      onDocumentChange,
       className,
       initialContent,
+      resolveAttachment,
       mentionConfig,
       placeholderComponent,
+      persistentPlaceholderComponent,
       fileHandlerConfig,
       onNavigateToTitle,
       onLinkOpen,
@@ -540,11 +600,21 @@ export const NoteEditor = forwardRef<NoteEditorRef, NoteEditorProps>(
       extraNodeViews,
       sessionMentionDropConfig,
       showFormatToolbar = true,
+      showSlashCommand = true,
+      readOnly = false,
       onViewReady: onViewReadyProp,
       onViewDisposed,
       syncContentWhenFocused = false,
       enforceTitleHeading = true,
+      commentAnchorsEnabled = false,
+      onCommentAnchorsEvent,
+      onCommentSelection,
     } = props;
+
+    const commentAnchorsEventRef = useRef(onCommentAnchorsEvent);
+    commentAnchorsEventRef.current = onCommentAnchorsEvent;
+    const onDocumentChangeRef = useRef(onDocumentChange);
+    onDocumentChangeRef.current = onDocumentChange;
 
     const taskStorage = useTaskStorageOptional();
     const normalizedInitialContent = useMemo(
@@ -581,22 +651,9 @@ export const NoteEditor = forwardRef<NoteEditorRef, NoteEditorProps>(
       endedAt: 0,
     });
 
-    useImperativeHandle(
-      ref,
-      () => ({
-        get view() {
-          return viewRef.current;
-        },
-        get commands() {
-          return commandsRef.current;
-        },
-      }),
-      [],
-    );
-
     const syncTasks = useCallback(
       (content: JSONContent) => {
-        if (!taskSource || !taskStorage) {
+        if (readOnly || !taskSource || !taskStorage) {
           return;
         }
 
@@ -610,11 +667,12 @@ export const NoteEditor = forwardRef<NoteEditorRef, NoteEditorProps>(
           extractTasksFromContent(content, taskSource, previousTasks),
         );
       },
-      [taskSource, taskStorage],
+      [readOnly, taskSource, taskStorage],
     );
 
     const flushChange = useCallback(
-      (content: JSONContent) => {
+      (doc: PMNode) => {
+        const content = doc.toJSON() as JSONContent;
         syncTasks(content);
         if (!handleChange) {
           return;
@@ -625,9 +683,40 @@ export const NoteEditor = forwardRef<NoteEditorRef, NoteEditorProps>(
       [handleChange, syncTasks],
     );
 
-    const onUpdate = useDebounceCallback(flushChange, 500);
+    const flushChangeRef = useRef(flushChange);
+    flushChangeRef.current = flushChange;
+    const flushLatestChange = useCallback(
+      (doc: PMNode) => flushChangeRef.current(doc),
+      [],
+    );
+    const onUpdate = useDebounceCallback(
+      flushLatestChange,
+      CHANGE_FLUSH_DEBOUNCE_MS,
+      CHANGE_FLUSH_OPTIONS,
+    );
     const onUpdateRef = useRef(onUpdate);
     onUpdateRef.current = onUpdate;
+    const notifyDocumentChange = useCallback((doc: PMNode) => {
+      onDocumentChangeRef.current?.(doc.toJSON() as JSONContent);
+    }, []);
+
+    useImperativeHandle(
+      ref,
+      () => ({
+        get view() {
+          return viewRef.current;
+        },
+        get commands() {
+          return commandsRef.current;
+        },
+        flushPendingChanges: () => {
+          const view = viewRef.current;
+          onUpdate.cancel();
+          if (view) flushChangeRef.current(view.state.doc);
+        },
+      }),
+      [onUpdate],
+    );
 
     const setCompositionActive = useCallback((active: boolean) => {
       compositionStateRef.current = {
@@ -640,9 +729,11 @@ export const NoteEditor = forwardRef<NoteEditorRef, NoteEditorProps>(
       () => [
         reactKeys(),
         createCompositionStatePlugin(setCompositionActive),
-        docChangeListenerPlugin((view) =>
-          onUpdateRef.current(view.state.doc.toJSON() as JSONContent),
-        ),
+        ...(readOnly ? [createReadOnlyPlugin()] : []),
+        docChangeListenerPlugin((doc) => {
+          notifyDocumentChange(doc);
+          onUpdateRef.current(doc);
+        }),
         buildInputRules(),
         ...(enforceTitleHeading ? [titleHeadingPlugin()] : []),
         taskIdentityPlugin(),
@@ -653,12 +744,18 @@ export const NoteEditor = forwardRef<NoteEditorRef, NoteEditorProps>(
         gapCursor(),
         clipboardPlugin(),
         hashtagPlugin(),
+        ...(commentAnchorsEnabled
+          ? [
+              commentAnchorsPlugin({
+                onEvent: (event) => commentAnchorsEventRef.current?.(event),
+              }),
+            ]
+          : []),
         imageTrailingParagraphPlugin(),
         searchPlugin(),
-        placeholderPlugin(placeholderComponent),
+        placeholderPlugin(placeholderComponent, persistentPlaceholderComponent),
         clearMarksOnEnterPlugin(),
         clipPastePlugin(),
-        appLinkPastePlugin(),
         autolinkPlugin(),
         linkBoundaryGuardPlugin(),
         ...(onLinkOpen ? [linkOpenPlugin(onLinkOpen)] : []),
@@ -670,13 +767,17 @@ export const NoteEditor = forwardRef<NoteEditorRef, NoteEditorProps>(
       ],
       [
         placeholderComponent,
+        persistentPlaceholderComponent,
         fileHandlerConfig,
         mentionConfig,
         sessionMentionDropConfig,
         onNavigateToTitle,
         onLinkOpen,
         enforceTitleHeading,
+        readOnly,
         setCompositionActive,
+        commentAnchorsEnabled,
+        notifyDocumentChange,
       ],
     );
     const nodeViews = useMemo(
@@ -757,6 +858,7 @@ export const NoteEditor = forwardRef<NoteEditorRef, NoteEditorProps>(
           });
           onUpdate.cancel();
           view.updateState(state);
+          notifyDocumentChange(view.state.doc);
           previousContentRef.current = reconciledInitialContent;
         } catch {
           // invalid content
@@ -775,6 +877,7 @@ export const NoteEditor = forwardRef<NoteEditorRef, NoteEditorProps>(
       syncContentWhenFocused,
       enforceTitleHeading,
       onUpdate,
+      notifyDocumentChange,
     ]);
 
     const onViewReady = useCallback(
@@ -787,52 +890,69 @@ export const NoteEditor = forwardRef<NoteEditorRef, NoteEditorProps>(
 
     const handleViewDisposed = useCallback(
       (view: EditorView) => {
+        onUpdate.flush();
         compositionStateRef.current = {
           active: false,
           endedAt: 0,
         };
         onViewDisposed?.(view);
       },
-      [onViewDisposed],
+      [onUpdate, onViewDisposed],
     );
 
     return (
       <TaskSourceProvider source={taskSource ?? null}>
-        <LinkedItemOpenBehaviorContext.Provider value={linkedItemOpenBehavior}>
-          <EditorErrorBoundary
-            resetKey={
-              taskSource ? `${taskSource.type}:${taskSource.id}` : "note"
-            }
-          >
-            <ProseMirror
-              defaultState={defaultState}
-              nodeViewComponents={nodeViews}
-              attributes={{
-                spellCheck: "false",
-                autoComplete: "off",
-                autoCorrect: "off",
-                autoCapitalize: "off",
-                role: "textbox",
-                class: cn([
-                  "prosemirror-editor",
-                  enforceTitleHeading && "note-title-editor",
-                  className,
-                ]),
-              }}
+        <AttachmentEditingContext.Provider value={!readOnly}>
+          <AttachmentResolverContext.Provider value={resolveAttachment ?? null}>
+            <LinkedItemOpenBehaviorContext.Provider
+              value={linkedItemOpenBehavior}
             >
-              <ProseMirrorDoc />
-              <ViewCapture
-                viewRef={viewRef}
-                onViewReady={onViewReady}
-                onViewDisposed={handleViewDisposed}
-              />
-              <EditorCommandsBridge commandsRef={commandsRef} />
-              {showFormatToolbar && <FormatToolbar />}
-              <SlashCommandMenu />
-              {mentionConfig && <MentionSuggestion config={mentionConfig} />}
-            </ProseMirror>
-          </EditorErrorBoundary>
-        </LinkedItemOpenBehaviorContext.Provider>
+              <EditorErrorBoundary
+                resetKey={
+                  taskSource ? `${taskSource.type}:${taskSource.id}` : "note"
+                }
+              >
+                <ProseMirror
+                  defaultState={defaultState}
+                  nodeViewComponents={nodeViews}
+                  editable={() => !readOnly}
+                  attributes={{
+                    spellCheck: "false",
+                    autoComplete: "off",
+                    autoCorrect: "off",
+                    autoCapitalize: "off",
+                    role: readOnly ? "document" : "textbox",
+                    "aria-readonly": readOnly ? "true" : "false",
+                    class: cn([
+                      "prosemirror-editor",
+                      "note-typography",
+                      enforceTitleHeading && "note-title-editor",
+                      className,
+                    ]),
+                  }}
+                >
+                  <ProseMirrorDoc />
+                  <ViewCapture
+                    viewRef={viewRef}
+                    onViewReady={onViewReady}
+                    onViewDisposed={handleViewDisposed}
+                  />
+                  <EditorCommandsBridge commandsRef={commandsRef} />
+                  {((showFormatToolbar && !readOnly) || onCommentSelection) && (
+                    <FormatToolbar
+                      onComment={onCommentSelection}
+                      showFormatting={showFormatToolbar && !readOnly}
+                    />
+                  )}
+                  {showSlashCommand && !readOnly && <SlashCommandMenu />}
+                  {mentionConfig && !readOnly && (
+                    <MentionSuggestion config={mentionConfig} />
+                  )}
+                </ProseMirror>
+              </EditorErrorBoundary>
+            </LinkedItemOpenBehaviorContext.Provider>
+          </AttachmentResolverContext.Provider>
+        </AttachmentEditingContext.Provider>
       </TaskSourceProvider>
     );
   },

@@ -1,122 +1,102 @@
-import { X } from "lucide-react";
-import React from "react";
-import { Toaster as Sonner, toast as sonnerToast } from "sonner";
+import type { ComponentProps, CSSProperties } from "react";
+import {
+  Toaster as Sonner,
+  toast as rawSonnerToast,
+  type ExternalToast,
+} from "sonner";
 
-export { sonnerToast };
+export const TOAST_DURATIONS = {
+  success: 3_000,
+  info: 4_000,
+  warning: 6_000,
+  error: 8_000,
+} as const;
 
-export interface ToastButtonProps {
-  label: string;
-  onClick: () => void;
-  primary?: boolean;
+function withDefaultDuration(
+  duration: number,
+  options?: ExternalToast,
+): ExternalToast {
+  return { duration, ...options };
 }
 
-export interface CustomToastProps {
-  id: string | number;
-  title: string;
-  content?: React.ReactNode;
-  buttons?: ToastButtonProps[];
-  dismissible?: boolean;
-  children?: React.ReactNode;
-  duration?: number;
-}
+export const sonnerToast: typeof rawSonnerToast = Object.assign(
+  (message: Parameters<typeof rawSonnerToast>[0], options?: ExternalToast) =>
+    rawSonnerToast(message, withDefaultDuration(TOAST_DURATIONS.info, options)),
+  rawSonnerToast,
+  {
+    success: (
+      message: Parameters<typeof rawSonnerToast.success>[0],
+      options?: ExternalToast,
+    ) =>
+      rawSonnerToast.success(
+        message,
+        withDefaultDuration(TOAST_DURATIONS.success, options),
+      ),
+    info: (
+      message: Parameters<typeof rawSonnerToast.info>[0],
+      options?: ExternalToast,
+    ) =>
+      rawSonnerToast.info(
+        message,
+        withDefaultDuration(TOAST_DURATIONS.info, options),
+      ),
+    warning: (
+      message: Parameters<typeof rawSonnerToast.warning>[0],
+      options?: ExternalToast,
+    ) =>
+      rawSonnerToast.warning(
+        message,
+        withDefaultDuration(TOAST_DURATIONS.warning, options),
+      ),
+    error: (
+      message: Parameters<typeof rawSonnerToast.error>[0],
+      options?: ExternalToast,
+    ) =>
+      rawSonnerToast.error(
+        message,
+        withDefaultDuration(TOAST_DURATIONS.error, options),
+      ),
+    message: (
+      message: Parameters<typeof rawSonnerToast.message>[0],
+      options?: ExternalToast,
+    ) =>
+      rawSonnerToast.message(
+        message,
+        withDefaultDuration(TOAST_DURATIONS.info, options),
+      ),
+  },
+);
 
-export function CustomToast(props: CustomToastProps) {
-  const { id, title, content, buttons = [], dismissible, children } = props;
+type ToasterProps = ComponentProps<typeof Sonner>;
 
-  return (
-    <div className="relative flex flex-col gap-2 p-4">
-      {dismissible && (
-        <button
-          onClick={() => sonnerToast.dismiss(id)}
-          className="absolute top-2 right-2 cursor-pointer rounded-full p-1 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-neutral-100"
-          aria-label="Dismiss"
-        >
-          <X size={16} />
-        </button>
-      )}
-
-      <div className="font-medium">{title}</div>
-
-      {content && <div className="text-sm text-neutral-600">{content}</div>}
-
-      {children}
-
-      {buttons.length > 0 && (
-        <div className="mt-2 flex gap-2">
-          {buttons.map((button, index) => (
-            <button
-              key={index}
-              onClick={() => {
-                button.onClick();
-                sonnerToast.dismiss(id);
-              }}
-              className={
-                button.primary
-                  ? "rounded-md bg-neutral-800 px-3 py-1.5 text-sm text-white hover:bg-neutral-700"
-                  : "rounded-md bg-neutral-200 px-3 py-1.5 text-sm text-neutral-800 hover:bg-neutral-300"
-              }
-            >
-              {button.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-export function toast(props: CustomToastProps) {
-  return sonnerToast.custom(
-    (id) => (
-      <div className="group overflow-clip">
-        <CustomToast
-          id={id}
-          title={props.title}
-          content={props.content}
-          buttons={props.buttons}
-          dismissible={props.dismissible}
-          children={props.children}
-        />
-      </div>
-    ),
-    {
-      id: props.id,
-      duration: props.dismissible === false ? Infinity : props.duration,
-    },
-  );
-}
-
-type ToasterProps = React.ComponentProps<typeof Sonner>;
-
-const Toaster = ({ theme = "system", ...props }: ToasterProps) => {
-  const [mounted, setMounted] = React.useState(false);
-
-  React.useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  if (!mounted) {
-    return null;
-  }
-
-  return (
-    <Sonner
-      theme={theme}
-      className="toaster group"
-      toastOptions={{
-        classNames: {
-          toast:
-            "group toast group-[.toaster]:bg-background group-[.toaster]:text-foreground group-[.toaster]:border group-[.toaster]:border-border group-[.toaster]:shadow-lg group-[.toaster]:rounded-lg group-[.toaster]:overflow-clip group-[.toaster]:w-[300px]",
-          description: "group-[.toast]:text-muted-foreground",
-          actionButton:
-            "group-[.toast]:bg-primary group-[.toast]:text-primary-foreground",
-          cancelButton:
-            "group-[.toast]:bg-muted group-[.toast]:text-muted-foreground",
-        },
-      }}
-      {...props}
-    />
-  );
-};
+const Toaster = ({
+  theme = "system",
+  position = "bottom-right",
+  richColors = true,
+  closeButton = true,
+  style,
+  ...props
+}: ToasterProps) => (
+  <Sonner
+    theme={theme}
+    position={position}
+    richColors={richColors}
+    closeButton={closeButton}
+    className="toaster group"
+    style={{ "--width": "300px", ...style } as CSSProperties}
+    toastOptions={{
+      classNames: {
+        toast:
+          "group toast group-[.toaster]:bg-background group-[.toaster]:text-foreground group-[.toaster]:border group-[.toaster]:border-border group-[.toaster]:shadow-md group-[.toaster]:rounded-xl group-[.toaster]:overflow-visible group-[.toaster]:w-[300px] group-[.toaster]:p-3.5 group-[.toaster]:gap-3",
+        description: "group-[.toast]:text-muted-foreground",
+        actionButton:
+          "group-[.toast]:bg-primary group-[.toast]:text-primary-foreground",
+        cancelButton:
+          "group-[.toast]:bg-transparent group-[.toast]:text-muted-foreground",
+      },
+    }}
+    {...props}
+  />
+);
 
 export { Toaster };

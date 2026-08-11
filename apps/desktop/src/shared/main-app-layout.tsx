@@ -1,14 +1,19 @@
 import { Outlet, useNavigate } from "@tanstack/react-router";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { useEffect } from "react";
 
-import { events as windowsEvents } from "@hypr/plugin-windows";
+import { events as windowsEvents } from "@anlg/plugin-windows";
 
-import { useNewNote } from "./useNewNote";
+import {
+  openNewNoteAndListen,
+  openSessionAndListen,
+  useNewNote,
+} from "./useNewNote";
 
 import { AuthProvider } from "~/auth";
 import { BillingProvider } from "~/auth/billing";
 import { DevtoolsFloatingPanelHost } from "~/devtools-panel/host";
+import { getOrCreateSessionForEventId } from "~/session/queries";
+import { useMountEffect } from "~/shared/hooks/useMountEffect";
 import { UndoDeleteToast } from "~/sidebar/toast/undo-delete-toast";
 import { isTabInputSupported, useTabs } from "~/store/zustand/tabs";
 
@@ -39,8 +44,8 @@ const useNavigationEvents = () => {
   const openNew = useTabs((state) => state.openNew);
   const openNewNote = useNewNote({ behavior: "new" });
 
-  useEffect(() => {
-    (window as any).__HYPR_NAVIGATE__ = (path: string) => {
+  useMountEffect(() => {
+    const navigateFromNative = (path: string) => {
       const match = path.match(/^\/app\/([^/]+)\/(.+)$/);
       if (!match) return;
       const [, type, id] = match;
@@ -58,9 +63,11 @@ const useNavigationEvents = () => {
         });
       }
     };
+    (window as any).__ANARLOG_NAVIGATE__ = navigateFromNative;
 
     let unlistenNavigate: (() => void) | undefined;
     let unlistenOpenTab: (() => void) | undefined;
+    let cancelled = false;
 
     const webview = getCurrentWebviewWindow();
 
@@ -68,7 +75,37 @@ const useNavigationEvents = () => {
       .navigate(webview)
       .listen(({ payload }) => {
         if (payload.path === "/app/new") {
-          openNewNote();
+          const calendarEventId = payload.search?.calendarEventId;
+          const shouldRecord = payload.search?.record === "true";
+
+          if (typeof calendarEventId === "string" && calendarEventId) {
+            void getOrCreateSessionForEventId(calendarEventId)
+              .then((sessionId) => {
+                if (shouldRecord) {
+                  openSessionAndListen(sessionId, { behavior: "new" });
+                  return;
+                }
+
+                openNew({
+                  type: "sessions",
+                  id: sessionId,
+                  state: {
+                    view: null,
+                    autoStart: null,
+                  },
+                });
+              })
+              .catch((error) => {
+                console.error(
+                  "[navigation] failed to open calendar event",
+                  error,
+                );
+              });
+          } else if (shouldRecord) {
+            openNewNoteAndListen({ behavior: "new" });
+          } else {
+            openNewNote();
+          }
         } else if (payload.path === "/app/settings") {
           const tab = (payload.search?.tab as string) ?? "app";
           openNew({ type: "settings", state: { tab } });
@@ -80,7 +117,11 @@ const useNavigationEvents = () => {
         }
       })
       .then((fn) => {
-        unlistenNavigate = fn;
+        if (cancelled) {
+          fn();
+        } else {
+          unlistenNavigate = fn;
+        }
       });
 
     void windowsEvents
@@ -95,13 +136,20 @@ const useNavigationEvents = () => {
         }
       })
       .then((fn) => {
-        unlistenOpenTab = fn;
+        if (cancelled) {
+          fn();
+        } else {
+          unlistenOpenTab = fn;
+        }
       });
 
     return () => {
-      delete (window as any).__HYPR_NAVIGATE__;
+      cancelled = true;
+      if ((window as any).__ANARLOG_NAVIGATE__ === navigateFromNative) {
+        delete (window as any).__ANARLOG_NAVIGATE__;
+      }
       unlistenNavigate?.();
       unlistenOpenTab?.();
     };
-  }, [navigate, openNew, openNewNote]);
+  });
 };

@@ -25,25 +25,15 @@ impl SonioxAdapter {
             .unwrap_or("audio.wav")
             .to_string();
 
-        let file_bytes = tokio::fs::read(file_path).await.map_err(|e| {
-            Error::AudioProcessing(format!(
-                "failed to read file {}: {}",
-                file_path.display(),
-                e
-            ))
-        })?;
+        tracing::info!(anarlog.file.path = %file_path.display(), "uploading_file_to_soniox");
+        let file_id = upload_file(&client, file_path, file_name, api_key).await?;
 
-        tracing::info!(hyprnote.file.path = %file_path.display(), "uploading_file_to_soniox");
-        let file_id = soniox::upload_file(&client, &file_name, file_bytes, api_key)
-            .await
-            .map_err(soniox_err)?;
-
-        tracing::info!(hyprnote.file.id = %file_id, "soniox_file_uploaded");
+        tracing::info!(anarlog.file.id = %file_id, "soniox_file_uploaded");
         let result = Self::transcribe_and_fetch(&client, api_key, params, &file_id).await;
 
         if let Err(e) = soniox::delete_file(&client, &file_id, api_key).await {
             tracing::warn!(
-                hyprnote.file.id = %file_id,
+                anarlog.file.id = %file_id,
                 error = %e,
                 "failed_to_delete_soniox_file"
             );
@@ -83,24 +73,37 @@ impl SonioxAdapter {
             .await
             .map_err(soniox_err)?;
         tracing::info!(
-            hyprnote.stt.job.id = %transcription_id,
+            anarlog.stt.job.id = %transcription_id,
             "soniox_transcription_created"
         );
 
-        soniox::wait_for_completion(client, &transcription_id, api_key)
-            .await
-            .map_err(soniox_err)?;
-        tracing::info!(
-            hyprnote.stt.job.id = %transcription_id,
-            "soniox_transcription_completed"
-        );
+        let result = async {
+            soniox::wait_for_completion(client, &transcription_id, api_key)
+                .await
+                .map_err(soniox_err)?;
+            tracing::info!(
+                anarlog.stt.job.id = %transcription_id,
+                "soniox_transcription_completed"
+            );
 
-        let transcript = soniox::fetch_transcript(client, &transcription_id, api_key)
-            .await
-            .map_err(soniox_err)?;
-        tracing::info!("transcript fetched successfully");
+            let transcript = soniox::fetch_transcript(client, &transcription_id, api_key)
+                .await
+                .map_err(soniox_err)?;
+            tracing::info!("transcript fetched successfully");
 
-        Ok(Self::to_batch_response(transcript))
+            Ok(Self::to_batch_response(transcript))
+        }
+        .await;
+
+        if let Err(e) = soniox::delete_transcription(client, &transcription_id, api_key).await {
+            tracing::warn!(
+                anarlog.stt.job.id = %transcription_id,
+                error = %e,
+                "failed_to_delete_soniox_transcription"
+            );
+        }
+
+        result
     }
 
     fn to_batch_response(transcript: soniox::TranscriptResponse) -> BatchResponse {
@@ -137,6 +140,39 @@ impl SonioxAdapter {
     }
 }
 
+async fn upload_file(
+    client: &reqwest::Client,
+    file_path: &Path,
+    file_name: String,
+    api_key: &str,
+) -> Result<String, Error> {
+    let part = reqwest::multipart::Part::file(file_path)
+        .await
+        .map_err(|e| Error::AudioProcessing(format!("failed to open file: {e}")))?
+        .file_name(file_name);
+    let form = reqwest::multipart::Form::new().part("file", part);
+    let response = client
+        .post(format!("{}/v1/files", soniox::API_HOST))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .multipart(form)
+        .send()
+        .await?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(Error::UnexpectedStatus {
+            status,
+            body: crate::adapter::http::error_body(response).await,
+        });
+    }
+
+    #[derive(serde::Deserialize)]
+    struct FileUploadResponse {
+        id: String,
+    }
+
+    Ok(response.json::<FileUploadResponse>().await?.id)
+}
+
 fn soniox_err(e: soniox::Error) -> Error {
     Error::provider_failure(e.message, e.is_retryable)
 }
@@ -148,7 +184,7 @@ impl BatchSttAdapter for SonioxAdapter {
 
     fn is_supported_languages(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
         _model: Option<&str>,
     ) -> bool {
         SonioxAdapter::is_supported_languages_batch(languages)
@@ -317,7 +353,7 @@ mod tests {
         let adapter = SonioxAdapter::default();
         let params = ListenParams::default();
 
-        let audio_path = std::path::PathBuf::from(hypr_data::english_1::AUDIO_PATH);
+        let audio_path = std::path::PathBuf::from(anlg_data::english_1::AUDIO_PATH);
 
         let result = adapter
             .transcribe_file(&client, "", &api_key, &params, &audio_path)

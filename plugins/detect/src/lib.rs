@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 mod commands;
+mod competitor_monitor;
 mod dnd;
 mod error;
 mod events;
@@ -34,7 +35,7 @@ pub use policy::*;
 
 const PLUGIN_NAME: &str = "detect";
 
-pub(crate) type DetectorState = Mutex<hypr_detect::Detector>;
+pub(crate) type DetectorState = Mutex<anlg_detect::Detector>;
 
 #[cfg(feature = "test-support")]
 pub type ProcessorState = Arc<Mutex<Processor>>;
@@ -62,11 +63,17 @@ fn make_specta_builder<R: tauri::Runtime>() -> tauri_specta::Builder<R> {
         .plugin_name(PLUGIN_NAME)
         .commands(tauri_specta::collect_commands![
             commands::list_installed_applications::<tauri::Wry>,
+            commands::get_installed_application_icons::<tauri::Wry>,
+            commands::terminate_competing_applications::<tauri::Wry>,
+            commands::set_competing_application_termination_paused::<tauri::Wry>,
             commands::list_mic_using_applications::<tauri::Wry>,
             commands::set_respect_do_not_disturb::<tauri::Wry>,
             commands::set_ignored_bundle_ids::<tauri::Wry>,
             commands::set_included_bundle_ids::<tauri::Wry>,
             commands::list_default_ignored_bundle_ids::<tauri::Wry>,
+            commands::inspect_meeting_accessibility::<tauri::Wry>,
+            commands::send_meeting_chat_message::<tauri::Wry>,
+            commands::capture_meeting_chat_messages::<tauri::Wry>,
             commands::get_preferred_languages::<tauri::Wry>,
             commands::get_current_locale_identifier::<tauri::Wry>,
             commands::set_mic_active_threshold::<tauri::Wry>,
@@ -85,6 +92,13 @@ pub fn init<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
 
             app.manage(DetectorState::default());
             app.manage(ProcessorState::default());
+
+            let competitor_termination_state =
+                competitor_monitor::CompetitorTerminationState::default();
+            app.manage(competitor_termination_state.clone());
+
+            #[cfg(not(any(test, feature = "test-support")))]
+            competitor_monitor::start(competitor_termination_state);
 
             let app_handle = app.app_handle().clone();
             tauri::async_runtime::spawn(async move {

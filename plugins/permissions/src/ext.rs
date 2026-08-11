@@ -34,6 +34,27 @@ pub enum Permission {
     InputMonitoring,
 }
 
+/// Blocking status probe for the permissions the assistant overlay watches.
+///
+/// The overlay polls from a main-thread timer, which cannot await the async
+/// `check` path or its sidecar hop. Returns `None` when a permission has no
+/// synchronous probe.
+#[cfg(target_os = "macos")]
+pub(crate) fn assisted_status(permission: Permission) -> Option<PermissionStatus> {
+    match permission {
+        Permission::Accessibility => {
+            Some(macos_accessibility_client::accessibility::application_is_trusted().into())
+        }
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn should_check_via_sidecar(permission: Permission) -> bool {
+    // Accessibility trust is process-scoped, so a helper cannot report the app's status.
+    !matches!(permission, Permission::Accessibility)
+}
+
 #[cfg(target_os = "macos")]
 #[link(name = "IOKit", kind = "framework")]
 unsafe extern "C" {
@@ -51,17 +72,35 @@ pub struct Permissions<'a, R: tauri::Runtime, M: tauri::Manager<R>> {
 }
 
 impl<'a, R: tauri::Runtime, M: tauri::Manager<R>> Permissions<'a, R, M> {
-    fn audio_provider(&self) -> Option<Arc<dyn hypr_audio::AudioProvider>> {
+    fn audio_provider(&self) -> Option<Arc<dyn anlg_audio::AudioProvider>> {
         self.manager
-            .try_state::<Arc<dyn hypr_audio::AudioProvider>>()
+            .try_state::<Arc<dyn anlg_audio::AudioProvider>>()
             .map(|s| Arc::clone(&*s))
     }
 
-    fn require_audio(&self) -> Result<Arc<dyn hypr_audio::AudioProvider>, crate::Error> {
+    fn require_audio(&self) -> Result<Arc<dyn anlg_audio::AudioProvider>, crate::Error> {
         self.audio_provider().ok_or(crate::Error::NoAudioProvider)
     }
 
+    pub fn guidance(&self, permission: Permission) -> crate::PermissionGuidance {
+        permission.settings_guidance().into()
+    }
+
+    /// Dismiss the assisted drag overlay, if one is showing.
+    pub fn close_assistant(&self) -> Result<(), crate::Error> {
+        crate::assistant::dismiss_current();
+        Ok(())
+    }
+
     pub async fn open(&self, permission: Permission) -> Result<(), crate::Error> {
+        // Assisted panes need the user to add the app to a list themselves, so a
+        // bare deep link drops them into Settings with no idea what to do next.
+        if permission.settings_guidance().is_assisted()
+            && crate::assistant::open_assisted(permission)?
+        {
+            return Ok(());
+        }
+
         match permission {
             Permission::Calendar => self.open_calendar().await,
             Permission::Reminders => self.open_reminders().await,
@@ -77,14 +116,16 @@ impl<'a, R: tauri::Runtime, M: tauri::Manager<R>> Permissions<'a, R, M> {
     pub async fn check(&self, permission: Permission) -> Result<PermissionStatus, crate::Error> {
         #[cfg(target_os = "macos")]
         {
-            if let Some(status) = self.check_sidecar(permission).await {
-                return Ok(status);
-            }
+            if should_check_via_sidecar(permission) {
+                if let Some(status) = self.check_sidecar(permission).await {
+                    return Ok(status);
+                }
 
-            tracing::warn!(
-                ?permission,
-                "sidecar unavailable, falling back to in-process check"
-            );
+                tracing::warn!(
+                    ?permission,
+                    "sidecar unavailable, falling back to in-process check"
+                );
+            }
         }
 
         match permission {
@@ -358,7 +399,7 @@ impl<'a, R: tauri::Runtime, M: tauri::Manager<R>> Permissions<'a, R, M> {
 
     async fn check_system_audio(&self) -> Result<PermissionStatus, crate::Error> {
         #[cfg(target_os = "macos")]
-        return check!("system_audio", hypr_tcc::audio_capture_permission_status());
+        return check!("system_audio", anlg_tcc::audio_capture_permission_status());
 
         #[cfg(not(target_os = "macos"))]
         {
@@ -374,7 +415,7 @@ impl<'a, R: tauri::Runtime, M: tauri::Manager<R>> Permissions<'a, R, M> {
         #[cfg(target_os = "macos")]
         return check!(
             "screen_recording",
-            hypr_tcc::screen_capture_permission_status()
+            anlg_tcc::screen_capture_permission_status()
         );
 
         #[cfg(not(target_os = "macos"))]
@@ -497,7 +538,7 @@ impl<'a, R: tauri::Runtime, M: tauri::Manager<R>> Permissions<'a, R, M> {
     async fn request_screen_recording(&self) -> Result<(), crate::Error> {
         #[cfg(target_os = "macos")]
         {
-            let _ = hypr_tcc::request_screen_capture_permission();
+            let _ = anlg_tcc::request_screen_capture_permission();
         }
 
         Ok(())
@@ -603,7 +644,7 @@ impl<'a, R: tauri::Runtime, M: tauri::Manager<R>> Permissions<'a, R, M> {
         use tauri_plugin_shell::ShellExt;
 
         let bundle_id = if cfg!(debug_assertions) {
-            match hypr_bundle::get_ancestor_bundle_id() {
+            match anlg_bundle::get_ancestor_bundle_id() {
                 Some(id) => {
                     tracing::info!(service, bundle_id = %id, "resolving_ancestor_bundle_id");
                     id
@@ -641,6 +682,31 @@ impl<R: tauri::Runtime, T: tauri::Manager<R>> PermissionsPluginExt<R> for T {
         Permissions {
             manager: self,
             _runtime: std::marker::PhantomData,
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accessibility_check_bypasses_sidecar() {
+        assert!(!should_check_via_sidecar(Permission::Accessibility));
+    }
+
+    #[test]
+    fn other_permission_checks_keep_using_sidecar() {
+        for permission in [
+            Permission::Calendar,
+            Permission::Reminders,
+            Permission::Contacts,
+            Permission::Microphone,
+            Permission::SystemAudio,
+            Permission::ScreenRecording,
+            Permission::InputMonitoring,
+        ] {
+            assert!(should_check_via_sidecar(permission));
         }
     }
 }

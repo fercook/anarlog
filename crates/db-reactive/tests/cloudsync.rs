@@ -2,17 +2,27 @@ mod common;
 
 use std::time::Duration;
 
+use anlg_db_core::{Db, DbOpenOptions, DbStorage};
 use common::{TestEvent, TestSink, next_event};
 use db_reactive::LiveQueryRuntime;
-use hypr_db_core::Db;
 use serde_json::json;
 
 fn connection_string() -> String {
     std::env::var("SQLITECLOUD_URL").expect("SQLITECLOUD_URL must be set")
 }
 
-async fn setup_db() -> Db {
-    let db = Db::connect_memory().await.unwrap();
+async fn setup_db() -> (tempfile::TempDir, Db) {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("cloudsync.db");
+    let db = Db::open(DbOpenOptions {
+        storage: DbStorage::Local(&db_path),
+        cloudsync_enabled: true,
+        journal_mode_wal: true,
+        foreign_keys: true,
+        max_connections: Some(1),
+    })
+    .await
+    .unwrap();
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS test_sync (
@@ -29,7 +39,7 @@ async fn setup_db() -> Db {
         .await
         .unwrap();
 
-    db
+    (dir, db)
 }
 
 #[tokio::test]
@@ -37,8 +47,8 @@ async fn setup_db() -> Db {
 async fn cloudsync_pull_refreshes_live_query_subscriptions() {
     let marker = uuid::Uuid::new_v4().to_string();
 
-    let db_a = setup_db().await;
-    let db_b = setup_db().await;
+    let (_dir_a, db_a) = setup_db().await;
+    let (_dir_b, db_b) = setup_db().await;
     let pool_b = db_b.pool().clone();
     let runtime_b = LiveQueryRuntime::new(std::sync::Arc::new(db_b));
     let (sink, events) = TestSink::capture();
@@ -66,7 +76,7 @@ async fn cloudsync_pull_refreshes_live_query_subscriptions() {
     db_a.cloudsync_network_sync(Some(5000), Some(3))
         .await
         .unwrap();
-    hypr_cloudsync::network_sync(&pool_b, Some(5000), Some(3))
+    anlg_cloudsync::network_sync(&pool_b, Some(5000), Some(3))
         .await
         .unwrap();
 

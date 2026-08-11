@@ -4,11 +4,13 @@ Default permissions for the plugin
 
 #### This default permission set includes the following:
 
+- `allow-event-fire-and-forget`
 - `allow-event`
 - `allow-set-properties`
 - `allow-set-disabled`
 - `allow-is-disabled`
 - `allow-identify`
+- `allow-clear-groups`
 
 ## Permission Table
 
@@ -18,6 +20,32 @@ Default permissions for the plugin
 <th>Description</th>
 </tr>
 
+
+<tr>
+<td>
+
+`analytics:allow-clear-groups`
+
+</td>
+<td>
+
+Enables the clear_groups command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`analytics:deny-clear-groups`
+
+</td>
+<td>
+
+Denies the clear_groups command without any pre-configured scope.
+
+</td>
+</tr>
 
 <tr>
 <td>
@@ -41,6 +69,32 @@ Enables the event command without any pre-configured scope.
 <td>
 
 Denies the event command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`analytics:allow-event-fire-and-forget`
+
+</td>
+<td>
+
+Enables the event_fire_and_forget command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`analytics:deny-event-fire-and-forget`
+
+</td>
+<td>
+
+Denies the event_fire_and_forget command without any pre-configured scope.
 
 </td>
 </tr>

@@ -16,8 +16,8 @@ use listener::{ListenerSink, QueryEventListener};
 uniffi::setup_scaffolding!();
 
 struct BridgeState {
-    executor: hypr_db_execute::DbExecutor,
-    live_query_runtime: Arc<hypr_db_reactive::LiveQueryRuntime<ListenerSink>>,
+    executor: anlg_db_execute::DbExecutor,
+    live_query_runtime: Arc<anlg_db_reactive::LiveQueryRuntime<ListenerSink>>,
     runtime: Arc<tokio::runtime::Runtime>,
     subscription_ids: HashSet<String>,
 }
@@ -48,10 +48,10 @@ impl MobileDbBridge {
                 reason: error.to_string(),
             })?;
         let db = std::sync::Arc::new(db);
-        let executor = hypr_db_execute::DbExecutor::new(std::sync::Arc::clone(&db));
+        let executor = anlg_db_execute::DbExecutor::new(std::sync::Arc::clone(&db));
         let live_query_runtime = {
             let _guard = runtime.enter();
-            Arc::new(hypr_db_reactive::LiveQueryRuntime::new(db))
+            Arc::new(anlg_db_reactive::LiveQueryRuntime::new(db))
         };
 
         Ok(Self {
@@ -83,7 +83,7 @@ impl MobileDbBridge {
     ) -> Result<String, BridgeError> {
         let params = parse_params_json(&params_json)?;
         let method = method
-            .parse::<hypr_db_execute::ProxyQueryMethod>()
+            .parse::<anlg_db_execute::ProxyQueryMethod>()
             .map_err(execute_error)?;
         let (runtime, executor) =
             self.with_state(|state| Ok((Arc::clone(&state.runtime), state.executor.clone())))?;
@@ -113,7 +113,7 @@ impl MobileDbBridge {
             .block_on(live_query_runtime.subscribe(sql, params, ListenerSink::new(listener)))
             .map_err(reactive_error)?;
 
-        if let hypr_db_reactive::DependencyAnalysis::NonReactive { reason } = &registration.analysis
+        if let anlg_db_reactive::DependencyAnalysis::NonReactive { reason } = &registration.analysis
         {
             eprintln!(
                 "[mobile-bridge] live query subscription is non-reactive for SQL {:?}: {}",
@@ -172,7 +172,7 @@ impl MobileDbBridge {
         &self,
         table_name: String,
         crdt_algo: Option<String>,
-        force: Option<bool>,
+        init_flags: Option<i64>,
     ) -> Result<(), BridgeError> {
         let (runtime, live_query_runtime) = self.with_state(|state| {
             Ok((
@@ -185,7 +185,7 @@ impl MobileDbBridge {
             .block_on(live_query_runtime.db().cloudsync_init(
                 &table_name,
                 crdt_algo.as_deref(),
-                force,
+                init_flags,
             ))
             .map_err(cloudsync_error)
     }
@@ -241,7 +241,29 @@ impl MobileDbBridge {
         &self,
         wait_ms: Option<i64>,
         max_retries: Option<i64>,
-    ) -> Result<i64, BridgeError> {
+    ) -> Result<String, BridgeError> {
+        let (runtime, live_query_runtime) = self.with_state(|state| {
+            Ok((
+                Arc::clone(&state.runtime),
+                Arc::clone(&state.live_query_runtime),
+            ))
+        })?;
+        let result = runtime
+            .handle()
+            .block_on(
+                live_query_runtime
+                    .db()
+                    .cloudsync_network_sync(wait_ms, max_retries),
+            )
+            .map_err(cloudsync_error)?;
+        serde_json::to_string(&result).map_err(serialization_error)
+    }
+
+    pub fn configure_cloudsync(&self, config_json: String) -> Result<(), BridgeError> {
+        let config: anlg_db_core::CloudsyncRuntimeConfig = serde_json::from_str(&config_json)
+            .map_err(|error| BridgeError::InvalidCloudsyncConfigJson {
+                reason: error.to_string(),
+            })?;
         let (runtime, live_query_runtime) = self.with_state(|state| {
             Ok((
                 Arc::clone(&state.runtime),
@@ -250,24 +272,7 @@ impl MobileDbBridge {
         })?;
         runtime
             .handle()
-            .block_on(
-                live_query_runtime
-                    .db()
-                    .cloudsync_network_sync(wait_ms, max_retries),
-            )
-            .map_err(cloudsync_error)
-    }
-
-    pub fn configure_cloudsync(&self, config_json: String) -> Result<(), BridgeError> {
-        let config: hypr_db_core::CloudsyncRuntimeConfig = serde_json::from_str(&config_json)
-            .map_err(|error| BridgeError::InvalidCloudsyncConfigJson {
-                reason: error.to_string(),
-            })?;
-        let live_query_runtime =
-            self.with_state(|state| Ok(Arc::clone(&state.live_query_runtime)))?;
-        live_query_runtime
-            .db()
-            .cloudsync_configure(config)
+            .block_on(live_query_runtime.db().cloudsync_configure(config))
             .map_err(cloudsync_runtime_error)
     }
 
@@ -311,17 +316,18 @@ impl MobileDbBridge {
         serde_json::to_string(&status).map_err(serialization_error)
     }
 
-    pub fn cloudsync_sync_now(&self) -> Result<i64, BridgeError> {
+    pub fn cloudsync_sync_now(&self) -> Result<String, BridgeError> {
         let (runtime, live_query_runtime) = self.with_state(|state| {
             Ok((
                 Arc::clone(&state.runtime),
                 Arc::clone(&state.live_query_runtime),
             ))
         })?;
-        runtime
+        let result = runtime
             .handle()
             .block_on(live_query_runtime.db().cloudsync_trigger_sync())
-            .map_err(cloudsync_runtime_error)
+            .map_err(cloudsync_runtime_error)?;
+        serde_json::to_string(&result).map_err(serialization_error)
     }
 
     pub fn close(&self) -> Result<(), BridgeError> {
@@ -465,7 +471,7 @@ mod tests {
         r#"{
             "connection_string":"sqlitecloud://demo.invalid/app.db?apikey=demo",
             "auth":{"type":"none"},
-            "tables":[{"table_name":"templates","crdt_algo":null,"force_init":null,"enabled":false}],
+            "tables":[{"table_name":"templates","crdt_algo":null,"init_flags":null,"enabled":false}],
             "sync_interval_ms":30000,
             "wait_ms":1000,
             "max_retries":1
@@ -515,7 +521,7 @@ mod tests {
                 "all".to_string(),
             )
             .unwrap();
-        let result: hypr_db_execute::ProxyQueryResult = serde_json::from_str(&result_json).unwrap();
+        let result: anlg_db_execute::ProxyQueryResult = serde_json::from_str(&result_json).unwrap();
 
         assert_eq!(
             result.rows,
@@ -679,7 +685,7 @@ mod tests {
         assert_eq!(status["running"], false);
         assert_eq!(status["network_initialized"], false);
 
-        assert_eq!(bridge.cloudsync_sync_now().unwrap(), 0);
+        assert_eq!(bridge.cloudsync_sync_now().unwrap(), "{}");
         bridge.stop_cloudsync().unwrap();
     }
 

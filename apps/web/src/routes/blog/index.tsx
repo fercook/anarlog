@@ -2,12 +2,13 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { allArticles } from "content-collections";
 
 import { SiteFooter } from "@/components/site-footer";
-import { ANARLOG_SITE_URL } from "@/lib/seo";
+import { formatBlogDate } from "@/lib/blog-date";
+import { getCanonicalUrl } from "@/lib/seo";
 
 export const Route = createFileRoute("/blog/")({
   component: Component,
   head: () => ({
-    links: [{ rel: "canonical", href: `${ANARLOG_SITE_URL}/blog` }],
+    links: [{ rel: "canonical", href: getCanonicalUrl("/blog") }],
     meta: [
       { title: "Anarlog Blog" },
       {
@@ -16,7 +17,7 @@ export const Route = createFileRoute("/blog/")({
           "Guides for AI meeting notes, privacy research, and engineering notes from the Anarlog team.",
       },
       { property: "og:title", content: "Anarlog Blog" },
-      { property: "og:url", content: `${ANARLOG_SITE_URL}/blog` },
+      { property: "og:url", content: getCanonicalUrl("/blog") },
     ],
   }),
 });
@@ -40,8 +41,8 @@ function Component() {
             Blog
           </h1>
           <p className="mt-6 max-w-2xl text-xl leading-9 text-[#363029]">
-            Notes on private meetings, local files, open source, and AI you can
-            run on your own terms.
+            Notes on private meetings, local-first workflows, open source, and
+            AI you can run on your own terms.
           </p>
         </section>
 
@@ -70,11 +71,7 @@ function Component() {
                     </span>
                     <span>·</span>
                     <time dateTime={article.date}>
-                      {new Date(article.date).toLocaleDateString("en-US", {
-                        month: "short",
-                        day: "numeric",
-                        year: "numeric",
-                      })}
+                      {formatBlogDate(article.date, "short")}
                     </time>
                   </div>
                 </article>

@@ -1,14 +1,14 @@
 import { Icon } from "@iconify-icon/react";
 import { Trans, useLingui } from "@lingui/react/macro";
-import { ChevronLeft, ExternalLink, Github } from "lucide-react";
+import { ArrowSquareOut, CaretLeft, GithubLogo } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 
-import { commands as openerCommands } from "@hypr/plugin-opener2";
-import { OutlookIcon } from "@hypr/ui/components/icons/outlook";
-import { Button } from "@hypr/ui/components/ui/button";
-import { Input } from "@hypr/ui/components/ui/input";
-import { cn } from "@hypr/utils";
+import { commands as openerCommands } from "@anlg/plugin-opener2";
+import { OutlookIcon } from "@anlg/ui/components/icons/outlook";
+import { Button } from "@anlg/ui/components/ui/button";
+import { Input } from "@anlg/ui/components/ui/input";
+import { cn } from "@anlg/utils";
 
 import { useAuth } from "~/auth";
 
@@ -58,7 +58,7 @@ function InstructionShell({
             "text-muted-foreground hover:bg-muted/70 hover:text-muted-foreground flex h-9 items-center gap-1.5 rounded-full px-3 transition-colors",
           ])}
         >
-          <ChevronLeft className="h-4 w-4" />
+          <CaretLeft className="h-4 w-4" />
           <span className="text-xs font-medium">
             <Trans>Back</Trans>
           </span>
@@ -85,12 +85,6 @@ function InstructionShell({
             <p className="text-muted-foreground text-sm leading-6">
               {description}
             </p>
-          </div>
-
-          <div className="flex items-center gap-2.5 pt-1">
-            <div className="bg-muted-foreground/75 h-1.5 w-1.5 rounded-full" />
-            <div className="bg-muted h-1.5 w-1.5 rounded-full" />
-            <div className="bg-muted h-1.5 w-1.5 rounded-full" />
           </div>
 
           {action ? <div className="w-full">{action}</div> : null}
@@ -136,7 +130,7 @@ function ExternalInstruction({
             onClick={() => void openerCommands.openUrl(url, null)}
           >
             {actionLabel}
-            <ExternalLink className="size-3.5" />
+            <ArrowSquareOut className="size-3.5" />
           </Button>
         ) : undefined
       }
@@ -214,7 +208,12 @@ function getIntegrationInstruction(integrationId?: string):
     case "github":
       return {
         displayName: "GitHub",
-        icon: <Github className="text-foreground size-14" strokeWidth={1.5} />,
+        icon: <GithubLogo className="text-foreground size-14" weight="light" />,
+      };
+    case "slack":
+      return {
+        displayName: "Slack",
+        icon: <Icon icon="logos:slack-icon" width={56} height={56} />,
       };
     default:
       return undefined;
@@ -247,7 +246,7 @@ function SignInInstruction({ onBack }: { onBack: () => void }) {
             <Input
               type="text"
               className="h-10 font-mono text-xs"
-              placeholder="hyprnote://deeplink/auth?access_token=..."
+              placeholder="anarlog://auth/callback?access_token=..."
               value={callbackUrl}
               onChange={(e) => setCallbackUrl(e.target.value)}
             />

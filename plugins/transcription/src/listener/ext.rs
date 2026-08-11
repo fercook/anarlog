@@ -1,10 +1,38 @@
 use ractor::{ActorRef, call_t, registry};
 
 use crate::{CaptureConfigUpdate, CaptureParams, CaptureSnapshot, CaptureState, SessionStateCache};
-use hypr_transcription_core::listener::{
+use anlg_transcription_core::listener::{
     StartSessionError,
     actors::{RootActor, RootMsg, SessionParams, SourceActor, SourceMsg},
 };
+
+fn capture_snapshot_from_result<E: std::fmt::Debug>(
+    result: Result<anlg_transcription_core::listener::Snapshot, E>,
+) -> crate::Result<CaptureSnapshot> {
+    result.map(CaptureSnapshot::from).map_err(|error| {
+        tracing::warn!(?error, "capture_snapshot_unavailable");
+        crate::Error::CaptureSnapshotUnavailable
+    })
+}
+
+fn hydrate_session_state(
+    snapshot: &mut CaptureSnapshot,
+    session_id: String,
+    cached: Option<(
+        bool,
+        bool,
+        Vec<anlg_transcription_core::listener::LiveTranscriptSegment>,
+    )>,
+) {
+    snapshot.live_segments_session_id = Some(session_id);
+    if let Some((requested, active, segments)) = cached {
+        snapshot.requested_live_transcription = Some(requested);
+        snapshot.live_transcription_active = Some(active);
+        snapshot.live_segments = Some(segments);
+    } else {
+        snapshot.live_segments = Some(Vec::new());
+    }
+}
 
 pub struct Listener<'a, R: tauri::Runtime, M: tauri::Manager<R>> {
     #[allow(unused)]
@@ -17,7 +45,7 @@ impl<'a, R: tauri::Runtime, M: tauri::Manager<R>> Listener<'a, R, M> {
     pub async fn list_microphone_devices(&self) -> Result<Vec<String>, crate::Error> {
         let audio = self
             .manager
-            .state::<std::sync::Arc<dyn hypr_audio::AudioProvider>>();
+            .state::<std::sync::Arc<dyn anlg_audio::AudioProvider>>();
         Ok(audio.list_mic_devices())
     }
 
@@ -48,44 +76,34 @@ impl<'a, R: tauri::Runtime, M: tauri::Manager<R>> Listener<'a, R, M> {
     }
 
     #[tracing::instrument(skip_all)]
-    pub async fn get_capture_snapshot(&self) -> CaptureSnapshot {
-        let mut snapshot = if let Some(cell) = registry::where_is(RootActor::name()) {
-            let actor: ActorRef<RootMsg> = cell.into();
-            match call_t!(actor, RootMsg::GetSnapshot, 100) {
-                Ok(snapshot) => CaptureSnapshot::from(snapshot),
-                Err(_) => CaptureSnapshot {
-                    state: CaptureState::Inactive,
-                    active_session_id: None,
-                    finalizing_session_ids: vec![],
-                    requested_live_transcription: None,
-                    live_transcription_active: None,
-                },
-            }
-        } else {
-            CaptureSnapshot {
-                state: CaptureState::Inactive,
-                active_session_id: None,
-                finalizing_session_ids: vec![],
-                requested_live_transcription: None,
-                live_transcription_active: None,
-            }
-        };
+    pub async fn get_capture_snapshot(&self) -> Result<CaptureSnapshot, crate::Error> {
+        let cell = registry::where_is(RootActor::name())
+            .ok_or_else(|| crate::Error::ActorNotFound(RootActor::name().to_string()))?;
+        let actor: ActorRef<RootMsg> = cell.into();
+        let mut snapshot = capture_snapshot_from_result(call_t!(actor, RootMsg::GetSnapshot, 100))?;
 
         let session_id = snapshot
             .active_session_id
             .as_ref()
-            .or_else(|| snapshot.finalizing_session_ids.first());
-        if let Some(session_id) = session_id
-            && let Some((requested, active)) = self
+            .or_else(|| snapshot.finalizing_session_ids.first())
+            .cloned();
+        if let Some(session_id) = session_id {
+            let cached = self
                 .manager
                 .try_state::<SessionStateCache>()
-                .and_then(|cache| cache.lock().ok()?.get(session_id).copied())
-        {
-            snapshot.requested_live_transcription = Some(requested);
-            snapshot.live_transcription_active = Some(active);
+                .and_then(|cache| {
+                    let cache = cache.lock().ok()?;
+                    let state = cache.get(&session_id)?;
+                    Some((
+                        state.requested_live_transcription,
+                        state.live_transcription_active,
+                        state.live_segments.clone(),
+                    ))
+                });
+            hydrate_session_state(&mut snapshot, session_id, cached);
         }
 
-        snapshot
+        Ok(snapshot)
     }
 
     #[tracing::instrument(skip_all)]
@@ -139,6 +157,40 @@ impl<'a, R: tauri::Runtime, M: tauri::Manager<R>> Listener<'a, R, M> {
             let update = update.into();
             let _ = ractor::call!(actor, RootMsg::UpdateSessionConfig, update);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_snapshot_failure_is_not_reported_as_inactive() {
+        let error = capture_snapshot_from_result::<&str>(Err("timed out"))
+            .expect_err("snapshot failure must remain retryable");
+
+        assert!(matches!(error, crate::Error::CaptureSnapshotUnavailable));
+    }
+
+    #[test]
+    fn hydrated_segments_are_labeled_with_their_session() {
+        let mut snapshot = CaptureSnapshot {
+            state: CaptureState::Finalizing,
+            active_session_id: None,
+            finalizing_session_ids: vec!["session-a".to_string()],
+            requested_live_transcription: None,
+            live_transcription_active: None,
+            live_segments_session_id: None,
+            live_segments: None,
+        };
+
+        hydrate_session_state(&mut snapshot, "session-a".to_string(), None);
+
+        assert_eq!(
+            snapshot.live_segments_session_id.as_deref(),
+            Some("session-a")
+        );
+        assert_eq!(snapshot.live_segments, Some(Vec::new()));
     }
 }
 

@@ -15,20 +15,18 @@ Disallow: /admin/
 Disallow: /auth
 Disallow: /_view/callback/
 
-# Block API endpoints
+# Block API endpoints, but keep served assets and OG images crawlable
 Disallow: /api/
+Allow: /api/assets/
+Allow: /api/og/
 
 # Allow public content
 Allow: /blog
 Allow: /docs
 Allow: /changelog
-Allow: /pricing
-Allow: /enterprise
 Allow: /privacy
 Allow: /terms
 Allow: /download
-Allow: /faq
-Allow: /about
 
 # Disallow private or intentionally non-indexed routes
 Disallow: /product/

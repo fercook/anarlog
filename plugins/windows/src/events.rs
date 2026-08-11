@@ -4,9 +4,14 @@ use tauri::Manager;
 
 use crate::AppWindow;
 
-// TODO: https://github.com/fastrepl/hyprnote/commit/150c8a1 this not worked. webview_window not found.
+// TODO: https://github.com/fastrepl/anarlog/commit/150c8a1 this not worked. webview_window not found.
 pub fn on_window_event(window: &tauri::Window<tauri::Wry>, event: &tauri::WindowEvent) {
     let app = window.app_handle();
+
+    if matches!(event, tauri::WindowEvent::Destroyed) {
+        crate::clear_window_state(app, window.label());
+        return;
+    }
 
     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
         match window.label().parse::<AppWindow>() {
@@ -119,7 +124,7 @@ mod test {
     fn navigate_from_str() {
         let test_cases = vec![
             (
-                "hyprnote://hyprnote.com/app/new?calendarEventId=123&record=true",
+                "anarlog://anarlog.so/app/new?calendarEventId=123&record=true",
                 "/app/new",
                 Some(serde_json::json!({ "calendarEventId": "123", "record": "true" })),
             ),

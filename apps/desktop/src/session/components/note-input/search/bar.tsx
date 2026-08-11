@@ -1,25 +1,28 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import {
-  ALargeSmallIcon,
-  ChevronDownIcon,
-  ChevronUpIcon,
-  ReplaceAllIcon,
-  ReplaceIcon,
-  WholeWordIcon,
-  XIcon,
-} from "lucide-react";
+  CaretDown,
+  CaretUp,
+  Repeat,
+  Swap,
+  TextAa,
+  Textbox,
+  X,
+} from "@phosphor-icons/react";
+import { platform } from "@tauri-apps/plugin-os";
 import { useEffect, useRef } from "react";
 
-import type { NoteEditorRef } from "@hypr/editor/note";
-import { Kbd } from "@hypr/ui/components/ui/kbd";
+import type { NoteEditorRef } from "@anlg/editor/note";
+import { Kbd } from "@anlg/ui/components/ui/kbd";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from "@hypr/ui/components/ui/tooltip";
-import { cn } from "@hypr/utils";
+} from "@anlg/ui/components/ui/tooltip";
+import { cn } from "@anlg/utils";
 
 import { useSearch } from "./context";
+
+import { useMountEffect } from "~/shared/hooks/useMountEffect";
 
 function ToggleButton({
   active,
@@ -99,12 +102,16 @@ export function SearchBar({
 }) {
   const { t } = useLingui();
   const search = useSearch();
+  const primaryModifier = platform() === "macos" ? "⌘" : "Ctrl";
   const searchInputRef = useRef<HTMLInputElement>(null);
   const replaceInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
+  useMountEffect(() => {
     searchInputRef.current?.focus();
-  }, []);
+
+    const editor = editorRef.current;
+    return () => editor?.commands.setSearch("", false);
+  });
 
   useEffect(() => {
     if (search?.showReplace) {
@@ -215,14 +222,14 @@ export function SearchBar({
             onClick={toggleCaseSensitive}
             tooltip={t`Match case`}
           >
-            <ALargeSmallIcon className="size-3.5" />
+            <TextAa className="size-3.5" />
           </ToggleButton>
           <ToggleButton
             active={wholeWord}
             onClick={toggleWholeWord}
             tooltip={t`Match whole word`}
           >
-            <WholeWordIcon className="size-3.5" />
+            <Textbox className="size-3.5" />
           </ToggleButton>
           <ToggleButton
             active={showReplace}
@@ -232,11 +239,11 @@ export function SearchBar({
                 <span>
                   <Trans>Replace</Trans>
                 </span>
-                <Kbd className="animate-kbd-press">⌘ H</Kbd>
+                <Kbd className="animate-kbd-press">{primaryModifier} H</Kbd>
               </>
             }
           >
-            <ReplaceIcon className="size-3.5" />
+            <Swap className="size-3.5" />
           </ToggleButton>
         </div>
         <span className="text-muted-foreground text-[10px] whitespace-nowrap tabular-nums">
@@ -255,7 +262,7 @@ export function SearchBar({
               </>
             }
           >
-            <ChevronUpIcon className="size-3.5" />
+            <CaretUp className="size-3.5" />
           </IconButton>
           <IconButton
             onClick={onNext}
@@ -269,7 +276,7 @@ export function SearchBar({
               </>
             }
           >
-            <ChevronDownIcon className="size-3.5" />
+            <CaretDown className="size-3.5" />
           </IconButton>
         </div>
         <IconButton
@@ -283,7 +290,7 @@ export function SearchBar({
             </>
           }
         >
-          <XIcon className="size-3.5" />
+          <X className="size-3.5" />
         </IconButton>
       </div>
 
@@ -310,7 +317,7 @@ export function SearchBar({
                 </>
               }
             >
-              <ReplaceIcon className="size-3.5" />
+              <Swap className="size-3.5" />
             </IconButton>
             <IconButton
               onClick={replaceAll}
@@ -319,11 +326,11 @@ export function SearchBar({
                   <span>
                     <Trans>Replace all</Trans>
                   </span>
-                  <Kbd className="animate-kbd-press">⌘ ↵</Kbd>
+                  <Kbd className="animate-kbd-press">{primaryModifier} ↵</Kbd>
                 </>
               }
             >
-              <ReplaceAllIcon className="size-3.5" />
+              <Repeat className="size-3.5" />
             </IconButton>
           </div>
         </div>

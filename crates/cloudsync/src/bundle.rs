@@ -1,8 +1,14 @@
 use std::fs;
+#[cfg(target_os = "macos")]
+use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::CLOUDSYNC_VERSION;
 use crate::error::Error;
+
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const CLOUDSYNC_BUNDLE_REVISION: &str = "anarlog-request-cancellation-5";
 
 macro_rules! configure_cloudsync_target {
     ($target:literal, $file_name:literal, $path:literal) => {
@@ -122,11 +128,17 @@ pub fn bundled_extension_path() -> Result<PathBuf, Error> {
         all(target_os = "windows", target_arch = "x86_64"),
     ))]
     {
+        #[cfg(target_os = "macos")]
+        if let Some(path) = bundled_macos_extension_path() {
+            return Ok(path);
+        }
+
         let base_dir = dirs::cache_dir()
             .ok_or(Error::MissingCacheDir)?
             .join("char")
             .join("cloudsync")
             .join(CLOUDSYNC_VERSION)
+            .join(CLOUDSYNC_BUNDLE_REVISION)
             .join(CLOUDSYNC_TARGET);
 
         fs::create_dir_all(&base_dir)?;
@@ -138,8 +150,11 @@ pub fn bundled_extension_path() -> Result<PathBuf, Error> {
         };
 
         if needs_write {
-            let tmp_path =
-                base_dir.join(format!("{CLOUDSYNC_FILE_NAME}.{}.tmp", std::process::id()));
+            let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let tmp_path = base_dir.join(format!(
+                "{CLOUDSYNC_FILE_NAME}.{}.{sequence}.tmp",
+                std::process::id()
+            ));
             fs::write(&tmp_path, BUNDLED_CLOUDSYNC_BYTES)?;
 
             #[cfg(unix)]
@@ -164,6 +179,38 @@ pub fn bundled_extension_path() -> Result<PathBuf, Error> {
         }
 
         Ok(extension_path)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn bundled_macos_extension_path() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    macos_extension_path(&executable)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_extension_path(executable: &Path) -> Option<PathBuf> {
+    let frameworks = executable.parent()?.parent()?.join("Frameworks");
+    let extension = frameworks.join(CLOUDSYNC_FILE_NAME);
+    extension.is_file().then_some(extension)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packaged_macos_extension_comes_from_frameworks() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("Example.app/Contents/MacOS/example");
+        let extension = dir
+            .path()
+            .join("Example.app/Contents/Frameworks")
+            .join(CLOUDSYNC_FILE_NAME);
+        fs::create_dir_all(extension.parent().unwrap()).unwrap();
+        fs::write(&extension, BUNDLED_CLOUDSYNC_BYTES).unwrap();
+
+        assert_eq!(macos_extension_path(&executable), Some(extension));
     }
 }
 

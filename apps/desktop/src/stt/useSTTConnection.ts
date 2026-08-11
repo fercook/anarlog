@@ -1,52 +1,45 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { commands as localSttCommands } from "@hypr/plugin-local-stt";
-import type { AIProviderStorage } from "@hypr/store";
+import { commands as localSttCommands } from "@anlg/plugin-local-stt";
+import type { AIProviderStorage } from "@anlg/store";
 
 import { useAuth } from "~/auth";
-import { useBillingAccess } from "~/auth/billing";
+import { useBillingAccess } from "~/auth/billing-context";
 import { env } from "~/env";
-import { providerRowId } from "~/settings/ai/shared";
 import { type ProviderId } from "~/settings/ai/stt/shared";
-import * as settings from "~/store/tinybase/store/settings";
-import {
-  isHyprnoteCloudSttModel,
-  isHyprnoteLocalSttModel,
-} from "~/stt/capabilities";
+import { useAiProvider } from "~/settings/providers";
+import { useConfigValues } from "~/shared/config";
+import { isAnarlogCloudSttModel, isOnDeviceSttModel } from "~/stt/capabilities";
 
 export const useSTTConnection = () => {
   const auth = useAuth();
   const billing = useBillingAccess();
-  const { current_stt_provider, current_stt_model } = settings.UI.useValues(
-    settings.STORE_ID,
-  ) as {
+  const { current_stt_provider, current_stt_model } = useConfigValues([
+    "current_stt_provider",
+    "current_stt_model",
+  ] as const) as {
     current_stt_provider: ProviderId | undefined;
     current_stt_model: string | undefined;
   };
 
-  const providerConfig = settings.UI.useRow(
-    "ai_providers",
-    current_stt_provider ? providerRowId("stt", current_stt_provider) : "",
-    settings.STORE_ID,
-  ) as AIProviderStorage | undefined;
+  const providerConfig = useAiProvider("stt", current_stt_provider) as
+    | AIProviderStorage
+    | undefined;
 
-  const localModel = isHyprnoteLocalSttModel(
-    current_stt_provider,
-    current_stt_model,
-  )
+  const localModel = isOnDeviceSttModel(current_stt_provider, current_stt_model)
     ? current_stt_model
     : null;
   const isLocalModel = !!localModel;
 
-  const isCloudModel = isHyprnoteCloudSttModel(
+  const isCloudModel = isAnarlogCloudSttModel(
     current_stt_provider,
     current_stt_model,
   );
 
   const local = useQuery({
-    enabled: current_stt_provider === "hyprnote",
-    queryKey: ["stt-connection", localModel],
+    enabled: isLocalModel,
+    queryKey: ["stt-connection", current_stt_provider, localModel],
     refetchInterval: 1000,
     queryFn: async () => {
       if (!localModel) {
@@ -105,7 +98,7 @@ export const useSTTConnection = () => {
       return {
         provider: current_stt_provider,
         model: current_stt_model,
-        baseUrl: baseUrl ?? new URL("/stt", env.VITE_API_URL).toString(),
+        baseUrl: baseUrl || new URL("/stt", env.VITE_API_URL).toString(),
         apiKey: auth.session.access_token,
       };
     }

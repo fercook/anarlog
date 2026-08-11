@@ -6,13 +6,27 @@ import { TabContentEdit } from "~/edit";
 import { TabContentOnboarding } from "~/onboarding";
 import { TabContentNote } from "~/session";
 import { TabContentSettings } from "~/settings";
+import { TabContentAutomations } from "~/settings/automations";
+import {
+  TabContentSharedNote,
+  TabContentSharedNotePreview,
+} from "~/shared-notes";
 import { type Tab } from "~/store/zustand/tabs";
 import { TabContentTask } from "~/task";
 import { TabContentTemplate } from "~/templates";
 
 export function MainTabContent({ tab }: { tab: Tab }) {
+  if (tab.type === "automations") {
+    return <TabContentAutomations />;
+  }
   if (tab.type === "sessions") {
     return <TabContentNote tab={tab} />;
+  }
+  if (tab.type === "shared_sessions") {
+    return <TabContentSharedNote tab={tab} />;
+  }
+  if (tab.type === "shared_note_preview") {
+    return <TabContentSharedNotePreview tab={tab} />;
   }
   if (tab.type === "humans") {
     return <TabContentHuman tab={tab} />;

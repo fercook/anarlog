@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { LiveTranscriptDelta } from "@hypr/plugin-transcription";
+import type { LiveTranscriptDelta } from "@anlg/plugin-transcription";
 
 import {
   createTranscriptAccumulator,
@@ -551,7 +551,12 @@ describe("TranscriptAccumulator", () => {
         id: "word-1:user_speaker_assignment",
         word_id: "word-1",
         type: "user_speaker_assignment",
-        value: JSON.stringify({ human_id: "human-1" }),
+        value: JSON.stringify({
+          human_id: "human-1",
+          scope: "speaker",
+          channel: 1,
+          speaker_index: 2,
+        }),
       },
       {
         id: "word-2:provider_speaker_index",
@@ -657,6 +662,66 @@ function remoteSpeakerKey(speakerIndex: number | null): SegmentKey {
 }
 
 describe("upsertSpeakerAssignment", () => {
+  it("removes a conflicting automatic assignment when a user assigns the speaker", () => {
+    const store = createStore({
+      words: JSON.stringify([
+        {
+          id: "word-1",
+          text: " hello",
+          start_ms: 0,
+          end_ms: 100,
+          channel: 1,
+        },
+      ]),
+      speaker_hints: JSON.stringify([
+        {
+          id: "word-1:provider_speaker_index",
+          word_id: "word-1",
+          type: "provider_speaker_index",
+          value: JSON.stringify({ channel: 1, speaker_index: 2 }),
+        },
+        {
+          id: "word-1:automatic_speaker_assignment",
+          word_id: "word-1",
+          type: "automatic_speaker_assignment",
+          value: JSON.stringify({ human_id: "alice" }),
+        },
+      ]),
+    });
+
+    upsertSpeakerAssignment(
+      store,
+      "transcript-1",
+      remoteSpeakerKey(2),
+      "bob",
+      "word-1",
+    );
+
+    expect(
+      JSON.parse(
+        store.getCell("transcripts", "transcript-1", "speaker_hints") as string,
+      ),
+    ).toEqual([
+      {
+        id: "word-1:provider_speaker_index",
+        word_id: "word-1",
+        type: "provider_speaker_index",
+        value: JSON.stringify({ channel: 1, speaker_index: 2 }),
+      },
+      {
+        id: "word-1:user_speaker_assignment",
+        word_id: "word-1",
+        type: "user_speaker_assignment",
+        value: JSON.stringify({
+          human_id: "bob",
+          scope: "speaker",
+          channel: 1,
+          speaker_index: 2,
+        }),
+      },
+    ]);
+  });
+
   it("removes a stale channel-wide assignment when reassigning a speaker", () => {
     const store = createStore({
       words: JSON.stringify([
@@ -714,7 +779,12 @@ describe("upsertSpeakerAssignment", () => {
         id: "new-word:user_speaker_assignment",
         word_id: "new-word",
         type: "user_speaker_assignment",
-        value: JSON.stringify({ human_id: "bob" }),
+        value: JSON.stringify({
+          human_id: "bob",
+          scope: "speaker",
+          channel: 1,
+          speaker_index: 2,
+        }),
       },
     ]);
   });
@@ -819,7 +889,12 @@ describe("upsertSpeakerAssignment", () => {
         id: "speaker-2-word-new:user_speaker_assignment",
         word_id: "speaker-2-word-new",
         type: "user_speaker_assignment",
-        value: JSON.stringify({ human_id: "carol" }),
+        value: JSON.stringify({
+          human_id: "carol",
+          scope: "speaker",
+          channel: 1,
+          speaker_index: 2,
+        }),
       },
     ]);
   });
@@ -958,7 +1033,12 @@ describe("upsertSpeakerAssignment", () => {
         id: "word-1:user_speaker_assignment",
         word_id: "word-1",
         type: "user_speaker_assignment",
-        value: JSON.stringify({ human_id: "bob" }),
+        value: JSON.stringify({
+          human_id: "bob",
+          scope: "speaker",
+          channel: 1,
+          speaker_index: 2,
+        }),
       },
     ]);
   });
@@ -1034,7 +1114,12 @@ describe("upsertSpeakerAssignment", () => {
         id: "word-1:user_speaker_assignment",
         word_id: "word-1",
         type: "user_speaker_assignment",
-        value: JSON.stringify({ human_id: "bob" }),
+        value: JSON.stringify({
+          human_id: "bob",
+          scope: "speaker",
+          channel: 1,
+          speaker_index: 2,
+        }),
       },
     ]);
   });

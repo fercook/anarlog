@@ -1,13 +1,40 @@
 export const ANARLOG_SITE_URL = "https://anarlog.so";
 export const DEFAULT_OG_IMAGE_URL = `${ANARLOG_SITE_URL}/og.jpg`;
-export const ROOT_TITLE = "Anarlog - Meeting Notes You Own";
+
+/**
+ * The site serves every page at a trailing-slash URL and 308-redirects the
+ * bare form, so canonical tags, og:url, and sitemap entries must all carry the
+ * slash or they point at a redirect.
+ */
+export function getCanonicalUrl(path = "/") {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  const withSlash = normalized.endsWith("/") ? normalized : `${normalized}/`;
+  return `${ANARLOG_SITE_URL}${withSlash}`;
+}
+export const ROOT_TITLE = "AI notepad for private meetings.";
 export const ROOT_DESCRIPTION =
-  "Private, bot-free meeting notes that stay under your control. Anarlog stores notes as files you own and works fully offline with on-device models or your own keys.";
+  "Anarlog is the open-source, privacy-first, local-first alternative to Granola AI. Take notes during private meetings, turn them into editable summaries, and keep your local meeting data and AI stack under your control.";
 export const ROOT_KEYWORDS =
-  "private meeting notes, bot-free AI notes, local transcription, AI meeting notes, AI notetaker, meeting transcription, meeting summaries, BYOK AI, open source note taking, local AI";
+  "private meeting notes, open source meeting notes, local-first AI notepad, Granola AI alternatives, Granola AI alternative, AI meeting notes, local meeting transcription, bot-free AI notes, offline meeting notes, on-device AI, BYOK AI, meeting transcription, meeting summaries, data ownership";
 
 export function getBlogOgImageUrl(slug: string) {
   return `${ANARLOG_SITE_URL}/api/og/blog/${encodeURIComponent(slug)}`;
+}
+
+export function getPublicSharedNoteOgImageUrl(publicSlug: string) {
+  return `${ANARLOG_SITE_URL}/api/og/share/public/${encodeURIComponent(publicSlug)}`;
+}
+
+export function getLinkSharedNoteOgImageUrl(
+  shareId: string,
+  previewToken: string,
+) {
+  const url = new URL(
+    `/api/og/share/link/${encodeURIComponent(shareId)}`,
+    ANARLOG_SITE_URL,
+  );
+  url.searchParams.set("preview", previewToken);
+  return url.toString();
 }
 
 type StructuredDataNode = Record<string, unknown>;
@@ -23,13 +50,13 @@ export function getOrganizationJsonLd() {
   return {
     "@type": "Organization",
     name: "Anarlog",
-    url: ANARLOG_SITE_URL,
+    url: getCanonicalUrl(),
     logo: `${ANARLOG_SITE_URL}/logo.svg`,
   };
 }
 
 export function getSoftwareApplicationJsonLd({
-  url = ANARLOG_SITE_URL,
+  url = getCanonicalUrl(),
   description,
   featureList,
   aggregateOffer,
@@ -49,8 +76,8 @@ export function getSoftwareApplicationJsonLd({
     url,
     description,
     applicationCategory: "ProductivityApplication",
-    operatingSystem: "macOS",
-    downloadUrl: ANARLOG_SITE_URL,
+    operatingSystem: ["macOS", "Windows", "Linux"],
+    downloadUrl: getCanonicalUrl("/download"),
     publisher: getOrganizationJsonLd(),
     ...(featureList ? { featureList } : {}),
     ...(aggregateOffer
@@ -77,5 +104,39 @@ export function getBreadcrumbListJsonLd(
       name: item.name,
       item: item.item,
     })),
+  };
+}
+
+export function getBlogPostingJsonLd({
+  url,
+  headline,
+  description,
+  image,
+  datePublished,
+  authors,
+}: {
+  url: string;
+  headline: string;
+  description: string;
+  image: string;
+  datePublished: string;
+  authors: string[];
+}) {
+  return {
+    "@type": "BlogPosting",
+    url,
+    headline,
+    description,
+    image,
+    datePublished,
+    author: authors.map((name) => ({
+      "@type": name === "Anarlog Team" ? "Organization" : "Person",
+      name,
+    })),
+    publisher: getOrganizationJsonLd(),
+    mainEntityOfPage: {
+      "@type": "WebPage",
+      "@id": url,
+    },
   };
 }

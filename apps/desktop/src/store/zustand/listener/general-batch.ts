@@ -1,13 +1,12 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { StoreApi } from "zustand";
 
-import { commands as notificationCommands } from "@hypr/plugin-notification";
+import { commands as notificationCommands } from "@anlg/plugin-notification";
 import {
   type BatchErrorCode,
   type TranscriptionParams,
   commands as transcriptionCommands,
   events as transcriptionEvents,
-} from "@hypr/plugin-transcription";
+} from "@anlg/plugin-transcription";
 
 import {
   EMPTY_BATCH_TRANSCRIPT_ERROR,
@@ -15,7 +14,11 @@ import {
   type BatchState,
 } from "./batch";
 
+import { trackAnalyticsEvent } from "~/analytics";
+import { requestAppAttention } from "~/shared/app-attention";
+import { isAppWindowInactive } from "~/shared/window-activity";
 import { createBatchCompletedNotificationKey } from "~/stt/batch-completed-notification";
+import { BatchResponseProcessingError } from "~/stt/batch-response-processing-error";
 
 type BatchStore = BatchActions & BatchState;
 
@@ -23,32 +26,19 @@ const SYNTHETIC_BATCH_PROGRESS_INITIAL = 0.06;
 const SYNTHETIC_BATCH_PROGRESS_MAX = 0.88;
 const SYNTHETIC_BATCH_PROGRESS_INTERVAL_MS = 800;
 const SYNTHETIC_BATCH_PROGRESS_TIME_CONSTANT_MS = 32_000;
+const BATCH_COMPLETED_NOTIFICATION_TIMEOUT_SECONDS = 15;
 const OPENAI_PROGRESSIVE_BATCH_MODELS = new Set([
+  "gpt-transcribe",
   "gpt-4o-transcribe",
   "gpt-4o-mini-transcribe",
   "gpt-4o-mini-transcribe-2025-12-15",
 ]);
 
-async function shouldNotifyBatchCompleted() {
-  try {
-    const window = getCurrentWindow();
-    const [focused, visible] = await Promise.all([
-      window.isFocused(),
-      window.isVisible(),
-    ]);
-
-    return !focused || !visible;
-  } catch (error) {
-    console.error("[runBatch] failed to inspect window state", error);
-    return true;
-  }
-}
-
 export async function showBatchCompletedNotification(
   sessionId: string,
   options?: { force?: boolean },
 ) {
-  if (!options?.force && !(await shouldNotifyBatchCompleted())) {
+  if (!options?.force && !(await isAppWindowInactive())) {
     return;
   }
 
@@ -57,7 +47,10 @@ export async function showBatchCompletedNotification(
       key: createBatchCompletedNotificationKey(sessionId),
       title: "Transcription complete",
       message: "Your transcript is ready.",
-      timeout: null,
+      timeout: {
+        secs: BATCH_COMPLETED_NOTIFICATION_TIMEOUT_SECONDS,
+        nanos: 0,
+      },
       source: { type: "session", session_id: sessionId },
       start_time: null,
       participants: null,
@@ -142,14 +135,26 @@ export const runBatchSession = async <T extends BatchStore>(
       if (handled === false) {
         throw new Error(EMPTY_BATCH_TRANSCRIPT_ERROR);
       }
+      trackAnalyticsEvent("transcription_completed", {
+        mode: "batch",
+        provider: params.provider,
+      });
       cleanup();
     } catch (error) {
       console.error("[runBatch] error handling batch response", error);
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       get().handleBatchFailed(sessionId, errorMessage);
+      trackAnalyticsEvent("transcription_failed", {
+        mode: "batch",
+        failure_stage: "persist",
+      });
       cleanup(false);
-      reject(error);
+      reject(
+        error instanceof Error && error.message === EMPTY_BATCH_TRANSCRIPT_ERROR
+          ? error
+          : new BatchResponseProcessingError(error),
+      );
       return;
     }
 
@@ -178,6 +183,12 @@ export const runBatchSession = async <T extends BatchStore>(
       options?.terminalReason,
       options?.errorCode,
     );
+    trackAnalyticsEvent("transcription_failed", {
+      mode: "batch",
+      failure_stage: options?.terminalReason ?? "provider",
+      error_code: options?.errorCode ?? "unknown",
+      provider: params.provider,
+    });
     cleanup(options?.clearSession ?? false);
     reject(error);
   };
@@ -261,6 +272,7 @@ export const runBatchSession = async <T extends BatchStore>(
   });
 
   await showBatchCompletedNotification(sessionId);
+  void requestAppAttention("transcript_ready");
 };
 
 export function shouldUseSyntheticBatchProgress(params: TranscriptionParams) {

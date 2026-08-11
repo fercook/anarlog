@@ -1,18 +1,21 @@
 import { tool } from "ai";
 import { z } from "zod";
 
-import { json2md, md2json, parseJsonContent } from "@hypr/editor/markdown";
+import { md2json } from "@anlg/editor/markdown";
 
 import type { ToolDependencies } from "./types";
 
-import * as main from "~/store/tinybase/store/main";
+import {
+  applySessionContentCorrections,
+  type SummaryContentCorrection,
+  type TranscriptContentCorrection,
+} from "~/session/content-mutations";
+import {
+  loadSessionContentSnapshot,
+  type SessionContentSnapshot,
+} from "~/session/content-queries";
+import { updateSettingValue } from "~/settings/queries";
 import { normalizeKeywordList } from "~/stt/keywords";
-
-type Store = NonNullable<ReturnType<typeof main.UI.useStore>>;
-type Indexes = NonNullable<ReturnType<typeof main.UI.useIndexes>>;
-type SettingsStore = NonNullable<
-  ReturnType<NonNullable<ToolDependencies["getSettingsStore"]>>
->;
 
 type CorrectionTarget = "summary" | "transcript" | "summary_and_transcript";
 
@@ -47,6 +50,16 @@ type DictionaryChange = {
   addedTerms: string[];
 };
 
+type SummaryCorrectionPlan = {
+  changes: SummaryChange[];
+  updates: SummaryContentCorrection[];
+};
+
+type TranscriptCorrectionPlan = {
+  changes: TranscriptChange[];
+  updates: TranscriptContentCorrection[];
+};
+
 function replaceExact(
   value: string,
   oldText: string,
@@ -67,102 +80,66 @@ function replaceExact(
   };
 }
 
-function getSummaryTitle(store: Store, enhancedNoteId: string): string {
-  const title = store.getCell("enhanced_notes", enhancedNoteId, "title");
-  return typeof title === "string" && title.trim() ? title : "Summary";
-}
-
-function getSummaryCandidateIds({
-  indexes,
-  sessionId,
-  enhancedNoteId,
-}: {
-  indexes: Indexes;
-  sessionId: string;
-  enhancedNoteId?: string;
-}): string[] {
-  const noteIds = indexes.getSliceRowIds(
-    main.INDEXES.enhancedNotesBySession,
-    sessionId,
-  );
-
-  if (!enhancedNoteId) {
-    return noteIds;
+function replaceBoundedExact(
+  value: string,
+  oldText: string,
+  newText: string,
+): ReplacementResult {
+  if (!oldText) {
+    return { text: value, count: 0 };
   }
 
-  return noteIds.includes(enhancedNoteId) ? [enhancedNoteId] : [];
+  const escaped = oldText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(
+    `(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,
+    "giu",
+  );
+  let count = 0;
+  const text = value.replace(pattern, (_match, prefix: string) => {
+    count++;
+    return `${prefix}${newText}`;
+  });
+
+  return { text, count };
 }
 
-function hasEnhancedNoteInSession({
-  indexes,
-  sessionId,
-  enhancedNoteId,
-}: {
-  indexes: Indexes;
-  sessionId: string;
-  enhancedNoteId: string;
-}): boolean {
-  return indexes
-    .getSliceRowIds(main.INDEXES.enhancedNotesBySession, sessionId)
-    .includes(enhancedNoteId);
-}
-
-function applySummaryCorrection({
-  store,
-  indexes,
-  sessionId,
+function planSummaryCorrections({
+  notes,
   enhancedNoteId,
   oldText,
   newText,
 }: {
-  store: Store;
-  indexes: Indexes;
-  sessionId: string;
+  notes: SessionContentSnapshot["enhancedNotes"];
   enhancedNoteId?: string;
   oldText: string;
   newText: string;
-}): SummaryChange[] {
-  const noteIds = getSummaryCandidateIds({
-    indexes,
-    sessionId,
-    enhancedNoteId,
-  });
+}): SummaryCorrectionPlan {
+  const candidates = enhancedNoteId
+    ? notes.filter((note) => note.id === enhancedNoteId)
+    : notes;
   const changes: SummaryChange[] = [];
+  const updates: SummaryContentCorrection[] = [];
 
-  for (const noteId of noteIds) {
-    const raw = store.getCell("enhanced_notes", noteId, "content");
-    const currentContent = json2md(
-      parseJsonContent(typeof raw === "string" ? raw : undefined),
-    );
-    const replaced = replaceExact(currentContent, oldText, newText);
+  for (const note of candidates) {
+    const replaced = replaceExact(note.markdown, oldText, newText);
     if (replaced.count === 0) {
       continue;
     }
 
-    store.setPartialRow("enhanced_notes", noteId, {
-      content: JSON.stringify(md2json(replaced.text)),
+    updates.push({
+      id: note.id,
+      currentContent: note.content,
+      currentContentFormat: note.contentFormat,
+      nextContent: JSON.stringify(md2json(replaced.text)),
     });
     changes.push({
-      enhancedNoteId: noteId,
-      title: getSummaryTitle(store, noteId),
+      enhancedNoteId: note.id,
+      title: note.title.trim() || "Summary",
       replacements: replaced.count,
     });
   }
 
-  return changes;
-}
-
-function parseTranscriptWords(value: unknown): TranscriptWord[] {
-  if (typeof value !== "string" || !value) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? (parsed as TranscriptWord[]) : [];
-  } catch {
-    return [];
-  }
+  return { changes, updates };
 }
 
 function trimTokenPunctuation(value: string): string {
@@ -259,6 +236,17 @@ function replaceTranscriptWords(
   const nextWords: TranscriptWord[] = [];
   let count = 0;
   for (let index = 0; index < words.length; ) {
+    if (target.length === 1 && replacementTokens.length === 1) {
+      const word = words[index];
+      const replaced = replaceBoundedExact(word.text ?? "", oldText, newText);
+      if (replaced.count > 0) {
+        nextWords.push({ ...word, text: replaced.text });
+        count += replaced.count;
+        index++;
+        continue;
+      }
+    }
+
     if (wordRangeMatchesAt(words, target, index)) {
       const original = words.slice(index, index + target.length);
       nextWords.push(...buildReplacementWords(original, newText));
@@ -335,42 +323,43 @@ function replaceTranscriptText(
   oldText: string,
   newText: string,
 ): ReplacementResult {
+  if (
+    tokenizeComparable(oldText).length === 1 &&
+    tokenizeReplacement(newText).length === 1
+  ) {
+    const bounded = replaceBoundedExact(value, oldText, newText);
+    return bounded.count > 0
+      ? bounded
+      : replaceLoosePhrase(value, oldText, newText);
+  }
+
   const exact = replaceExact(value, oldText, newText);
   return exact.count > 0 ? exact : replaceLoosePhrase(value, oldText, newText);
 }
 
-function applyTranscriptCorrection({
-  store,
-  indexes,
-  sessionId,
+function planTranscriptCorrections({
+  transcripts,
   oldText,
   newText,
 }: {
-  store: Store;
-  indexes: Indexes;
-  sessionId: string;
+  transcripts: SessionContentSnapshot["transcripts"];
   oldText: string;
   newText: string;
-}): TranscriptChange[] {
+}): TranscriptCorrectionPlan {
   if (tokenizeReplacement(newText).length === 0) {
-    return [];
+    return { changes: [], updates: [] };
   }
 
-  const transcriptIds = indexes.getSliceRowIds(
-    main.INDEXES.transcriptBySession,
-    sessionId,
-  );
   const changes: TranscriptChange[] = [];
+  const updates: TranscriptContentCorrection[] = [];
 
-  for (const transcriptId of transcriptIds) {
-    const rawWords = store.getCell("transcripts", transcriptId, "words");
-    const words = parseTranscriptWords(rawWords);
+  for (const transcript of transcripts) {
+    const words = transcript.words as TranscriptWord[];
     const wordResult = replaceTranscriptWords(words, oldText, newText);
 
-    const rawMemo = store.getCell("transcripts", transcriptId, "memo_md");
-    const hasMemo = typeof rawMemo === "string" && rawMemo.length > 0;
+    const hasMemo = transcript.memo.length > 0;
     const memoResult = replaceTranscriptText(
-      hasMemo ? rawMemo : "",
+      hasMemo ? transcript.memo : "",
       oldText,
       newText,
     );
@@ -386,26 +375,25 @@ function applyTranscriptCorrection({
       continue;
     }
 
-    if (wordResult.count > 0) {
-      store.setCell(
-        "transcripts",
-        transcriptId,
-        "words",
-        JSON.stringify(wordResult.words),
-      );
-    }
-    if (memoResult.count > 0) {
-      store.setCell("transcripts", transcriptId, "memo_md", memoResult.text);
-    }
+    updates.push({
+      id: transcript.id,
+      currentWordsJson: transcript.wordsJson,
+      currentMemo: transcript.memo,
+      nextWordsJson:
+        wordResult.count > 0
+          ? JSON.stringify(wordResult.words)
+          : transcript.wordsJson,
+      nextMemo: memoResult.count > 0 ? memoResult.text : transcript.memo,
+    });
 
     changes.push({
-      transcriptId,
+      transcriptId: transcript.id,
       wordReplacements: wordResult.count,
       memoReplacements: memoResult.count,
     });
   }
 
-  return changes;
+  return { changes, updates };
 }
 
 function parseStoredDictionaryTerms(value: unknown): string[] {
@@ -427,32 +415,26 @@ function dictionaryKey(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
 }
 
-function saveDictionaryTerms({
-  settingsStore,
-  terms,
-}: {
-  settingsStore?: SettingsStore;
-  terms?: string[];
-}): DictionaryChange {
-  if (!settingsStore || !terms || terms.length === 0) {
+async function saveDictionaryTerms(
+  terms?: string[],
+): Promise<DictionaryChange> {
+  if (!terms || terms.length === 0) {
     return { addedTerms: [] };
   }
 
-  const currentTerms = parseStoredDictionaryTerms(
-    settingsStore.getValue("personalization_dictionary_terms"),
-  );
-  const currentKeys = new Set(currentTerms.map(dictionaryKey));
-  const addedTerms = normalizeKeywordList(terms).filter(
-    (term) => !currentKeys.has(dictionaryKey(term)),
-  );
-
-  if (addedTerms.length === 0) {
-    return { addedTerms: [] };
-  }
-
-  settingsStore.setValue(
+  let addedTerms: string[] = [];
+  await updateSettingValue(
     "personalization_dictionary_terms",
-    JSON.stringify(normalizeKeywordList([...currentTerms, ...addedTerms])),
+    (storedValue) => {
+      const currentTerms = parseStoredDictionaryTerms(storedValue);
+      const currentKeys = new Set(currentTerms.map(dictionaryKey));
+      addedTerms = normalizeKeywordList(terms).filter(
+        (term) => !currentKeys.has(dictionaryKey(term)),
+      );
+      return JSON.stringify(
+        normalizeKeywordList([...currentTerms, ...addedTerms]),
+      );
+    },
   );
 
   return { addedTerms };
@@ -467,14 +449,7 @@ function shouldEditTranscript(target: CorrectionTarget): boolean {
 }
 
 export const buildApplySessionCorrectionTool = (
-  deps: Pick<
-    ToolDependencies,
-    | "getStore"
-    | "getSettingsStore"
-    | "getIndexes"
-    | "getSessionId"
-    | "getEnhancedNoteId"
-  >,
+  deps: Pick<ToolDependencies, "getSessionId" | "getEnhancedNoteId">,
 ) =>
   tool({
     description:
@@ -516,12 +491,10 @@ export const buildApplySessionCorrectionTool = (
       newText: string;
       dictionaryTerms?: string[];
     }) => {
-      const store = deps.getStore();
-      const indexes = deps.getIndexes();
       const sessionId = params.sessionId ?? deps.getSessionId();
       const target = params.target ?? "summary_and_transcript";
 
-      if (!store || !indexes || !sessionId) {
+      if (!sessionId) {
         return {
           status: "error",
           message:
@@ -541,15 +514,20 @@ export const buildApplySessionCorrectionTool = (
       const enhancedNoteId =
         params.enhancedNoteId ??
         (params.sessionId ? undefined : deps.getEnhancedNoteId());
+      const snapshot = await loadSessionContentSnapshot(sessionId);
+      if (!snapshot) {
+        return {
+          status: "error",
+          message: "The target session could not be loaded.",
+          sessionId,
+        };
+      }
+
       let editSummary = shouldEditSummary(target);
       if (
         editSummary &&
         enhancedNoteId &&
-        !hasEnhancedNoteInSession({
-          indexes,
-          sessionId,
-          enhancedNoteId,
-        })
+        !snapshot.enhancedNotes.some((note) => note.id === enhancedNoteId)
       ) {
         if (target === "summary") {
           return {
@@ -562,26 +540,24 @@ export const buildApplySessionCorrectionTool = (
         editSummary = false;
       }
 
-      const summaryChanges = editSummary
-        ? applySummaryCorrection({
-            store,
-            indexes,
-            sessionId,
+      const summaryPlan = editSummary
+        ? planSummaryCorrections({
+            notes: snapshot.enhancedNotes,
             enhancedNoteId,
             oldText: params.oldText,
             newText,
           })
-        : [];
+        : { changes: [], updates: [] };
       const editTranscript = shouldEditTranscript(target);
-      const transcriptChanges = editTranscript
-        ? applyTranscriptCorrection({
-            store,
-            indexes,
-            sessionId,
+      const transcriptPlan = editTranscript
+        ? planTranscriptCorrections({
+            transcripts: snapshot.transcripts,
             oldText: params.oldText,
             newText,
           })
-        : [];
+        : { changes: [], updates: [] };
+      const summaryChanges = summaryPlan.changes;
+      const transcriptChanges = transcriptPlan.changes;
 
       if (summaryChanges.length === 0 && transcriptChanges.length === 0) {
         return {
@@ -592,21 +568,47 @@ export const buildApplySessionCorrectionTool = (
         };
       }
 
-      const dictionaryChanges = saveDictionaryTerms({
-        settingsStore: deps.getSettingsStore(),
-        terms: params.dictionaryTerms,
-      });
+      try {
+        await applySessionContentCorrections({
+          sessionId,
+          summaries: summaryPlan.updates,
+          transcripts: transcriptPlan.updates,
+        });
+      } catch (error) {
+        console.error("Failed to apply session correction", error);
+        return {
+          status: "error",
+          message:
+            "The note changed before the correction could be committed. Read the note and retry.",
+          sessionId,
+        };
+      }
+
+      let dictionaryChanges: DictionaryChange = { addedTerms: [] };
+      let dictionarySaveFailed = false;
+      try {
+        dictionaryChanges = await saveDictionaryTerms(params.dictionaryTerms);
+      } catch (error) {
+        dictionarySaveFailed = true;
+        console.error("Failed to save correction dictionary terms", error);
+      }
       const missingTargets = [
         editSummary && summaryChanges.length === 0 ? "summary" : null,
         editTranscript && transcriptChanges.length === 0 ? "transcript" : null,
       ].filter(Boolean);
 
+      const messages = [
+        missingTargets.length > 0
+          ? `Applied correction where matched, but no matching ${missingTargets.join(" or ")} text was found.`
+          : null,
+        dictionarySaveFailed
+          ? "The correction was applied, but dictionary terms could not be saved."
+          : null,
+      ].filter((message): message is string => Boolean(message));
+
       return {
         status: missingTargets.length > 0 ? "partial" : "applied",
-        message:
-          missingTargets.length > 0
-            ? `Applied correction where matched, but no matching ${missingTargets.join(" or ")} text was found.`
-            : undefined,
+        message: messages.length > 0 ? messages.join(" ") : undefined,
         sessionId,
         summaryChanges,
         transcriptChanges,
@@ -616,8 +618,8 @@ export const buildApplySessionCorrectionTool = (
   });
 
 export const sessionCorrectionTestInternals = {
-  applySummaryCorrection,
-  applyTranscriptCorrection,
+  planSummaryCorrections,
+  planTranscriptCorrections,
   replaceExact,
   replaceLoosePhrase,
   replaceTranscriptWords,

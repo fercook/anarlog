@@ -23,7 +23,7 @@ impl BatchSttAdapter for DeepgramAdapter {
 
     fn is_supported_languages(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
         model: Option<&str>,
     ) -> bool {
         DeepgramAdapter::is_supported_languages_batch(languages, model)
@@ -76,7 +76,7 @@ async fn do_transcribe_file(
     } else {
         Err(Error::UnexpectedStatus {
             status,
-            body: response.text().await.unwrap_or_default(),
+            body: crate::adapter::http::error_body(response).await,
         })
     }
 }
@@ -260,8 +260,8 @@ mod tests {
     fn batch_url_restricts_detect_language_for_unsupported_multi_language() {
         let params = ListenParams {
             languages: vec![
-                hypr_language::ISO639::En.into(),
-                hypr_language::ISO639::Pl.into(),
+                anlg_language::ISO639::En.into(),
+                anlg_language::ISO639::Pl.into(),
             ],
             ..Default::default()
         };
@@ -280,6 +280,30 @@ mod tests {
         assert!(!query.contains("language=multi"));
     }
 
+    #[test]
+    fn batch_url_prefers_detect_language_over_multi_capable_pair() {
+        let params = ListenParams {
+            model: Some("nova-3".to_string()),
+            languages: vec![
+                anlg_language::ISO639::En.into(),
+                anlg_language::ISO639::De.into(),
+            ],
+            ..Default::default()
+        };
+
+        let url = build_batch_url(
+            "https://api.deepgram.com/v1",
+            &params,
+            &DeepgramLanguageStrategy,
+            &DeepgramKeywordStrategy,
+        );
+
+        let query = url.query().unwrap_or_default();
+        assert!(query.contains("detect_language=en"));
+        assert!(query.contains("detect_language=de"));
+        assert!(!query.contains("language=multi"));
+    }
+
     #[tokio::test]
     #[ignore]
     async fn test_deepgram_batch_transcription() {
@@ -291,7 +315,7 @@ mod tests {
             ..Default::default()
         };
 
-        let audio_path = std::path::PathBuf::from(hypr_data::english_1::AUDIO_PATH);
+        let audio_path = std::path::PathBuf::from(anlg_data::english_1::AUDIO_PATH);
 
         let result = adapter
             .transcribe_file(

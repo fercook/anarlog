@@ -1,11 +1,17 @@
-import { cn } from "@hypr/utils";
+import { Apple } from "@lobehub/icons";
+import type { ReactNode } from "react";
+
+import { cn } from "@anlg/utils";
+
+import { AiIconSlot } from "~/settings/ai/shared";
 
 type ModelIconSpec = {
-  label: string;
   title: string;
-  className: string;
+  label?: string;
+  className?: string;
   imageSrc?: string;
   imageClassName?: string;
+  node?: ReactNode;
 };
 
 const MODEL_ICON_ASSET_BASE = "/assets/model-icons";
@@ -18,9 +24,14 @@ export function getLocalModelIcon(model: string): ModelIconSpec | null {
     return {
       label: "A",
       title: "Anarlog Pro",
-      className: "border-border bg-card text-muted-foreground",
       imageSrc: ANARLOG_ICON_SRC,
-      imageClassName: "size-4 object-contain",
+    };
+  }
+
+  if (value === "apple-speech") {
+    return {
+      title: "Apple Speech",
+      node: <Apple />,
     };
   }
 
@@ -28,9 +39,7 @@ export function getLocalModelIcon(model: string): ModelIconSpec | null {
     return {
       label: "Q",
       title: "Qwen",
-      className: "border-border bg-card text-muted-foreground",
       imageSrc: `${MODEL_ICON_ASSET_BASE}/qwen-logo.svg`,
-      imageClassName: "size-4 object-contain",
     };
   }
 
@@ -38,9 +47,7 @@ export function getLocalModelIcon(model: string): ModelIconSpec | null {
     return {
       label: "O",
       title: "Meta Omnilingual",
-      className: "border-border bg-card text-muted-foreground",
       imageSrc: `${MODEL_ICON_ASSET_BASE}/meta-logo.svg`,
-      imageClassName: "size-4 object-contain",
     };
   }
 
@@ -48,9 +55,7 @@ export function getLocalModelIcon(model: string): ModelIconSpec | null {
     return {
       label: "W",
       title: "OpenAI Whisper",
-      className: "border-border bg-card text-muted-foreground",
       imageSrc: `${MODEL_ICON_ASSET_BASE}/openai-logo.svg`,
-      imageClassName: "size-4 object-contain",
     };
   }
 
@@ -58,9 +63,8 @@ export function getLocalModelIcon(model: string): ModelIconSpec | null {
     return {
       label: "P",
       title: "NVIDIA Parakeet",
-      className: "border-border bg-card text-muted-foreground",
       imageSrc: `${MODEL_ICON_ASSET_BASE}/nvidia-logo.svg`,
-      imageClassName: "size-4 object-cover object-left",
+      imageClassName: "object-cover object-left",
     };
   }
 
@@ -92,6 +96,10 @@ export function getLocalModelBackendBadge(model: string): ModelIconSpec | null {
       title: "NVIDIA",
       className: "border-green-200 bg-green-50 text-green-700",
     };
+  }
+
+  if (value === "apple-speech") {
+    return null;
   }
 
   if (value.includes("apple") || value.includes("npu")) {
@@ -133,29 +141,24 @@ export function LocalModelLabel({
       title={title}
       className={cn(["flex min-w-0 items-center gap-2", className])}
     >
-      {icon?.imageSrc ? (
-        <img
-          title={icon.title}
-          aria-label={icon.title}
-          src={icon.imageSrc}
-          alt=""
-          className={cn([
-            "shrink-0 object-contain object-center",
-            icon.imageClassName,
-            "size-5",
-          ])}
-        />
-      ) : icon ? (
-        <span
-          title={icon.title}
-          aria-label={icon.title}
-          className={cn([
-            "inline-flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-md text-[10px] leading-none font-semibold",
-            icon.className,
-          ])}
-        >
-          {icon.label}
-        </span>
+      {icon ? (
+        <AiIconSlot title={icon.title} className={icon.className}>
+          {icon.node ??
+            (icon.imageSrc ? (
+              <img
+                src={icon.imageSrc}
+                alt=""
+                className={cn([
+                  "object-contain object-center",
+                  icon.imageClassName,
+                ])}
+              />
+            ) : (
+              <span className="text-[10px] leading-none font-semibold">
+                {icon.label}
+              </span>
+            ))}
+        </AiIconSlot>
       ) : null}
       <span className={cn(["min-w-0 truncate", labelClassName])}>{label}</span>
     </div>

@@ -27,7 +27,7 @@ impl BatchSttAdapter for PyannoteAdapter {
 
     fn is_supported_languages(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
         model: Option<&str>,
     ) -> bool {
         PyannoteAdapter::language_support_batch(languages, model).is_supported()
@@ -142,17 +142,13 @@ impl PyannoteAdapter {
     ) -> Result<BatchResponse, Error> {
         let base_url = Self::batch_api_url(api_base);
 
-        let file_bytes = tokio::fs::read(&file_path)
-            .await
-            .map_err(|e| Error::AudioProcessing(format!("failed to read file: {}", e)))?;
-
         let media_url = Self::create_media_url(&file_path);
         let upload_url = Self::create_upload_url(client, &base_url, api_key, &media_url).await?;
-        Self::upload_audio(client, &upload_url, &file_path, file_bytes).await?;
+        Self::upload_audio(client, &upload_url, &file_path).await?;
 
         let job = Self::submit_job(client, &base_url, api_key, params, &media_url).await?;
         tracing::info!(
-            hyprnote.stt.job.id = %job.job_id,
+            anarlog.stt.job.id = %job.job_id,
             status = %job.status,
             warning = ?job.warning,
             "pyannote_job_created"
@@ -200,12 +196,20 @@ impl PyannoteAdapter {
         client: &ClientWithMiddleware,
         upload_url: &str,
         file_path: &Path,
-        file_bytes: Vec<u8>,
     ) -> Result<(), Error> {
+        let file = tokio::fs::File::open(file_path)
+            .await
+            .map_err(|e| Error::AudioProcessing(format!("failed to open file: {e}")))?;
+        let content_length = file
+            .metadata()
+            .await
+            .map_err(|e| Error::AudioProcessing(format!("failed to inspect file: {e}")))?
+            .len();
         let response = client
             .put(upload_url)
             .header("Content-Type", mime_type_from_extension(file_path))
-            .body(file_bytes)
+            .header("Content-Length", content_length)
+            .body(file)
             .send()
             .await?;
 

@@ -1,44 +1,65 @@
 pub mod parsing;
 mod url_builder;
 
+mod anarlog;
 mod aquavoice;
 mod argmax;
 pub(crate) mod assemblyai;
+mod aws_transcribe;
+mod azure_speech;
 pub(crate) mod cartesia;
+mod cohere;
 mod dashscope;
 pub mod deepgram;
 mod deepgram_compat;
 pub(crate) mod elevenlabs;
 mod fireworks;
 mod gladia;
+mod google_cloud;
+mod groq;
 pub mod http;
-mod hyprnote;
 mod language;
 mod mistral;
 mod openai;
+mod openai_compatible_batch;
+mod openrouter;
 mod owhisper;
 mod pyannote;
+mod revai;
 mod smallestai;
 pub(crate) mod soniox;
+mod speechmatics;
+mod together;
 mod whispercpp;
+mod xai;
 
+pub use anarlog::*;
 pub use aquavoice::*;
 pub use argmax::*;
 pub use assemblyai::*;
+pub use aws_transcribe::*;
+pub use azure_speech::*;
 pub use cartesia::*;
+pub use cohere::*;
 pub use dashscope::*;
 pub use deepgram::*;
 pub use elevenlabs::*;
 pub use fireworks::*;
 pub use gladia::*;
-pub use hyprnote::*;
+pub use google_cloud::*;
+pub use groq::*;
 pub use language::{LanguageQuality, LanguageSupport};
 pub use mistral::*;
 pub use openai::*;
+pub use openrouter::*;
 pub use pyannote::*;
+pub use revai::*;
 pub use smallestai::*;
 pub use soniox::*;
+pub use speechmatics::*;
+pub use together::*;
 pub use whispercpp::*;
+pub use xai::*;
 
 use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
@@ -46,7 +67,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::str::FromStr;
 
-use hypr_ws_client::client::Message;
+use anlg_ws_client::client::Message;
 use owhisper_interface::ListenParams;
 use owhisper_interface::batch::Response as BatchResponse;
 use owhisper_interface::batch_stream::BatchStreamEvent;
@@ -76,7 +97,7 @@ fn canonical_menu_language_code(code: &str) -> Option<String> {
         _ => language.as_str(),
     };
 
-    hypr_language::ISO639::from_str(language)
+    anlg_language::ISO639::from_str(language)
         .ok()
         .map(|code| code.code().to_string())
 }
@@ -119,16 +140,21 @@ pub fn documented_language_codes_batch() -> Vec<String> {
     codes.extend(elevenlabs::documented_language_codes());
     codes.extend(argmax::PARAKEET_V3_LANGS.iter().copied());
     codes.extend(pyannote::documented_language_codes());
+    codes.extend(cohere::documented_language_codes().iter().copied());
 
     simple_documented_language_codes(codes)
 }
 
 pub trait RealtimeSttAdapter: Clone + Default + Send + Sync + 'static {
+    fn fork_session(&self) -> Self {
+        self.clone()
+    }
+
     fn provider_name(&self) -> &'static str;
 
     fn is_supported_languages(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
         model: Option<&str>,
     ) -> bool;
 
@@ -176,7 +202,7 @@ pub trait BatchSttAdapter: Clone + Default + Send + Sync + 'static {
 
     fn is_supported_languages(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
         model: Option<&str>,
     ) -> bool;
 
@@ -279,10 +305,10 @@ pub(crate) fn host_matches(base_url: &str, predicate: impl Fn(&str) -> bool) -> 
         .unwrap_or(false)
 }
 
-const HYPRNOTE_PROXY_DOMAINS: &[&str] = &["hyprnote.com", "char.com", "anarlog.so"];
+const ANARLOG_PROXY_DOMAINS: &[&str] = &["hyprnote.com", "char.com", "anarlog.so"];
 
-fn is_hyprnote_cloud_host(host: &str) -> bool {
-    HYPRNOTE_PROXY_DOMAINS.iter().any(|domain| {
+fn is_anarlog_cloud_host(host: &str) -> bool {
+    ANARLOG_PROXY_DOMAINS.iter().any(|domain| {
         host == *domain
             || host
                 .strip_suffix(domain)
@@ -290,22 +316,22 @@ fn is_hyprnote_cloud_host(host: &str) -> bool {
     })
 }
 
-fn is_hyprnote_cloud(base_url: &str) -> bool {
-    host_matches(base_url, is_hyprnote_cloud_host)
+fn is_anarlog_cloud(base_url: &str) -> bool {
+    host_matches(base_url, is_anarlog_cloud_host)
 }
 
-fn is_hyprnote_local_proxy(base_url: &str) -> bool {
+fn is_anarlog_local_proxy(base_url: &str) -> bool {
     url::Url::parse(base_url)
         .ok()
         .map(|u| is_local_host(u.host_str().unwrap_or("")) && u.path().contains("/stt"))
         .unwrap_or(false)
 }
 
-pub fn is_hyprnote_proxy(base_url: &str) -> bool {
-    is_hyprnote_cloud(base_url) || is_hyprnote_local_proxy(base_url)
+pub fn is_anarlog_proxy(base_url: &str) -> bool {
+    is_anarlog_cloud(base_url) || is_anarlog_local_proxy(base_url)
 }
 
-pub fn normalize_languages(languages: &[hypr_language::Language]) -> Vec<hypr_language::Language> {
+pub fn normalize_languages(languages: &[anlg_language::Language]) -> Vec<anlg_language::Language> {
     let mut seen = HashSet::new();
     let mut result = Vec::with_capacity(languages.len());
 
@@ -324,7 +350,7 @@ pub fn normalize_languages(languages: &[hypr_language::Language]) -> Vec<hypr_la
 }
 
 fn is_local_argmax(base_url: &str) -> bool {
-    host_matches(base_url, is_local_host) && !is_hyprnote_local_proxy(base_url)
+    host_matches(base_url, is_local_host) && !is_anarlog_local_proxy(base_url)
 }
 
 pub(crate) fn build_ws_url_from_base_with(
@@ -366,7 +392,7 @@ pub fn build_proxy_ws_url(api_base: &str) -> Option<(url::Url, Vec<(String, Stri
     let parsed: url::Url = api_base.parse().ok()?;
     let host = parsed.host_str()?;
 
-    if !is_hyprnote_cloud_host(host) && !is_local_host(host) {
+    if !is_anarlog_cloud_host(host) && !is_local_host(host) {
         return None;
     }
 
@@ -414,6 +440,8 @@ pub enum AdapterKind {
     AssemblyAI,
     #[strum(serialize = "openai")]
     OpenAI,
+    #[strum(serialize = "openrouter")]
+    OpenRouter,
     #[strum(serialize = "gladia")]
     Gladia,
     #[strum(serialize = "elevenlabs")]
@@ -424,24 +452,48 @@ pub enum AdapterKind {
     Mistral,
     #[strum(serialize = "pyannote")]
     Pyannote,
-    #[strum(serialize = "hyprnote")]
-    Hyprnote,
+    #[strum(serialize = "cohere")]
+    Cohere,
+    #[strum(serialize = "aws_transcribe")]
+    AwsTranscribe,
+    #[strum(serialize = "azure_speech")]
+    AzureSpeech,
+    #[strum(serialize = "google_cloud")]
+    GoogleCloud,
+    #[strum(serialize = "groq")]
+    Groq,
+    #[strum(serialize = "revai")]
+    RevAi,
+    #[strum(serialize = "speechmatics")]
+    Speechmatics,
+    #[strum(serialize = "together")]
+    Together,
+    #[strum(serialize = "xai")]
+    Xai,
+    #[strum(serialize = "anarlog")]
+    Anarlog,
 }
 
 impl AdapterKind {
     pub fn from_url_and_languages(
         base_url: &str,
-        _languages: &[hypr_language::Language],
+        _languages: &[anlg_language::Language],
         _model: Option<&str>,
     ) -> Self {
         use crate::providers::Provider;
 
-        if is_hyprnote_proxy(base_url) {
-            return Self::Hyprnote;
+        if is_anarlog_proxy(base_url) {
+            return Self::Anarlog;
         }
 
         if is_local_argmax(base_url) {
             return Self::Argmax;
+        }
+
+        if host_matches(base_url, |host| {
+            host == "openrouter.ai" || host.ends_with(".openrouter.ai")
+        }) {
+            return Self::OpenRouter;
         }
 
         Provider::from_url(base_url)
@@ -451,23 +503,36 @@ impl AdapterKind {
 
     pub fn has_live_mode(&self) -> bool {
         match self {
-            Self::AquaVoice | Self::Argmax | Self::OpenAI | Self::Pyannote => false,
+            Self::AquaVoice
+            | Self::Argmax
+            | Self::Pyannote
+            | Self::Cohere
+            | Self::AwsTranscribe
+            | Self::AzureSpeech
+            | Self::GoogleCloud
+            | Self::Groq
+            | Self::OpenRouter
+            | Self::RevAi
+            | Self::Speechmatics
+            | Self::Together => false,
             Self::Soniox
             | Self::Cartesia
             | Self::Fireworks
             | Self::Deepgram
             | Self::AssemblyAI
+            | Self::OpenAI
             | Self::Gladia
             | Self::ElevenLabs
             | Self::DashScope
             | Self::Mistral
-            | Self::Hyprnote => true,
+            | Self::Xai
+            | Self::Anarlog => true,
         }
     }
 
     pub fn language_support_live(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
         model: Option<&str>,
     ) -> LanguageSupport {
         match self {
@@ -479,21 +544,31 @@ impl AdapterKind {
             }
             Self::Soniox => SonioxAdapter::language_support_live(languages),
             Self::AssemblyAI => AssemblyAIAdapter::language_support_live(languages),
-            Self::Gladia => GladiaAdapter::language_support_live(languages),
-            Self::OpenAI => LanguageSupport::NotSupported,
+            Self::Gladia => GladiaAdapter::language_support_live(languages, model),
+            Self::OpenAI => OpenAIAdapter::language_support_live(languages),
+            Self::OpenRouter => LanguageSupport::NotSupported,
             Self::Fireworks => FireworksAdapter::language_support_live(languages),
             Self::ElevenLabs => ElevenLabsAdapter::language_support_live(languages),
             Self::DashScope => DashScopeAdapter::language_support_live(languages),
             Self::Argmax => ArgmaxAdapter::language_support_live(languages, model),
             Self::Mistral => MistralAdapter::language_support_live(languages),
             Self::Pyannote => LanguageSupport::NotSupported,
-            Self::Hyprnote => HyprnoteAdapter::language_support_live(languages, model),
+            Self::Cohere => LanguageSupport::NotSupported,
+            Self::AwsTranscribe
+            | Self::AzureSpeech
+            | Self::GoogleCloud
+            | Self::Groq
+            | Self::RevAi
+            | Self::Speechmatics
+            | Self::Together => LanguageSupport::NotSupported,
+            Self::Xai => XaiAdapter::language_support_live(languages),
+            Self::Anarlog => AnarlogAdapter::language_support_live(languages, model),
         }
     }
 
     pub fn language_support_batch(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
         model: Option<&str>,
     ) -> LanguageSupport {
         match self {
@@ -505,21 +580,31 @@ impl AdapterKind {
             }
             Self::Soniox => SonioxAdapter::language_support_batch(languages),
             Self::AssemblyAI => AssemblyAIAdapter::language_support_batch(languages),
-            Self::Gladia => GladiaAdapter::language_support_batch(languages),
+            Self::Gladia => GladiaAdapter::language_support_batch(languages, model),
             Self::OpenAI => OpenAIAdapter::language_support_batch(languages),
+            Self::OpenRouter => OpenRouterAdapter::language_support_batch(languages),
             Self::Fireworks => FireworksAdapter::language_support_batch(languages),
             Self::ElevenLabs => ElevenLabsAdapter::language_support_batch(languages),
             Self::DashScope => DashScopeAdapter::language_support_batch(languages),
             Self::Argmax => ArgmaxAdapter::language_support_batch(languages, model),
             Self::Mistral => MistralAdapter::language_support_batch(languages),
             Self::Pyannote => PyannoteAdapter::language_support_batch(languages, model),
-            Self::Hyprnote => HyprnoteAdapter::language_support_batch(languages, model),
+            Self::Cohere => CohereAdapter::language_support_batch(languages),
+            Self::AwsTranscribe => AwsTranscribeAdapter::language_support_batch(languages),
+            Self::AzureSpeech => AzureSpeechAdapter::language_support_batch(languages),
+            Self::GoogleCloud => GoogleCloudAdapter::language_support_batch(languages),
+            Self::Groq => GroqAdapter::language_support_batch(languages),
+            Self::RevAi => RevAiAdapter::language_support_batch(languages),
+            Self::Speechmatics => SpeechmaticsAdapter::language_support_batch(languages),
+            Self::Together => TogetherAdapter::language_support_batch(languages),
+            Self::Xai => XaiAdapter::language_support_batch(languages),
+            Self::Anarlog => AnarlogAdapter::language_support_batch(languages, model),
         }
     }
 
     pub fn is_supported_languages_live(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
         model: Option<&str>,
     ) -> bool {
         self.language_support_live(languages, model).is_supported()
@@ -527,7 +612,7 @@ impl AdapterKind {
 
     pub fn is_supported_languages_batch(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
         model: Option<&str>,
     ) -> bool {
         self.language_support_batch(languages, model).is_supported()
@@ -535,7 +620,7 @@ impl AdapterKind {
 
     pub fn recommended_model_live(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
     ) -> Option<&'static str> {
         match self {
             Self::Deepgram => DeepgramAdapter::recommended_model_live(languages),
@@ -545,7 +630,7 @@ impl AdapterKind {
 
     pub fn recommended_model_batch(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
     ) -> Option<&'static str> {
         match self {
             Self::Deepgram => DeepgramAdapter::recommended_model_live(languages),
@@ -570,487 +655,18 @@ impl From<crate::providers::Provider> for AdapterKind {
             Provider::DashScope => Self::DashScope,
             Provider::Mistral => Self::Mistral,
             Provider::Pyannote => Self::Pyannote,
+            Provider::Cohere => Self::Cohere,
+            Provider::AwsTranscribe => Self::AwsTranscribe,
+            Provider::AzureSpeech => Self::AzureSpeech,
+            Provider::GoogleCloud => Self::GoogleCloud,
+            Provider::Groq => Self::Groq,
+            Provider::RevAi => Self::RevAi,
+            Provider::Speechmatics => Self::Speechmatics,
+            Provider::Together => Self::Together,
+            Provider::Xai => Self::Xai,
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_normalize_languages_deduplicates_same_base() {
-        use hypr_language::{ISO639, Language};
-
-        let en: Language = ISO639::En.into();
-        let en_gb = Language::with_region(ISO639::En, "GB");
-        let es: Language = ISO639::Es.into();
-
-        let result = normalize_languages(&[en.clone(), en_gb.clone(), es.clone()]);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].iso639(), ISO639::En);
-        assert_eq!(result[0].region(), None);
-        assert_eq!(result[1].iso639(), ISO639::Es);
-    }
-
-    #[test]
-    fn test_normalize_languages_prefers_base_over_regional() {
-        use hypr_language::{ISO639, Language};
-
-        let en_gb = Language::with_region(ISO639::En, "GB");
-        let en: Language = ISO639::En.into();
-
-        let result = normalize_languages(&[en_gb.clone(), en.clone()]);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].iso639(), ISO639::En);
-        assert_eq!(result[0].region(), None);
-    }
-
-    #[test]
-    fn test_normalize_languages_keeps_regional_if_no_base() {
-        use hypr_language::{ISO639, Language};
-
-        let en_gb = Language::with_region(ISO639::En, "GB");
-        let es: Language = ISO639::Es.into();
-
-        let result = normalize_languages(&[en_gb.clone(), es.clone()]);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].iso639(), ISO639::En);
-        assert_eq!(result[0].region(), Some("GB"));
-        assert_eq!(result[1].iso639(), ISO639::Es);
-    }
-
-    #[test]
-    fn test_normalize_languages_multiple_variants() {
-        use hypr_language::{ISO639, Language};
-
-        let en_us = Language::with_region(ISO639::En, "US");
-        let en_gb = Language::with_region(ISO639::En, "GB");
-        let en: Language = ISO639::En.into();
-
-        let result = normalize_languages(&[en_us.clone(), en_gb.clone(), en.clone()]);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].iso639(), ISO639::En);
-        assert_eq!(result[0].region(), None);
-    }
-
-    #[test]
-    fn test_simple_documented_language_codes_collapses_variants() {
-        let result = simple_documented_language_codes(["zh", "zh-CN", "zh-Hans", "en-US", "en-GB"]);
-
-        assert_eq!(result, vec!["en".to_string(), "zh".to_string()]);
-    }
-
-    #[test]
-    fn test_simple_documented_language_codes_canonicalizes_aliases() {
-        let result = simple_documented_language_codes(["jw", "jv"]);
-
-        assert_eq!(result, vec!["jv".to_string()]);
-    }
-
-    #[test]
-    fn test_documented_language_codes_are_menu_safe() {
-        let result = documented_language_codes_live();
-
-        assert!(result.contains(&"en".to_string()));
-        assert!(result.contains(&"zh".to_string()));
-        assert!(result.iter().all(|code| !code.contains("-")));
-        assert!(!result.contains(&"jw".to_string()));
-    }
-
-    #[test]
-    fn test_is_hyprnote_proxy() {
-        assert!(is_hyprnote_proxy("https://api.hyprnote.com/stt"));
-        assert!(is_hyprnote_proxy("https://api.hyprnote.com"));
-        assert!(is_hyprnote_proxy("https://api.char.com/stt"));
-        assert!(is_hyprnote_proxy("https://api.char.com"));
-        assert!(is_hyprnote_proxy("https://api.anarlog.so/stt"));
-        assert!(is_hyprnote_proxy("https://api.anarlog.so"));
-        assert!(is_hyprnote_proxy("http://localhost:3001/stt"));
-        assert!(is_hyprnote_proxy("http://127.0.0.1:3001/stt"));
-
-        assert!(!is_hyprnote_proxy("https://notchar.com/stt"));
-        assert!(!is_hyprnote_proxy("https://api.deepgram.com"));
-        assert!(!is_hyprnote_proxy("http://localhost:50060/v1"));
-    }
-
-    #[test]
-    fn test_is_local_argmax() {
-        assert!(is_local_argmax("http://localhost:50060/v1"));
-        assert!(is_local_argmax("http://127.0.0.1:50060/v1"));
-
-        assert!(!is_local_argmax("https://api.hyprnote.com/stt"));
-        assert!(!is_local_argmax("http://localhost:3001/stt"));
-        assert!(!is_local_argmax("https://api.deepgram.com"));
-    }
-
-    #[test]
-    fn test_adapter_kind_from_url_and_languages() {
-        use hypr_language::ISO639::*;
-
-        let cases: &[(&str, &[hypr_language::ISO639], Option<&str>, AdapterKind)] = &[
-            // HyprnoteCloud - always routes to Hyprnote adapter (proxy owns provider selection)
-            (
-                "https://api.hyprnote.com/stt",
-                &[En],
-                None,
-                AdapterKind::Hyprnote,
-            ),
-            (
-                "https://api.hyprnote.com/stt",
-                &[En],
-                Some("cloud"),
-                AdapterKind::Hyprnote,
-            ),
-            (
-                "https://api.anarlog.so/stt",
-                &[En, Ko],
-                Some("cloud"),
-                AdapterKind::Hyprnote,
-            ),
-            (
-                "https://api.hyprnote.com/stt",
-                &[Zh],
-                None,
-                AdapterKind::Hyprnote,
-            ),
-            (
-                "https://api.hyprnote.com/stt",
-                &[Ja],
-                None,
-                AdapterKind::Hyprnote,
-            ),
-            (
-                "https://api.hyprnote.com/stt",
-                &[Ar],
-                None,
-                AdapterKind::Hyprnote,
-            ),
-            (
-                "https://api.hyprnote.com/stt",
-                &[De],
-                None,
-                AdapterKind::Hyprnote,
-            ),
-            // HyprnoteCloud - multi-language
-            (
-                "https://api.hyprnote.com/stt",
-                &[En, Es],
-                None,
-                AdapterKind::Hyprnote,
-            ),
-            (
-                "https://api.hyprnote.com/stt",
-                &[En, Ko],
-                None,
-                AdapterKind::Hyprnote,
-            ),
-            (
-                "https://api.hyprnote.com/stt",
-                &[Ko, En],
-                None,
-                AdapterKind::Hyprnote,
-            ),
-            (
-                "https://api.hyprnote.com/stt",
-                &[En, De],
-                None,
-                AdapterKind::Hyprnote,
-            ),
-            // localhost proxy
-            (
-                "http://localhost:3001/stt",
-                &[En],
-                None,
-                AdapterKind::Hyprnote,
-            ),
-            (
-                "http://localhost:3001/stt",
-                &[Ar],
-                None,
-                AdapterKind::Hyprnote,
-            ),
-            // localhost argmax
-            (
-                "http://localhost:50060/v1",
-                &[En],
-                None,
-                AdapterKind::Argmax,
-            ),
-        ];
-
-        for (url, langs, model, expected) in cases {
-            let langs: Vec<hypr_language::Language> = langs.iter().map(|l| (*l).into()).collect();
-            assert_eq!(
-                AdapterKind::from_url_and_languages(url, &langs, *model),
-                *expected,
-                "url={url}, langs={langs:?}, model={model:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_has_live_mode() {
-        let live = [
-            AdapterKind::Deepgram,
-            AdapterKind::Soniox,
-            AdapterKind::AssemblyAI,
-            AdapterKind::Gladia,
-            AdapterKind::Fireworks,
-            AdapterKind::ElevenLabs,
-            AdapterKind::DashScope,
-            AdapterKind::Mistral,
-            AdapterKind::Hyprnote,
-        ];
-        for kind in live {
-            assert!(kind.has_live_mode(), "{kind:?} should support live mode");
-        }
-
-        let batch_only = [
-            AdapterKind::AquaVoice,
-            AdapterKind::Argmax,
-            AdapterKind::OpenAI,
-            AdapterKind::Pyannote,
-        ];
-        for kind in batch_only {
-            assert!(
-                !kind.has_live_mode(),
-                "{kind:?} should not support live mode"
-            );
-        }
-    }
-
-    #[test]
-    fn test_build_proxy_ws_url() {
-        let cases: &[(&str, Option<(&str, Vec<(&str, &str)>)>)] = &[
-            ("", None),
-            ("https://api.deepgram.com", None),
-            ("https://api.soniox.com", None),
-            ("https://api.fireworks.ai", None),
-            ("https://api.assemblyai.com", None),
-            (
-                "https://api.hyprnote.com/stt?provider=soniox",
-                Some((
-                    "wss://api.hyprnote.com/stt/listen",
-                    vec![("provider", "soniox")],
-                )),
-            ),
-            (
-                "https://api.char.com/stt?provider=deepgram",
-                Some((
-                    "wss://api.char.com/stt/listen",
-                    vec![("provider", "deepgram")],
-                )),
-            ),
-            (
-                "https://api.anarlog.so/stt?provider=hyprnote",
-                Some((
-                    "wss://api.anarlog.so/stt/listen",
-                    vec![("provider", "hyprnote")],
-                )),
-            ),
-            (
-                "https://api.hyprnote.com/stt/listen?provider=deepgram",
-                Some((
-                    "wss://api.hyprnote.com/stt/listen",
-                    vec![("provider", "deepgram")],
-                )),
-            ),
-            (
-                "https://api.hyprnote.com/stt/some/path?provider=fireworks",
-                Some((
-                    "wss://api.hyprnote.com/stt/some/path/listen",
-                    vec![("provider", "fireworks")],
-                )),
-            ),
-            (
-                "http://localhost:8787/stt?provider=soniox",
-                Some((
-                    "ws://localhost:8787/stt/listen",
-                    vec![("provider", "soniox")],
-                )),
-            ),
-            (
-                "http://localhost:8787/stt/listen?provider=deepgram",
-                Some((
-                    "ws://localhost:8787/stt/listen",
-                    vec![("provider", "deepgram")],
-                )),
-            ),
-            (
-                "http://127.0.0.1:8787/stt?provider=assemblyai",
-                Some((
-                    "ws://127.0.0.1:8787/stt/listen",
-                    vec![("provider", "assemblyai")],
-                )),
-            ),
-        ];
-
-        for (input, expected) in cases {
-            let result = build_proxy_ws_url(input);
-            match (result, expected) {
-                (None, None) => {}
-                (Some((url, params)), Some((expected_url, expected_params))) => {
-                    assert_eq!(url.as_str(), *expected_url, "input: {}", input);
-                    assert_eq!(
-                        params,
-                        expected_params
-                            .iter()
-                            .map(|(k, v)| (k.to_string(), v.to_string()))
-                            .collect::<Vec<_>>(),
-                        "input: {}",
-                        input
-                    );
-                }
-                (result, expected) => {
-                    panic!(
-                        "input: {}, expected: {:?}, got: {:?}",
-                        input, expected, result
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_hyprnote_proxy_always_selects_hyprnote_adapter() {
-        use hypr_language::ISO639::*;
-
-        let proxy_urls = &[
-            "https://api.hyprnote.com/stt",
-            "https://api.char.com/stt",
-            "https://api.anarlog.so/stt",
-            "http://localhost:3001/stt",
-            "http://127.0.0.1:3001/stt",
-        ];
-
-        let language_combos: &[&[hypr_language::ISO639]] =
-            &[&[En], &[Ko], &[En, De], &[En, Ko], &[Ar]];
-
-        for url in proxy_urls {
-            for langs in language_combos {
-                let langs: Vec<hypr_language::Language> =
-                    langs.iter().map(|l| (*l).into()).collect();
-                assert_eq!(
-                    AdapterKind::from_url_and_languages(url, &langs, Some("cloud")),
-                    AdapterKind::Hyprnote,
-                    "proxy URL should always select Hyprnote adapter regardless of languages: url={url}, langs={langs:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_hyprnote_cloud_adapter_supports_all_languages() {
-        use hypr_language::ISO639::*;
-
-        let combos: &[&[hypr_language::ISO639]] =
-            &[&[En], &[Ko], &[Ar], &[En, De], &[En, Ko], &[Zh]];
-
-        for langs in combos {
-            let langs: Vec<hypr_language::Language> = langs.iter().map(|l| (*l).into()).collect();
-            assert!(
-                AdapterKind::Hyprnote.is_supported_languages_live(&langs, Some("cloud")),
-                "Hyprnote adapter should support all languages: {langs:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_hyprnote_soniqo_live_limits_parakeet_languages() {
-        use hypr_language::ISO639::*;
-
-        let fr: Vec<hypr_language::Language> = vec![Fr.into()];
-        let ko: Vec<hypr_language::Language> = vec![Ko.into()];
-
-        assert!(
-            AdapterKind::Hyprnote
-                .is_supported_languages_live(&fr, Some("soniqo-parakeet-streaming"))
-        );
-        assert!(
-            !AdapterKind::Hyprnote
-                .is_supported_languages_live(&ko, Some("soniqo-parakeet-streaming"))
-        );
-    }
-
-    #[test]
-    fn test_hyprnote_soniqo_live_rejects_batch_only_models() {
-        use hypr_language::ISO639::*;
-
-        let fr: Vec<hypr_language::Language> = vec![Fr.into()];
-
-        assert!(
-            !AdapterKind::Hyprnote.is_supported_languages_live(&fr, Some("soniqo-parakeet-batch"))
-        );
-        assert!(
-            !AdapterKind::Hyprnote.is_supported_languages_live(&fr, Some("soniqo-qwen3-small"))
-        );
-    }
-
-    #[test]
-    fn test_direct_provider_urls_not_affected() {
-        use hypr_language::ISO639::*;
-
-        let en: Vec<hypr_language::Language> = vec![En.into()];
-        assert_eq!(
-            AdapterKind::from_url_and_languages("https://api.deepgram.com/v1", &en, None),
-            AdapterKind::Deepgram,
-        );
-        assert_eq!(
-            AdapterKind::from_url_and_languages("https://api.soniox.com", &en, None),
-            AdapterKind::Soniox,
-        );
-        assert_eq!(
-            AdapterKind::from_url_and_languages("https://api.pyannote.ai", &en, None),
-            AdapterKind::Pyannote,
-        );
-        assert_eq!(
-            AdapterKind::from_url_and_languages("http://localhost:50060/v1", &en, None),
-            AdapterKind::Argmax,
-        );
-    }
-
-    #[test]
-    fn test_append_provider_param_replaces_existing() {
-        let url =
-            append_provider_param("https://api.hyprnote.com/stt?provider=deepgram", "hyprnote");
-        assert!(
-            url.contains("provider=hyprnote"),
-            "new provider value should be present: {url}"
-        );
-        assert!(
-            !url.contains("provider=deepgram"),
-            "old provider value should be removed: {url}"
-        );
-        assert_eq!(
-            url.matches("provider=").count(),
-            1,
-            "exactly one provider param expected: {url}"
-        );
-    }
-
-    #[test]
-    fn test_append_provider_param_preserves_other_params() {
-        let url = append_provider_param(
-            "https://api.hyprnote.com/stt?model=cloud&provider=soniox&language=en",
-            "hyprnote",
-        );
-        assert!(
-            url.contains("model=cloud"),
-            "model should be preserved: {url}"
-        );
-        assert!(
-            url.contains("language=en"),
-            "language should be preserved: {url}"
-        );
-        assert!(url.contains("provider=hyprnote"));
-        assert!(!url.contains("provider=soniox"));
-    }
-
-    #[test]
-    fn test_append_provider_param_no_existing_provider() {
-        let url = append_provider_param("https://api.hyprnote.com/stt", "hyprnote");
-        assert!(url.contains("provider=hyprnote"));
-        assert_eq!(url.matches("provider=").count(), 1);
-    }
-}
+mod tests;

@@ -5,7 +5,13 @@ Default permissions for the plugin
 #### This default permission set includes the following:
 
 - `allow-list-installed-applications`
+- `allow-get-installed-application-icons`
+- `allow-terminate-competing-applications`
+- `allow-set-competing-application-termination-paused`
 - `allow-list-mic-using-applications`
+- `allow-inspect-meeting-accessibility`
+- `allow-send-meeting-chat-message`
+- `allow-capture-meeting-chat-messages`
 - `allow-set-respect-do-not-disturb`
 - `allow-set-ignored-bundle-ids`
 - `allow-list-default-ignored-bundle-ids`
@@ -21,6 +27,32 @@ Default permissions for the plugin
 <th>Description</th>
 </tr>
 
+
+<tr>
+<td>
+
+`detect:allow-capture-meeting-chat-messages`
+
+</td>
+<td>
+
+Enables the capture_meeting_chat_messages command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`detect:deny-capture-meeting-chat-messages`
+
+</td>
+<td>
+
+Denies the capture_meeting_chat_messages command without any pre-configured scope.
+
+</td>
+</tr>
 
 <tr>
 <td>
@@ -51,6 +83,32 @@ Denies the get_current_locale_identifier command without any pre-configured scop
 <tr>
 <td>
 
+`detect:allow-get-installed-application-icons`
+
+</td>
+<td>
+
+Enables the get_installed_application_icons command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`detect:deny-get-installed-application-icons`
+
+</td>
+<td>
+
+Denies the get_installed_application_icons command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `detect:allow-get-preferred-languages`
 
 </td>
@@ -70,6 +128,32 @@ Enables the get_preferred_languages command without any pre-configured scope.
 <td>
 
 Denies the get_preferred_languages command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`detect:allow-inspect-meeting-accessibility`
+
+</td>
+<td>
+
+Enables the inspect_meeting_accessibility command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`detect:deny-inspect-meeting-accessibility`
+
+</td>
+<td>
+
+Denies the inspect_meeting_accessibility command without any pre-configured scope.
 
 </td>
 </tr>
@@ -181,6 +265,58 @@ Denies the reset_quit_handler command without any pre-configured scope.
 <tr>
 <td>
 
+`detect:allow-send-meeting-chat-message`
+
+</td>
+<td>
+
+Enables the send_meeting_chat_message command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`detect:deny-send-meeting-chat-message`
+
+</td>
+<td>
+
+Denies the send_meeting_chat_message command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`detect:allow-set-competing-application-termination-paused`
+
+</td>
+<td>
+
+Enables the set_competing_application_termination_paused command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`detect:deny-set-competing-application-termination-paused`
+
+</td>
+<td>
+
+Denies the set_competing_application_termination_paused command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `detect:allow-set-ignored-bundle-ids`
 
 </td>
@@ -278,6 +414,32 @@ Enables the set_respect_do_not_disturb command without any pre-configured scope.
 <td>
 
 Denies the set_respect_do_not_disturb command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`detect:allow-terminate-competing-applications`
+
+</td>
+<td>
+
+Enables the terminate_competing_applications command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`detect:deny-terminate-competing-applications`
+
+</td>
+<td>
+
+Denies the terminate_competing_applications command without any pre-configured scope.
 
 </td>
 </tr>

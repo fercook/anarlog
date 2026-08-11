@@ -21,7 +21,7 @@ async fn submit(
         .append_pair("smart_format", "true")
         .append_pair("utterances", "true");
 
-    let response = hypr_observability::with_current_trace_context(
+    let response = anlg_observability::with_current_trace_context(
         client
             .post(url)
             .header("Authorization", format!("Token {api_key}"))
@@ -33,7 +33,7 @@ async fn submit(
     if !response.status().is_success() {
         return Err(Error::UnexpectedStatus {
             status: response.status(),
-            body: response.text().await.unwrap_or_default(),
+            body: crate::adapter::http::error_body(response).await,
         });
     }
 

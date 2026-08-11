@@ -9,7 +9,8 @@ import {
   useState,
 } from "react";
 
-import type { FileHandlerConfig } from "@hypr/editor/note";
+import type { FileHandlerConfig } from "@anlg/editor/note";
+import { sonnerToast } from "@anlg/ui/components/ui/toast";
 
 import { useFileUpload } from "~/shared/hooks/useFileUpload";
 import { isAudioUploadFile, useUploadFile } from "~/stt/useUploadFile";
@@ -28,7 +29,10 @@ export function useNoteFileHandlerConfig(sessionId: string) {
       }
 
       if (audioDrop.allowUnknownAudio) {
-        processAudioFile(audioDrop.audioFile, { allowUnknownAudio: true });
+        processAudioFile(audioDrop.audioFile, {
+          allowUnknownAudio: true,
+          contentType: audioDrop.contentType,
+        });
       } else {
         processAudioFile(audioDrop.audioFile);
       }
@@ -48,6 +52,17 @@ export function useNoteFileHandlerConfig(sessionId: string) {
     },
     [processAudioDrop],
   );
+
+  const handlePaste = useCallback(
+    (files: File[], items?: DataTransferItemList) =>
+      handleDrop(files, undefined, items),
+    [handleDrop],
+  );
+  const handleFileUploadError = useCallback((error: unknown) => {
+    sonnerToast.error(
+      error instanceof Error ? error.message : "Could not add this attachment.",
+    );
+  }, []);
 
   const resetAudioDrag = useCallback(() => {
     audioDragDepthRef.current = 0;
@@ -131,7 +146,10 @@ export function useNoteFileHandlerConfig(sessionId: string) {
       }
 
       if (audioDrop.allowUnknownAudio) {
-        processAudioFile(audioDrop.audioFile, { allowUnknownAudio: true });
+        processAudioFile(audioDrop.audioFile, {
+          allowUnknownAudio: true,
+          contentType: audioDrop.contentType,
+        });
       } else {
         processAudioFile(audioDrop.audioFile);
       }
@@ -143,8 +161,13 @@ export function useNoteFileHandlerConfig(sessionId: string) {
   );
 
   const fileHandlerConfig = useMemo<FileHandlerConfig>(
-    () => ({ onFileUpload, onDrop: handleDrop }),
-    [handleDrop, onFileUpload],
+    () => ({
+      onFileUpload,
+      onFileUploadError: handleFileUploadError,
+      onDrop: handleDrop,
+      onPaste: handlePaste,
+    }),
+    [handleDrop, handleFileUploadError, handlePaste, onFileUpload],
   );
 
   const audioDropTargetProps = useMemo<HTMLAttributes<HTMLDivElement>>(
@@ -199,17 +222,22 @@ function hasSingleAudioUploadDrag(dataTransfer: DataTransfer) {
 }
 
 function getAudioDrop(files: File[], items?: DataTransferItemList) {
-  const dataTransferItems = Array.from(items ?? []);
-  const audioFile = files.find((file, index) =>
+  const dataTransferItems = Array.from(items ?? []).filter(
+    (item) => item.kind === "file",
+  );
+  const audioFileIndex = files.findIndex((file, index) =>
     isAudioDropFile(file, dataTransferItems[index]),
   );
-  if (!audioFile) {
+  if (audioFileIndex === -1) {
     return null;
   }
+  const audioFile = files[audioFileIndex];
 
   return {
     allowUnknownAudio: !isAudioUploadFile(audioFile),
     audioFile,
+    contentType:
+      audioFile.type || dataTransferItems[audioFileIndex]?.type || undefined,
     remainingFiles: files.filter((file) => file !== audioFile),
   };
 }

@@ -10,8 +10,10 @@ const mocks = vi.hoisted(() => ({
   isIgnored: vi.fn(() => false),
   openCurrent: vi.fn(),
   openNew: vi.fn(),
+  platform: "macos",
   sessionMode: "inactive",
   stop: vi.fn(),
+  getOrCreateSessionForEventId: vi.fn(() => Promise.resolve("session-event")),
   storeTitle: "Live Note",
   nativeContextMenus: [] as Array<
     Array<{
@@ -30,35 +32,39 @@ const mocks = vi.hoisted(() => ({
   windowShow: vi.fn(() => Promise.resolve({ status: "ok", data: null })),
 }));
 
-vi.mock("@hypr/plugin-fs-sync", () => ({
+vi.mock("@tauri-apps/plugin-os", () => ({
+  platform: () => mocks.platform,
+}));
+
+vi.mock("@anlg/plugin-fs-sync", () => ({
   commands: {
     sessionDir: vi.fn(() => Promise.resolve({ status: "ok", data: "" })),
   },
 }));
 
-vi.mock("@hypr/plugin-opener2", () => ({
+vi.mock("@anlg/plugin-opener2", () => ({
   commands: {
     openPath: vi.fn(() => Promise.resolve()),
   },
 }));
 
-vi.mock("@hypr/plugin-windows", () => ({
+vi.mock("@anlg/plugin-windows", () => ({
   commands: {
     windowShow: mocks.windowShow,
   },
 }));
 
-vi.mock("@hypr/ui/components/ui/dancing-sticks", () => ({
+vi.mock("@anlg/ui/components/ui/dancing-sticks", () => ({
   DancingSticks: ({ amplitude }: { amplitude: number }) => (
     <span data-amplitude={amplitude} data-testid="dancing-sticks" />
   ),
 }));
 
-vi.mock("@hypr/ui/components/ui/spinner", () => ({
+vi.mock("@anlg/ui/components/ui/spinner", () => ({
   Spinner: () => <span data-testid="spinner" />,
 }));
 
-vi.mock("@hypr/ui/components/ui/tooltip", () => ({
+vi.mock("@anlg/ui/components/ui/tooltip", () => ({
   Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
   TooltipContent: ({ children }: { children: ReactNode }) => <>{children}</>,
   TooltipTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -66,6 +72,10 @@ vi.mock("@hypr/ui/components/ui/tooltip", () => ({
 
 vi.mock("~/session/hooks/useEnhancedNotes", () => ({
   useIsSessionEnhancing: () => false,
+}));
+
+vi.mock("~/session/queries", () => ({
+  getOrCreateSessionForEventId: mocks.getOrCreateSessionForEventId,
 }));
 
 vi.mock("~/shared/hooks/useNativeContextMenu", () => ({
@@ -82,7 +92,7 @@ vi.mock("~/shared/hooks/useNativeContextMenu", () => ({
   },
 }));
 
-vi.mock("~/store/tinybase/hooks", () => ({
+vi.mock("~/calendar/ignored-events", () => ({
   useIgnoredEvents: () => ({
     ignoreEvent: mocks.ignoreEvent,
     ignoreSeries: vi.fn(),
@@ -92,25 +102,8 @@ vi.mock("~/store/tinybase/hooks", () => ({
   }),
 }));
 
-vi.mock("~/store/tinybase/store/deleteSession", () => ({
-  captureSessionData: vi.fn(() => null),
-  deleteSessionCascade: vi.fn(),
-  finalizeSessionDeletion: vi.fn(),
-}));
-
-vi.mock("~/store/tinybase/store/main", () => ({
-  STORE_ID: "main",
-  UI: {
-    useCell: () => mocks.storeTitle,
-    useIndexes: () => ({}),
-    useRow: () => null,
-    useStore: () => ({}),
-  },
-}));
-
 vi.mock("~/store/zustand/live-title", () => ({
-  useSessionTitle: (_sessionId: string, storeTitle: string | undefined) =>
-    storeTitle,
+  useSessionTitle: () => mocks.storeTitle,
 }));
 
 vi.mock("~/store/zustand/tabs", () => ({
@@ -159,7 +152,7 @@ vi.mock("~/stt/contexts", () => ({
     }),
 }));
 
-import { TimelineItemComponent } from "./item";
+import { ManagedSharedSessionIdsContext, TimelineItemComponent } from "./item";
 
 describe("TimelineItemComponent", () => {
   beforeEach(() => {
@@ -170,6 +163,7 @@ describe("TimelineItemComponent", () => {
     mocks.stop.mockClear();
     mocks.openCurrent.mockClear();
     mocks.openNew.mockClear();
+    mocks.platform = "macos";
     mocks.windowShow.mockClear();
     mocks.nativeContextMenus = [];
     mocks.timelineSelection.selectedIds = [];
@@ -245,6 +239,8 @@ describe("TimelineItemComponent", () => {
     expect(row?.getAttribute("data-sidebar-timeline-session-id")).toBe(
       "session-live",
     );
+    expect(row?.className).toContain("[content-visibility:auto]");
+    expect(row?.className).toContain("[contain-intrinsic-size:auto_56px]");
     expect(selectedNodeRef.mock.calls.some(([node]) => node === row)).toBe(
       true,
     );
@@ -283,6 +279,8 @@ describe("TimelineItemComponent", () => {
     );
 
     expect(rowButton?.className).toContain("bg-destructive/8");
+    expect(rowButton?.className).toContain("hover:bg-accent/50");
+    expect(rowButton?.className).not.toContain("hover:bg-destructive/12");
     expect(rowButton?.className).toContain("pl-4");
     expect(rowButton?.className).not.toContain("motion-safe:animate-pulse");
     expect(rowButton?.className).not.toContain("shadow-[0_0_22px");
@@ -417,6 +415,39 @@ describe("TimelineItemComponent", () => {
     });
   });
 
+  it.each(["windows", "linux"])(
+    "uses platform-neutral folder copy on %s",
+    (currentPlatform) => {
+      mocks.platform = currentPlatform;
+
+      render(
+        <TimelineItemComponent
+          item={{
+            type: "session",
+            id: "session-note",
+            data: {
+              title: "Window Note",
+              created_at: "2024-01-15T10:30:00.000Z",
+            },
+          }}
+          precision="time"
+          selected={false}
+          timezone="UTC"
+          multiSelected={false}
+          flatItemKeys={["session-session-note"]}
+        />,
+      );
+
+      const menu = mocks.nativeContextMenus.find((items) =>
+        items.some((item) => item.id === "show"),
+      );
+
+      expect(menu?.find((item) => item.id === "show")?.text).toBe(
+        "Show in folder",
+      );
+    },
+  );
+
   it("renders finalizing session spinner at the end of the row", () => {
     mocks.sessionMode = "finalizing";
     mocks.storeTitle = "Finalizing Note";
@@ -445,6 +476,34 @@ describe("TimelineItemComponent", () => {
     expect(rowButton?.className).toContain("pr-10");
     expect(spinnerSlot?.className).toContain("absolute");
     expect(spinnerSlot?.className).toContain("right-3");
+  });
+
+  it("marks a locally owned shared note with a people icon", () => {
+    render(
+      <ManagedSharedSessionIdsContext.Provider
+        value={new Set(["session-shared"])}
+      >
+        <TimelineItemComponent
+          item={{
+            type: "session",
+            id: "session-shared",
+            data: {
+              title: "Shared plan",
+              created_at: "2024-01-15T10:30:00.000Z",
+            },
+          }}
+          precision="time"
+          selected={false}
+          timezone="UTC"
+          multiSelected={false}
+          flatItemKeys={["session-session-shared"]}
+        />
+      </ManagedSharedSessionIdsContext.Provider>,
+    );
+
+    const sharedIcon = screen.getByLabelText("Shared note");
+
+    expect(sharedIcon.parentElement?.lastElementChild).toBe(sharedIcon);
   });
 
   it("opens the current tab after a single-click on a session row", () => {

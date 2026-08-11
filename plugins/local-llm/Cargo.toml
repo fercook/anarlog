@@ -10,6 +10,9 @@ description = ""
 [build-dependencies]
 tauri-plugin = { workspace = true, features = ["build"] }
 
+[target.'cfg(target_os = "macos")'.build-dependencies]
+swift-rs = { workspace = true, features = ["build"] }
+
 [dev-dependencies]
 dirs = { workspace = true }
 reqwest = { workspace = true, features = ["json", "stream"] }
@@ -17,9 +20,9 @@ specta-typescript = { workspace = true }
 tauri-plugin-store = { workspace = true }
 
 [dependencies]
-hypr-local-llm-core = { workspace = true, features = ["specta"] }
-hypr-local-model = { workspace = true }
-hypr-model-downloader = { workspace = true }
+anlg-local-llm-core = { workspace = true, features = ["specta"] }
+anlg-local-model = { workspace = true }
+anlg-model-downloader = { workspace = true }
 
 tauri = { workspace = true, features = ["test"] }
 tauri-specta = { workspace = true, features = ["derive", "typescript"] }
@@ -31,5 +34,9 @@ tracing = { workspace = true }
 
 dirs = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 specta = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+swift-rs = { workspace = true }

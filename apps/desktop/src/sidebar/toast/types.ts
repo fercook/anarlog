@@ -12,22 +12,22 @@ export type DownloadProgress = {
   progress: number;
 };
 
-export type ToastAnchor = "main-content-panel";
+export type ToastLifecycle =
+  | { type: "condition-bound" }
+  | {
+      type: "persistent";
+      dismissal: "permanent" | "session" | "day";
+      dismissalId?: string;
+    };
 
 export type ToastType = {
   id: string;
   icon?: ReactNode;
-  title?: string;
   description: ReactNode;
   primaryAction?: ToastAction;
-  secondaryAction?: ToastAction;
-  actions?: ToastAction[];
-  dismissible: boolean;
-  progress?: number;
-  downloads?: DownloadProgress[];
+  lifecycle: ToastLifecycle;
   variant?: "default" | "error" | "warning";
-  anchor?: ToastAnchor;
-  gradient?: string;
+  loading?: boolean;
 };
 
 export type ToastCondition = () => boolean;

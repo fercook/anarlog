@@ -1,8 +1,10 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,7 +18,12 @@ const mocks = vi.hoisted(() => ({
   runEscapeShortcut: vi.fn(),
   toggleLeftSidebar: vi.fn(),
   isTauri: vi.fn(() => true),
+  isFullscreen: vi.fn().mockResolvedValue(false),
+  isMaximized: vi.fn().mockResolvedValue(false),
+  platform: "macos" as "linux" | "macos" | "windows",
+  resizeListeners: [] as Array<() => void>,
   startDragging: vi.fn().mockResolvedValue(undefined),
+  toggleMaximize: vi.fn().mockResolvedValue(undefined),
   devtoolsPanelActionListeners: [] as Array<
     (event: { payload: { action: string } }) => void
   >,
@@ -32,16 +39,6 @@ const mocks = vi.hoisted(() => ({
     title: string;
   },
   leftSidebarExpanded: true,
-  sidebarUpdateControl: {
-    status: null as null | "available" | "downloading" | "ready" | "failed",
-    version: null as string | null,
-    progress: null as number | null,
-    errorMessage: null as string | null,
-    downloadStarting: false,
-    installing: false,
-    downloadUpdate: vi.fn(),
-    installUpdate: vi.fn(),
-  },
   currentTab: {
     active: true,
     pinned: false,
@@ -62,11 +59,26 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
+    isFullscreen: mocks.isFullscreen,
+    isMaximized: mocks.isMaximized,
+    onResized: vi.fn(async (listener: () => void) => {
+      mocks.resizeListeners.push(listener);
+      return () => {
+        mocks.resizeListeners = mocks.resizeListeners.filter(
+          (candidate) => candidate !== listener,
+        );
+      };
+    }),
     startDragging: mocks.startDragging,
+    toggleMaximize: mocks.toggleMaximize,
   }),
 }));
 
-vi.mock("@hypr/plugin-windows", () => ({
+vi.mock("@tauri-apps/plugin-os", () => ({
+  platform: () => mocks.platform,
+}));
+
+vi.mock("@anlg/plugin-windows", () => ({
   commands: mocks.windowsCommands,
   events: {
     devtoolsPanelAction: {
@@ -97,21 +109,19 @@ vi.mock("~/main/tab-content", () => ({
       <div data-testid="main-tab-content">
         <input aria-label="Session title" />
       </div>
+    ) : tab.type === "empty" ? (
+      <div data-testid="main-tab-content">
+        <div data-tauri-drag-region data-testid="native-main-tab-drag-region">
+          <span data-testid="native-main-tab-drag-target">{tab.type}</span>
+        </div>
+      </div>
     ) : (
       <div data-testid="main-tab-content">{tab.type}</div>
     ),
 }));
 
-vi.mock("~/main/update-banner", () => ({
-  SidebarTimelineUpdateButton: ({
-    update,
-  }: {
-    update: { status: string | null; version: string | null };
-  }) =>
-    update.status && update.version ? (
-      <button type="button" data-testid="sidebar-update-button" />
-    ) : null,
-  useDesktopUpdateControl: () => mocks.sidebarUpdateControl,
+vi.mock("~/sidebar/note-filter-menu", () => ({
+  SidebarNoteFilterMenu: () => <button type="button">Filter notes</button>,
 }));
 
 vi.mock("~/sidebar/timeline/upcoming-meeting", () => ({
@@ -150,10 +160,6 @@ vi.mock("~/shared/useNewNote", () => ({
   useNewNote: () => mocks.createNewNote,
 }));
 
-vi.mock("~/sidebar/toast", () => ({
-  ToastArea: () => <div data-testid="toast-area" />,
-}));
-
 vi.mock("~/store/zustand/tabs", () => ({
   uniqueIdfromTab: vi.fn(() => "empty-slot"),
   useTabs: vi.fn((selector: (state: unknown) => unknown) =>
@@ -181,7 +187,14 @@ describe("ClassicMainBody", () => {
     mocks.runEscapeShortcut.mockClear();
     mocks.toggleLeftSidebar.mockClear();
     mocks.isTauri.mockReturnValue(true);
+    mocks.isFullscreen.mockReset();
+    mocks.isFullscreen.mockResolvedValue(false);
+    mocks.isMaximized.mockReset();
+    mocks.isMaximized.mockResolvedValue(false);
+    mocks.platform = "macos";
+    mocks.resizeListeners = [];
     mocks.startDragging.mockClear();
+    mocks.toggleMaximize.mockClear();
     mocks.devtoolsPanelActionListeners = [];
     mocks.windowsCommands.devtoolsPanelHide.mockClear();
     mocks.windowsCommands.devtoolsPanelShow.mockClear();
@@ -189,14 +202,6 @@ describe("ClassicMainBody", () => {
     mocks.canGoNext = false;
     mocks.upcomingMeetingStatus = null;
     mocks.leftSidebarExpanded = true;
-    mocks.sidebarUpdateControl.status = null;
-    mocks.sidebarUpdateControl.version = null;
-    mocks.sidebarUpdateControl.progress = null;
-    mocks.sidebarUpdateControl.errorMessage = null;
-    mocks.sidebarUpdateControl.downloadStarting = false;
-    mocks.sidebarUpdateControl.installing = false;
-    mocks.sidebarUpdateControl.downloadUpdate.mockClear();
-    mocks.sidebarUpdateControl.installUpdate.mockClear();
     mocks.currentTab = {
       active: true,
       pinned: false,
@@ -293,7 +298,7 @@ describe("ClassicMainBody", () => {
 
     fireEvent.click(sidebarToggle);
 
-    expect(screen.queryByTestId("sidebar-update-button")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Filter notes" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Go back" })).toBeNull();
     expect(sidebarToggle.className).toContain("pointer-events-auto");
     expect(topArea?.className).toContain("absolute");
@@ -306,28 +311,137 @@ describe("ClassicMainBody", () => {
     expect(mocks.toggleLeftSidebar).toHaveBeenCalledTimes(1);
   });
 
-  it("shows the update button in the expanded sidebar control group", () => {
-    mocks.sidebarUpdateControl.status = "available";
-    mocks.sidebarUpdateControl.version = "1.0.34";
+  it.each([
+    ["expanded", true, "Hide sidebar"],
+    ["collapsed", false, "Show sidebar"],
+  ])(
+    "removes the window controls gutter in fullscreen with the sidebar %s",
+    async (_state, expanded, toggleLabel) => {
+      mocks.leftSidebarExpanded = expanded;
 
+      render(<ClassicMainBody />);
+
+      const sidebarToggle = screen.getByRole("button", { name: toggleLabel });
+      const chromeFrame = expanded
+        ? document.querySelector<HTMLElement>("[data-sidebar-timeline-header]")
+        : sidebarToggle.parentElement?.parentElement?.parentElement;
+
+      expect(chromeFrame?.className).toContain("pl-[76px]");
+
+      mocks.isFullscreen.mockResolvedValue(true);
+      act(() => {
+        for (const listener of mocks.resizeListeners) {
+          listener();
+        }
+      });
+
+      await waitFor(() => {
+        expect(chromeFrame?.className).toContain("pl-2");
+      });
+      expect(chromeFrame?.className).not.toContain("pl-[76px]");
+    },
+  );
+
+  it.each([
+    ["expanded", true, "Hide sidebar"],
+    ["collapsed", false, "Show sidebar"],
+  ])(
+    "keeps the window controls gutter while maximized with the sidebar %s",
+    async (_state, expanded, toggleLabel) => {
+      mocks.leftSidebarExpanded = expanded;
+      mocks.isMaximized.mockResolvedValue(true);
+
+      render(<ClassicMainBody />);
+
+      const sidebarToggle = screen.getByRole("button", { name: toggleLabel });
+      const chromeFrame = expanded
+        ? document.querySelector<HTMLElement>("[data-sidebar-timeline-header]")
+        : sidebarToggle.parentElement?.parentElement?.parentElement;
+
+      act(() => {
+        for (const listener of mocks.resizeListeners) {
+          listener();
+        }
+      });
+
+      await waitFor(() => {
+        expect(mocks.isFullscreen).toHaveBeenCalled();
+      });
+      expect(chromeFrame?.className).toContain("pl-[76px]");
+      expect(chromeFrame?.className).not.toContain("pl-2");
+    },
+  );
+
+  it.each([
+    {
+      expanded: true,
+      platform: "windows",
+      platformName: "Windows",
+      sidebarState: "expanded",
+      toggleLabel: "Hide sidebar",
+    },
+    {
+      expanded: false,
+      platform: "windows",
+      platformName: "Windows",
+      sidebarState: "collapsed",
+      toggleLabel: "Show sidebar",
+    },
+    {
+      expanded: true,
+      platform: "linux",
+      platformName: "Linux",
+      sidebarState: "expanded",
+      toggleLabel: "Hide sidebar",
+    },
+    {
+      expanded: false,
+      platform: "linux",
+      platformName: "Linux",
+      sidebarState: "collapsed",
+      toggleLabel: "Show sidebar",
+    },
+  ] as const)(
+    "uses the 8px fallback gutter on $platformName with the sidebar $sidebarState",
+    async ({ expanded, platform, toggleLabel }) => {
+      mocks.leftSidebarExpanded = expanded;
+      mocks.platform = platform;
+
+      render(<ClassicMainBody />);
+
+      const sidebarToggle = screen.getByRole("button", { name: toggleLabel });
+      const chromeFrame = expanded
+        ? document.querySelector<HTMLElement>("[data-sidebar-timeline-header]")
+        : sidebarToggle.parentElement?.parentElement?.parentElement;
+
+      await waitFor(() => {
+        expect(chromeFrame?.className).toContain("pl-2");
+      });
+      expect(chromeFrame?.className).not.toContain("pl-[76px]");
+      expect(mocks.isFullscreen).not.toHaveBeenCalled();
+      expect(mocks.resizeListeners).toHaveLength(0);
+    },
+  );
+
+  it("shows the note filter beside the new note button", () => {
     render(<ClassicMainBody />);
 
     const sidebarToggle = screen.getByRole("button", { name: "Hide sidebar" });
     const searchButton = screen.getByRole("button", { name: "Search" });
     const newNoteButton = screen.getByRole("button", { name: "New note" });
-    const updateButton = screen.getByTestId("sidebar-update-button");
+    const filterButton = screen.getByRole("button", { name: "Filter notes" });
     const chrome = sidebarToggle.parentElement?.parentElement;
     const chromeFrame = chrome?.parentElement;
     const timelineHeader = document.querySelector<HTMLElement>(
       "[data-sidebar-timeline-header]",
     );
 
-    expect(updateButton).toBeTruthy();
-    expect(updateButton.parentElement).toBe(sidebarToggle.parentElement);
+    expect(filterButton).toBeTruthy();
+    expect(filterButton.parentElement).toBe(sidebarToggle.parentElement);
     expect(searchButton.compareDocumentPosition(newNoteButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
-    expect(newNoteButton.compareDocumentPosition(updateButton)).toBe(
+    expect(newNoteButton.compareDocumentPosition(filterButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
     expect(searchButton.parentElement).toBe(sidebarToggle.parentElement);
@@ -336,28 +450,10 @@ describe("ClassicMainBody", () => {
     expect(chromeFrame).toBe(timelineHeader);
     expect(chromeFrame?.className).toContain("pr-1");
     expect(chromeFrame?.className).not.toContain("pr-3");
-    expect(
-      within(sidebarToggle).queryByTestId("collapsed-sidebar-update-badge"),
-    ).toBeNull();
   });
 
-  it("shows ready updates in the expanded sidebar control group", () => {
-    mocks.sidebarUpdateControl.status = "ready";
-    mocks.sidebarUpdateControl.version = "1.0.34";
-
-    render(<ClassicMainBody />);
-
-    const sidebarToggle = screen.getByRole("button", { name: "Hide sidebar" });
-    const updateButton = screen.getByTestId("sidebar-update-button");
-
-    expect(updateButton).toBeTruthy();
-    expect(updateButton.parentElement).toBe(sidebarToggle.parentElement);
-  });
-
-  it("shows an update badge on the collapsed sidebar toggle", () => {
+  it("hides the note filter while the sidebar is collapsed", () => {
     mocks.leftSidebarExpanded = false;
-    mocks.sidebarUpdateControl.status = "available";
-    mocks.sidebarUpdateControl.version = "1.0.34";
 
     render(<ClassicMainBody />);
 
@@ -365,21 +461,12 @@ describe("ClassicMainBody", () => {
 
     fireEvent.click(sidebarToggle);
 
-    expect(screen.queryByTestId("sidebar-update-button")).toBeNull();
-    const badge = within(sidebarToggle).getByTestId(
-      "collapsed-sidebar-update-badge",
-    );
-
-    expect(badge).toBeTruthy();
-    expect(badge.className.split(" ")).toContain("bg-blue-500");
-    expect(badge.className.split(" ")).not.toContain("bg-red-500");
+    expect(screen.queryByRole("button", { name: "Filter notes" })).toBeNull();
     expect(mocks.toggleLeftSidebar).toHaveBeenCalledTimes(1);
   });
 
   it("shows a red upcoming meeting badge on the collapsed sidebar toggle", () => {
     mocks.leftSidebarExpanded = false;
-    mocks.sidebarUpdateControl.status = "available";
-    mocks.sidebarUpdateControl.version = "1.0.34";
     mocks.upcomingMeetingStatus = {
       itemKey: "session-upcoming",
       label: "Starts in 3m",
@@ -396,9 +483,6 @@ describe("ClassicMainBody", () => {
     expect(badge).toBeTruthy();
     expect(badge.className.split(" ")).toContain("bg-red-500");
     expect(badge.className.split(" ")).not.toContain("bg-blue-500");
-    expect(
-      within(sidebarToggle).queryByTestId("collapsed-sidebar-update-badge"),
-    ).toBeNull();
   });
 
   it("hides the red upcoming meeting badge when that note is already open", () => {
@@ -424,9 +508,6 @@ describe("ClassicMainBody", () => {
       within(sidebarToggle).queryByTestId(
         "collapsed-sidebar-upcoming-meeting-badge",
       ),
-    ).toBeNull();
-    expect(
-      within(sidebarToggle).queryByTestId("collapsed-sidebar-update-badge"),
     ).toBeNull();
   });
 
@@ -460,7 +541,7 @@ describe("ClassicMainBody", () => {
   });
 
   it.each(["calendar", "settings", "contacts", "templates"])(
-    "runs the escape shortcut from the %s left chrome back button",
+    "renders no chrome back button over the %s sidebar header",
     (type) => {
       mocks.currentTab = {
         active: true,
@@ -471,17 +552,9 @@ describe("ClassicMainBody", () => {
 
       render(<ClassicMainBody />);
 
-      const backButton = screen.getByRole("button", { name: "Go back" });
-      const topArea = backButton.parentElement?.parentElement;
-
-      fireEvent.click(backButton);
-
       expect(screen.queryByTestId("timeline-update-banner")).toBeNull();
-      expect(backButton.hasAttribute("disabled")).toBe(false);
-      expect(topArea?.className).toContain("h-12");
-      expect(topArea?.className).toContain("absolute");
-      expect(mocks.goBack).not.toHaveBeenCalled();
-      expect(mocks.runEscapeShortcut).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("button", { name: "Go back" })).toBeNull();
+      expect(mocks.runEscapeShortcut).not.toHaveBeenCalled();
     },
   );
 
@@ -503,6 +576,48 @@ describe("ClassicMainBody", () => {
     });
 
     expect(mocks.startDragging).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggles window maximization from the top 48px of the main area", () => {
+    render(<ClassicMainBody />);
+
+    const mainContent = screen.getByTestId("main-tab-content");
+
+    fireEvent.doubleClick(mainContent, {
+      button: 0,
+      clientX: 12,
+      clientY: 12,
+    });
+
+    expect(mocks.toggleMaximize).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves exact native drag-region double-clicks to Tauri", () => {
+    render(<ClassicMainBody />);
+
+    const nativeDragRegion = screen.getByTestId("native-main-tab-drag-region");
+
+    fireEvent.doubleClick(nativeDragRegion, {
+      button: 0,
+      clientX: 12,
+      clientY: 12,
+    });
+
+    expect(mocks.toggleMaximize).not.toHaveBeenCalled();
+  });
+
+  it("toggles maximization from children of a native drag region", () => {
+    render(<ClassicMainBody />);
+
+    const nativeDragTarget = screen.getByTestId("native-main-tab-drag-target");
+
+    fireEvent.doubleClick(nativeDragTarget, {
+      button: 0,
+      clientX: 12,
+      clientY: 12,
+    });
+
+    expect(mocks.toggleMaximize).toHaveBeenCalledTimes(1);
   });
 
   it("does not start window dragging from an input in the top drag strip", () => {
@@ -532,6 +647,27 @@ describe("ClassicMainBody", () => {
     expect(mocks.startDragging).not.toHaveBeenCalled();
   });
 
+  it("does not toggle window maximization from an input in the top drag strip", () => {
+    mocks.currentTab = {
+      active: true,
+      pinned: false,
+      slotId: "slot-1",
+      type: "sessions",
+    };
+
+    render(<ClassicMainBody />);
+
+    const titleInput = screen.getByRole("textbox", { name: "Session title" });
+
+    fireEvent.doubleClick(titleInput, {
+      button: 0,
+      clientX: 240,
+      clientY: 12,
+    });
+
+    expect(mocks.toggleMaximize).not.toHaveBeenCalled();
+  });
+
   it("does not start window dragging below the main area drag strip", () => {
     render(<ClassicMainBody />);
 
@@ -550,6 +686,20 @@ describe("ClassicMainBody", () => {
     });
 
     expect(mocks.startDragging).not.toHaveBeenCalled();
+  });
+
+  it("does not toggle window maximization below the main area drag strip", () => {
+    render(<ClassicMainBody />);
+
+    const mainContent = screen.getByTestId("main-tab-content");
+
+    fireEvent.doubleClick(mainContent, {
+      button: 0,
+      clientX: 12,
+      clientY: 56,
+    });
+
+    expect(mocks.toggleMaximize).not.toHaveBeenCalled();
   });
 
   it("renders the shell while the initial tab is still loading", async () => {

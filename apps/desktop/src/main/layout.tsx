@@ -1,6 +1,6 @@
 import { useRouteContext } from "@tanstack/react-router";
 
-import { TaskStorageProvider } from "@hypr/editor/task-storage";
+import { TaskStorageProvider } from "@anlg/editor/task-storage";
 
 import { ClassicMainServices } from "./lifecycle";
 
@@ -19,7 +19,7 @@ export function ClassicMainLayout({
   children: React.ReactNode;
   includeServices?: boolean;
 }) {
-  const { persistedStore, aiTaskStore, toolRegistry } = useRouteContext({
+  const { aiTaskStore, toolRegistry } = useRouteContext({
     from: "__root__",
   });
   const taskStorage = useStoreBackedTaskStorage();
@@ -29,7 +29,7 @@ export function ClassicMainLayout({
   }
 
   return (
-    <SearchEngineProvider store={persistedStore}>
+    <SearchEngineProvider>
       <TaskStorageProvider storage={taskStorage}>
         <OpenNoteDialogProvider>
           <ShellProvider>

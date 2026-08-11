@@ -1,7 +1,7 @@
 import { MDXContent } from "@content-collections/mdx/react";
+import { ArrowRight } from "@phosphor-icons/react";
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
 import { type Article, allArticles } from "content-collections";
-import { ArrowRight } from "lucide-react";
 import {
   Children,
   cloneElement,
@@ -13,8 +13,14 @@ import {
 
 import { mdxComponents } from "@/components/mdx-components";
 import { SiteFooter } from "@/components/site-footer";
-import { appleSiliconDownloadUrl } from "@/lib/download";
-import { ANARLOG_SITE_URL, getBlogOgImageUrl } from "@/lib/seo";
+import { formatBlogDate } from "@/lib/blog-date";
+import {
+  getBlogOgImageUrl,
+  getBlogPostingJsonLd,
+  getBreadcrumbListJsonLd,
+  getCanonicalUrl,
+  getStructuredDataGraph,
+} from "@/lib/seo";
 
 const blogMdxComponents = {
   ...mdxComponents,
@@ -33,8 +39,11 @@ export const Route = createFileRoute("/blog/$slug")({
   head: ({ loaderData }) => {
     const article = loaderData?.article;
     if (!article) return {};
-    const url = `${ANARLOG_SITE_URL}/blog/${article.slug}`;
+    const url = getCanonicalUrl(`/blog/${article.slug}`);
     const imageUrl = getBlogOgImageUrl(article.slug);
+    const authors = Array.isArray(article.author)
+      ? article.author
+      : [article.author];
     return {
       links: [{ rel: "canonical", href: url }],
       meta: [
@@ -48,12 +57,40 @@ export const Route = createFileRoute("/blog/$slug")({
         { property: "og:url", content: url },
         { property: "og:type", content: "article" },
         { property: "og:image", content: imageUrl },
+        { property: "og:image:type", content: "image/png" },
         { property: "og:image:width", content: "1200" },
         { property: "og:image:height", content: "630" },
+        {
+          property: "og:image:alt",
+          content: `Preview of ${article.title}`,
+        },
         { name: "twitter:card", content: "summary_large_image" },
         { name: "twitter:title", content: article.meta_title || article.title },
         { name: "twitter:description", content: article.meta_description },
         { name: "twitter:image", content: imageUrl },
+        { name: "twitter:image:alt", content: `Preview of ${article.title}` },
+      ],
+      scripts: [
+        {
+          type: "application/ld+json",
+          children: JSON.stringify(
+            getStructuredDataGraph([
+              getBlogPostingJsonLd({
+                url,
+                headline: article.title,
+                description: article.meta_description,
+                image: imageUrl,
+                datePublished: article.date,
+                authors,
+              }),
+              getBreadcrumbListJsonLd([
+                { name: "Home", item: getCanonicalUrl() },
+                { name: "Blog", item: getCanonicalUrl("/blog") },
+                { name: article.title, item: url },
+              ]),
+            ]),
+          ),
+        },
       ],
     };
   },
@@ -61,6 +98,7 @@ export const Route = createFileRoute("/blog/$slug")({
 
 function Component() {
   const { article } = Route.useLoaderData();
+  const relatedArticles = getRelatedArticles(article);
   const authors = Array.isArray(article.author)
     ? article.author.join(", ")
     : article.author;
@@ -90,11 +128,7 @@ function Component() {
             <span>{authors}</span>
             <span>·</span>
             <time dateTime={article.date}>
-              {new Date(article.date).toLocaleDateString("en-US", {
-                month: "long",
-                day: "numeric",
-                year: "numeric",
-              })}
+              {formatBlogDate(article.date, "long")}
             </time>
           </div>
         </header>
@@ -117,11 +151,85 @@ function Component() {
           <MDXContent code={article.mdx} components={blogMdxComponents} />
         </article>
 
+        <RelatedArticles articles={relatedArticles} />
         <BlogArticleCta />
       </div>
 
       <SiteFooter />
     </main>
+  );
+}
+
+function getRelatedArticles(article: Article) {
+  const sortedArticles = [...allArticles].sort(
+    (a, b) =>
+      new Date(b.date).getTime() - new Date(a.date).getTime() ||
+      a.slug.localeCompare(b.slug),
+  );
+  const articleIndex = sortedArticles.findIndex(
+    (candidate) => candidate.slug === article.slug,
+  );
+
+  if (articleIndex === -1) {
+    return [];
+  }
+
+  const neighbors = [
+    sortedArticles[articleIndex - 1],
+    sortedArticles[articleIndex + 1],
+  ].filter((candidate): candidate is Article => Boolean(candidate));
+  const sameCategory = sortedArticles.find(
+    (candidate) =>
+      candidate.slug !== article.slug &&
+      candidate.category === article.category &&
+      !neighbors.some((neighbor) => neighbor.slug === candidate.slug),
+  );
+  const fallback = sortedArticles.find(
+    (candidate) =>
+      candidate.slug !== article.slug &&
+      !neighbors.some((neighbor) => neighbor.slug === candidate.slug),
+  );
+
+  return [...neighbors, sameCategory ?? fallback].filter(
+    (candidate): candidate is Article => Boolean(candidate),
+  );
+}
+
+function RelatedArticles({ articles }: { articles: Article[] }) {
+  if (articles.length === 0) {
+    return null;
+  }
+
+  return (
+    <aside aria-labelledby="keep-reading-heading" className="mt-20">
+      <h2
+        id="keep-reading-heading"
+        className="font-hand text-3xl font-semibold tracking-normal text-[#756b5d]"
+      >
+        Keep reading
+      </h2>
+      <ul className="mt-5 grid gap-5 md:grid-cols-3">
+        {articles.map((relatedArticle) => (
+          <li key={relatedArticle.slug}>
+            <Link
+              to="/blog/$slug/"
+              params={{ slug: relatedArticle.slug }}
+              className="group block border-t border-[#eee8df] pt-4"
+            >
+              <p className="font-hand text-xl leading-6 font-semibold text-[#756b5d] group-hover:text-[#4f4940]">
+                {relatedArticle.title}
+              </p>
+              <time
+                dateTime={relatedArticle.date}
+                className="mt-2 block text-xs text-[#756b5d]"
+              >
+                {formatBlogDate(relatedArticle.date, "short")}
+              </time>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </aside>
   );
 }
 
@@ -234,16 +342,16 @@ function BlogArticleCta() {
             Take notes without inviting a bot
           </p>
           <p className="mt-3 max-w-xl text-base leading-7 text-[#4f4940]">
-            Try Anarlog for private, local-first meeting notes on your Mac.
+            Try Anarlog for private, local-first meeting notes on your desktop.
           </p>
         </div>
-        <a
-          href={appleSiliconDownloadUrl}
+        <Link
+          to="/download/"
           className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-full bg-[#181613] px-5 text-sm font-semibold text-white transition-colors hover:bg-[#363029]"
         >
           Try for free
-          <ArrowRight size={17} strokeWidth={2.2} aria-hidden="true" />
-        </a>
+          <ArrowRight size={17} weight="bold" aria-hidden="true" />
+        </Link>
       </div>
     </aside>
   );

@@ -1,15 +1,15 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import {
+  ArrowsCounterClockwise,
+  CaretDown,
   Check,
-  ChevronDown,
-  CirclePlus,
   Eye,
-  EyeOff,
-  RefreshCcw,
-} from "lucide-react";
+  EyeSlash,
+  PlusCircle,
+} from "@phosphor-icons/react";
 import { useCallback, useMemo, useState } from "react";
 
-import { Button } from "@hypr/ui/components/ui/button";
+import { Button } from "@anlg/ui/components/ui/button";
 import {
   Command,
   CommandEmpty,
@@ -17,19 +17,19 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
-} from "@hypr/ui/components/ui/command";
+} from "@anlg/ui/components/ui/command";
 import {
   AppFloatingPanel,
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "@hypr/ui/components/ui/popover";
+} from "@anlg/ui/components/ui/popover";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from "@hypr/ui/components/ui/tooltip";
-import { cn } from "@hypr/utils";
+} from "@anlg/ui/components/ui/tooltip";
+import { cn } from "@anlg/utils";
 
 import type { ListModelsResult, ModelIgnoreReason } from "./list-common";
 import { displayLlmModelId } from "./model-display";
@@ -168,7 +168,7 @@ export function ModelCombobox({
           {isConfigured ? (
             <Check className="-mr-1 h-4 w-4 shrink-0 text-green-600" />
           ) : (
-            <ChevronDown className="-mr-1 h-4 w-4 shrink-0 opacity-50" />
+            <CaretDown className="-mr-1 h-4 w-4 shrink-0 opacity-50" />
           )}
         </Button>
       </PopoverTrigger>
@@ -296,7 +296,7 @@ export function ModelCombobox({
                       "hover:bg-accent! focus:bg-accent! aria-selected:bg-transparent",
                     ])}
                   >
-                    <CirclePlus className="mr-2 h-4 w-4" />
+                    <PlusCircle className="mr-2 h-4 w-4" />
                     <span className="truncate">Select "{trimmedQuery}"</span>
                   </CommandItem>
                 )}
@@ -310,7 +310,7 @@ export function ModelCombobox({
                 className="hover:text-foreground mr-1 flex items-center gap-1 text-xs transition-colors"
               >
                 {showIgnored ? (
-                  <EyeOff className="h-3 w-3" />
+                  <EyeSlash className="h-3 w-3" />
                 ) : (
                   <Eye className="h-3 w-3" />
                 )}
@@ -330,7 +330,7 @@ export function ModelCombobox({
                 disabled={isFetching}
                 className="hover:text-foreground ml-auto flex items-center gap-1 text-xs transition-colors disabled:opacity-50"
               >
-                <RefreshCcw
+                <ArrowsCounterClockwise
                   className={cn(["h-3 w-3", isFetching && "animate-spin"])}
                 />
               </button>

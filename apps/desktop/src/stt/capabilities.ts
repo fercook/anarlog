@@ -1,8 +1,8 @@
-import type { LocalModel } from "@hypr/plugin-local-stt";
+import type { LocalModel } from "@anlg/plugin-local-stt";
 import {
   commands as listenerCommands,
   type TranscriptionMode,
-} from "@hypr/plugin-transcription";
+} from "@anlg/plugin-transcription";
 
 type LiveTranscriptionConfig = {
   languages: string[];
@@ -38,29 +38,95 @@ const SONIQO_PARAKEET_BATCH_LANGUAGE_CODES = new Set([
 ]);
 const SONIQO_STREAMING_LANGUAGE_CODES = SONIQO_PARAKEET_BATCH_LANGUAGE_CODES;
 
+// Base codes of SpeechTranscriber.supportedLocales on macOS 26 (30 regional
+// variants across these 10 languages).
+const APPLE_SPEECH_LANGUAGE_CODES = new Set([
+  "de",
+  "en",
+  "es",
+  "fr",
+  "it",
+  "ja",
+  "ko",
+  "pt",
+  "yue",
+  "zh",
+]);
+
+/// Whether Apple Speech can transcribe the language at all. A language it supports but
+/// the user has not added in System Settings is a different problem with a different fix.
+export function canAppleSpeechTranscribe(language: string) {
+  return APPLE_SPEECH_LANGUAGE_CODES.has(baseLanguageCode(language));
+}
+
+function liveLanguageCodesForModel(model: string | null | undefined) {
+  return model === "apple-speech"
+    ? APPLE_SPEECH_LANGUAGE_CODES
+    : SONIQO_STREAMING_LANGUAGE_CODES;
+}
+
 export function isSupportedLocalSttModel(
   model?: string | null,
 ): model is LocalModel {
   return (
     typeof model === "string" &&
     (model.startsWith("soniqo-") ||
+      model === "apple-speech" ||
       model.startsWith("am-") ||
       model.startsWith("Quantized"))
   );
 }
 
-export function isHyprnoteCloudSttModel(
+export function isAnarlogCloudSttModel(
   provider?: string | null,
   model?: string | null,
 ) {
-  return provider === "hyprnote" && model === "cloud";
+  return provider === "anarlog" && model === "cloud";
 }
 
-export function isHyprnoteLocalSttModel(
+export function isOnDeviceSttModel(
   provider?: string | null,
   model?: string | null,
 ): model is LocalModel {
-  return provider === "hyprnote" && isSupportedLocalSttModel(model);
+  if (!isSupportedLocalSttModel(model)) {
+    return false;
+  }
+
+  if (provider === "soniqo") {
+    return model.startsWith("soniqo-");
+  }
+
+  if (provider === "apple_speech" || provider === "apple-speech") {
+    return model === "apple-speech";
+  }
+
+  return provider === "anarlog";
+}
+
+export function isDesktopLocalSttAvailable(
+  currentPlatform: string,
+  currentArch: string,
+) {
+  return currentPlatform === "macos" && currentArch === "aarch64";
+}
+
+export function getUnsupportedDesktopLocalSttRepair(
+  currentPlatform: string,
+  currentArch: string,
+  provider: string | undefined,
+  model: string | undefined,
+  canUseCloud: boolean,
+) {
+  if (
+    isDesktopLocalSttAvailable(currentPlatform, currentArch) ||
+    !isOnDeviceSttModel(provider, model)
+  ) {
+    return null;
+  }
+
+  return canUseCloud
+    ? { provider: "anarlog", model: "cloud" }
+    : { provider: "", model: "" };
 }
 
 export function isConfiguredSttModel(
@@ -71,15 +137,97 @@ export function isConfiguredSttModel(
     return false;
   }
 
-  if (provider === "hyprnote") {
+  if (provider === "anarlog") {
     return model === "cloud" || isSupportedLocalSttModel(model);
+  }
+
+  if (provider === "soniqo") {
+    return model.startsWith("soniqo-");
+  }
+
+  if (provider === "apple_speech") {
+    return model === "apple-speech";
   }
 
   return true;
 }
 
 export function isRealtimeLocalModel(model?: string | null) {
-  return model === "soniqo-parakeet-streaming";
+  return model === "soniqo-parakeet-streaming" || model === "apple-speech";
+}
+
+export function getSttModelTranscriptionMode(
+  provider?: string | null,
+  model?: string | null,
+): TranscriptionMode | undefined {
+  if (provider === "cohere" && model === "cohere-transcribe-03-2026") {
+    return "batch";
+  }
+
+  if (
+    provider === "groq" ||
+    provider === "openrouter" ||
+    provider === "together" ||
+    provider === "speechmatics" ||
+    provider === "azure_speech" ||
+    provider === "google_cloud" ||
+    provider === "aws_transcribe" ||
+    provider === "revai"
+  ) {
+    return "batch";
+  }
+
+  if (provider === "openai") {
+    if (model === "gpt-live-transcribe") return "live";
+    if (
+      model === "gpt-transcribe" ||
+      model === "gpt-4o-transcribe-diarize" ||
+      model === "gpt-4o-transcribe" ||
+      model === "gpt-4o-mini-transcribe" ||
+      model === "whisper-1"
+    ) {
+      return "batch";
+    }
+  }
+
+  if (provider === "assemblyai") {
+    if (model === "universal-3-pro") return "batch";
+    if (model === "u3-rt-pro") return "live";
+  }
+
+  if (provider === "elevenlabs") {
+    if (model === "scribe_v2") return "batch";
+    if (model === "scribe_v2_realtime") return "live";
+  }
+
+  if (provider === "mistral") {
+    if (model === "voxtral-mini-2602" || model === "voxtral-mini-latest") {
+      return "batch";
+    }
+    if (model === "voxtral-mini-transcribe-realtime-2602") return "live";
+  }
+
+  if (provider === "soniox") {
+    if (model === "stt-async-v5" || model === "stt-async-v4") return "batch";
+    if (
+      model === "stt-rt-v5" ||
+      model === "stt-rt-v4" ||
+      model === "stt-v5" ||
+      model === "stt-v4"
+    ) {
+      return "live";
+    }
+  }
+
+  if (provider === "deepgram" && model?.startsWith("flux-")) {
+    return "live";
+  }
+
+  if (provider === "gladia" && model === "solaria-3") {
+    return "batch";
+  }
+
+  return undefined;
 }
 
 function baseLanguageCode(language: string) {
@@ -87,7 +235,13 @@ function baseLanguageCode(language: string) {
 }
 
 function languageSupportProvider(provider: string) {
-  return provider === "cloudflare_workers_ai" ? "deepgram" : provider;
+  if (provider === "apple_speech") {
+    return "apple-speech";
+  } else if (provider === "cloudflare_workers_ai") {
+    return "deepgram";
+  } else {
+    return provider;
+  }
 }
 
 export async function isSupportedLanguagesLive(
@@ -153,8 +307,9 @@ export function getOnDeviceTranscriptionConfig(
     };
   }
 
+  const liveLanguageCodes = liveLanguageCodesForModel(model);
   const supportedLiveLanguages = languages.filter((language) =>
-    SONIQO_STREAMING_LANGUAGE_CODES.has(baseLanguageCode(language)),
+    liveLanguageCodes.has(baseLanguageCode(language)),
   );
 
   if (languages.length > 0 && supportedLiveLanguages.length === 0) {
@@ -189,16 +344,20 @@ export async function getLiveTranscriptionConfig({
   model?: string | null;
   languages: readonly string[];
 }): Promise<LiveTranscriptionConfig> {
-  if (isHyprnoteLocalSttModel(provider, model)) {
+  if (isOnDeviceSttModel(provider, model)) {
     return getOnDeviceTranscriptionConfig(model, languages);
   }
 
   const config = {
     languages: [...languages],
-    transcriptionMode: undefined as TranscriptionMode | undefined,
+    transcriptionMode: getSttModelTranscriptionMode(provider, model),
   } satisfies LiveTranscriptionConfig;
 
-  if (!provider || languages.length <= 1) {
+  if (
+    !provider ||
+    config.transcriptionMode === "batch" ||
+    languages.length <= 1
+  ) {
     return config;
   }
 

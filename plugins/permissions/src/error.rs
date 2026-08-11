@@ -10,9 +10,11 @@ pub enum Error {
     #[error(transparent)]
     PluginInvoke(#[from] tauri::plugin::mobile::PluginInvokeError),
     #[error(transparent)]
-    Audio(#[from] hypr_audio::Error),
+    Audio(#[from] anlg_audio::Error),
     #[error("audio provider not configured")]
     NoAudioProvider,
+    #[error("permission assistant: {0}")]
+    Assistant(String),
 }
 
 impl Serialize for Error {

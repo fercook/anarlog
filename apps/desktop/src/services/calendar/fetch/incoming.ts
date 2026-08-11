@@ -1,5 +1,5 @@
-import { commands as calendarCommands } from "@hypr/plugin-calendar";
-import type { CalendarEvent } from "@hypr/plugin-calendar";
+import { commands as calendarCommands } from "@anlg/plugin-calendar";
+import type { CalendarEvent } from "@anlg/plugin-calendar";
 
 import type { Ctx } from "../ctx";
 import type {
@@ -62,9 +62,7 @@ export async function fetchIncomingEvents(ctx: Ctx): Promise<{
     const { event, eventParticipants } =
       await normalizeCalendarEvent(calendarEvent);
     events.push(event);
-    if (eventParticipants.length > 0) {
-      participants.set(event.tracking_id_event, eventParticipants);
-    }
+    participants.set(event.tracking_id_event, eventParticipants);
   }
 
   return { events, participants };
@@ -77,8 +75,8 @@ async function normalizeCalendarEvent(calendarEvent: CalendarEvent): Promise<{
   const meetingLink =
     calendarEvent.meeting_link ??
     (await extractMeetingLink(
-      calendarEvent.description,
       calendarEvent.location,
+      calendarEvent.description,
     ));
 
   const eventParticipants: EventParticipant[] = [];

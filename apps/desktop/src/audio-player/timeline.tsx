@@ -1,12 +1,12 @@
-import { Pause, Play } from "lucide-react";
+import { Pause, Play } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
 import { useAudioPlayer, useAudioTime } from "./provider";
 import { TimelineMeta, TimelineShell } from "./timeline-shell";
 
-import { useBillingAccess } from "~/auth/billing";
+import { useBillingAccess } from "~/auth/billing-context";
 import { useNativeContextMenu } from "~/shared/hooks/useNativeContextMenu";
 
 const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
@@ -111,12 +111,9 @@ export function Timeline({
           ])}
         >
           {state === "playing" ? (
-            <Pause
-              className="text-foreground h-3.5 w-3.5"
-              fill="currentColor"
-            />
+            <Pause className="text-foreground h-3.5 w-3.5" weight="fill" />
           ) : (
-            <Play className="text-foreground h-3.5 w-3.5" fill="currentColor" />
+            <Play className="text-foreground h-3.5 w-3.5" weight="fill" />
           )}
         </button>
       }

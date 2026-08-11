@@ -116,7 +116,8 @@ Description: {{ desc }}
 Sections:
 {% for section in tpl.sections -%}
 {{ loop.index }}. {{ section.title }}{% if section.description.is_some() %} - {{ section.description.as_ref().unwrap() }}{% endif %}
-{% endfor -%}
+{% endfor %}
+Use every section in order with its exact title. Keep sections without relevant content brief instead of inventing details.
 {%- when None %}
 
 # Instructions
@@ -151,6 +152,11 @@ Enhanced Meeting Summary:
 
 User written note:
 {{ raw_content }}
+{%- endif -%}
+{%- if let Some(meeting_chat) = ctx.meeting_chat %}
+
+Meeting Chat:
+{{ meeting_chat }}
 {%- endif -%}
 {%- if let Some(transcript) = ctx.transcript %}
 

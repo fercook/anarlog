@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  createDesktopTabCloseHandler,
   createSessionTabCloseHandler,
   initializeDesktopTabs,
 } from "./desktop-tab-lifecycle";
@@ -9,6 +10,11 @@ import {
   createContactsTab,
   createSessionTab,
 } from "~/store/zustand/tabs/test-utils";
+
+const flushAsyncCleanup = () =>
+  new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
 
 describe("desktop tab lifecycle", () => {
   describe("initializeDesktopTabs", () => {
@@ -70,34 +76,81 @@ describe("desktop tab lifecycle", () => {
       expect(openNew).not.toHaveBeenCalled();
       expect(onZeroTabs).toHaveBeenCalledTimes(1);
     });
+
+    it("runs startup work even when pinned tabs were restored", async () => {
+      const tabs = [createSessionTab({ id: "restored-session" })];
+      const onInitialized = vi.fn();
+      const onZeroTabs = vi.fn();
+
+      await initializeDesktopTabs({
+        getTabs: () => tabs,
+        setRecentlyOpenedSessionIds: vi.fn(),
+        restorePinnedTabs: vi.fn().mockResolvedValue(undefined),
+        restoreRecentlyOpenedSessionIds: vi.fn().mockResolvedValue(undefined),
+        onInitialized,
+        onZeroTabs,
+        isTauriEnv: true,
+      });
+
+      expect(onInitialized).toHaveBeenCalledTimes(1);
+      expect(onZeroTabs).not.toHaveBeenCalled();
+    });
   });
 
   describe("createSessionTabCloseHandler", () => {
-    it("cleans up empty sessions on close", () => {
+    it("cleans up empty sessions on close", async () => {
       const invalidateSessionResource = vi.fn();
-      const deleteSessionFn = vi.fn();
+      const deleteSessionFn = vi.fn().mockResolvedValue({ session: {} });
       const handler = createSessionTabCloseHandler({
-        store: {} as Parameters<
-          typeof createSessionTabCloseHandler
-        >[0]["store"],
-        indexes: {} as Parameters<
-          typeof createSessionTabCloseHandler
-        >[0]["indexes"],
         invalidateSessionResource,
         getSessionMode: vi.fn().mockReturnValue(null),
-        isSessionEmptyFn: vi.fn().mockReturnValue(true),
+        isSessionEmptyFn: vi.fn().mockResolvedValue(true),
         deleteSessionFn,
       });
 
       handler(createSessionTab({ id: "session-1" }));
 
+      await flushAsyncCleanup();
+
       expect(invalidateSessionResource).toHaveBeenCalledWith("session-1");
-      expect(deleteSessionFn).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.anything(),
-        "session-1",
-        { deferFilesystemDelete: true },
-      );
+      expect(deleteSessionFn).toHaveBeenCalledWith("session-1");
+    });
+
+    it("keeps sessions that contain SQLite data", async () => {
+      const invalidateSessionResource = vi.fn();
+      const deleteSessionFn = vi.fn();
+      const isSessionEmptyFn = vi.fn().mockResolvedValue(false);
+      const handler = createSessionTabCloseHandler({
+        invalidateSessionResource,
+        getSessionMode: vi.fn().mockReturnValue(null),
+        isSessionEmptyFn,
+        deleteSessionFn,
+      });
+
+      handler(createSessionTab({ id: "session-1" }));
+
+      await flushAsyncCleanup();
+
+      expect(deleteSessionFn).not.toHaveBeenCalled();
+      expect(invalidateSessionResource).not.toHaveBeenCalled();
+    });
+
+    it("does not invalidate when the SQLite delete loses a race", async () => {
+      const invalidateSessionResource = vi.fn();
+      const deleteSessionFn = vi.fn().mockResolvedValue(null);
+      const handler = createSessionTabCloseHandler({
+        invalidateSessionResource,
+        getSessionMode: vi.fn().mockReturnValue(null),
+        isSessionEmptyFn: vi.fn().mockResolvedValue(true),
+        deleteSessionFn,
+      });
+
+      handler(createSessionTab({ id: "session-1" }));
+
+      await flushAsyncCleanup();
+
+      expect(deleteSessionFn).toHaveBeenCalledWith("session-1");
+      expect(invalidateSessionResource).not.toHaveBeenCalled();
     });
 
     it("skips cleanup for non-inactive sessions and non-session tabs", () => {
@@ -105,15 +158,9 @@ describe("desktop tab lifecycle", () => {
         const invalidateSessionResource = vi.fn();
         const deleteSessionFn = vi.fn();
         const handler = createSessionTabCloseHandler({
-          store: {} as Parameters<
-            typeof createSessionTabCloseHandler
-          >[0]["store"],
-          indexes: {} as Parameters<
-            typeof createSessionTabCloseHandler
-          >[0]["indexes"],
           invalidateSessionResource,
           getSessionMode: vi.fn().mockReturnValue(sessionMode),
-          isSessionEmptyFn: vi.fn().mockReturnValue(true),
+          isSessionEmptyFn: vi.fn().mockResolvedValue(true),
           deleteSessionFn,
         });
 
@@ -124,5 +171,25 @@ describe("desktop tab lifecycle", () => {
         expect(deleteSessionFn).not.toHaveBeenCalled();
       }
     });
+  });
+
+  it("purges ephemeral previews through the central close handler", () => {
+    const purgePreview = vi.fn();
+    const handler = createDesktopTabCloseHandler({
+      invalidateSessionResource: vi.fn(),
+      purgePreview,
+    });
+
+    handler({
+      type: "shared_note_preview",
+      id: "13697a87-f69b-456d-8679-4202d4f5d498",
+      active: true,
+      pinned: false,
+      slotId: "slot-1",
+    });
+
+    expect(purgePreview).toHaveBeenCalledWith(
+      "13697a87-f69b-456d-8679-4202d4f5d498",
+    );
   });
 });

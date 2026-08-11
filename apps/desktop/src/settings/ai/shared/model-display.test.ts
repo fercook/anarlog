@@ -17,6 +17,12 @@ describe("displayLlmModelId", () => {
     expect(
       displayLlmModelId("openrouter", "mistralai/mistral-large-2512"),
     ).toBe("Mistral Large");
+    expect(displayLlmModelId("amazon_bedrock", "anthropic.claude-opus-5")).toBe(
+      "Claude Opus 5",
+    );
+    expect(displayLlmModelId("cohere", "command-a-plus-05-2026")).toBe(
+      "Command A Plus",
+    );
   });
 
   test("formats common model families without changing stored ids", () => {
@@ -27,6 +33,6 @@ describe("displayLlmModelId", () => {
   });
 
   test("keeps managed cloud label product-facing", () => {
-    expect(displayLlmModelId("hyprnote", "Auto")).toBe("Pro (Cloud)");
+    expect(displayLlmModelId("anarlog", "Auto")).toBe("Pro (Cloud)");
   });
 });

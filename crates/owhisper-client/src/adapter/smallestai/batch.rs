@@ -19,7 +19,7 @@ impl BatchSttAdapter for SmallestAIAdapter {
 
     fn is_supported_languages(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
         model: Option<&str>,
     ) -> bool {
         SmallestAIAdapter::is_supported_languages_batch(languages, model)
@@ -48,13 +48,18 @@ impl SmallestAIAdapter {
         params: &ListenParams,
         file_path: &Path,
     ) -> Result<BatchResponse, Error> {
-        let file_bytes = tokio::fs::read(file_path).await.map_err(|error| {
+        let file = tokio::fs::File::open(file_path).await.map_err(|error| {
             Error::AudioProcessing(format!(
-                "failed to read file {}: {}",
+                "failed to open file {}: {}",
                 file_path.display(),
                 error
             ))
         })?;
+        let content_length = file
+            .metadata()
+            .await
+            .map_err(|error| Error::AudioProcessing(error.to_string()))?
+            .len();
 
         let (mut url, existing_params) = SmallestAIAdapter::batch_api_url(api_base);
         {
@@ -76,13 +81,14 @@ impl SmallestAIAdapter {
             .post(url)
             .header("Authorization", format!("Bearer {api_key}"))
             .header("Content-Type", "application/octet-stream")
-            .body(file_bytes)
+            .header("Content-Length", content_length)
+            .body(file)
             .send()
             .await?;
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = crate::adapter::http::error_body(response).await;
             return Err(Error::UnexpectedStatus { status, body });
         }
 

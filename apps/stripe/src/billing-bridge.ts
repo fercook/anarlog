@@ -1,5 +1,9 @@
 import Stripe from "stripe";
 
+import {
+  getCustomerIdentityMetadata,
+  getCustomerUserId,
+} from "./customer-metadata";
 import { stripe } from "./integration/stripe";
 import { supabaseAdmin } from "./integration/supabase";
 
@@ -34,23 +38,59 @@ export async function syncBillingBridge(event: Stripe.Event) {
     return;
   }
 
-  const { error } = await supabaseAdmin.from("profiles").upsert(
+  const identityMetadata = getCustomerIdentityMetadata(
+    customer.metadata,
+    userId,
+  );
+  if (identityMetadata) {
+    await stripe.customers.update(customerId, {
+      metadata: identityMetadata,
+    });
+  }
+
+  const { data, error } = await supabaseAdmin.rpc(
+    "assign_profile_stripe_customer",
     {
-      id: userId,
-      stripe_customer_id: customerId,
+      p_owner_user_id: userId,
+      p_stripe_customer_id: customerId,
     },
-    { onConflict: "id" },
   );
 
+  let assignedCustomerId = data?.[0]?.assigned_customer_id as
+    | string
+    | null
+    | undefined;
   if (error) {
-    throw error;
+    if (error.code !== "PGRST202") {
+      throw error;
+    }
+    const { error: updateError } = await supabaseAdmin
+      .from("profiles")
+      .update({ stripe_customer_id: customerId })
+      .eq("id", userId)
+      .is("stripe_customer_id", null);
+    if (updateError) {
+      throw updateError;
+    }
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from("profiles")
+      .select("stripe_customer_id")
+      .eq("id", userId)
+      .single();
+    if (profileError) {
+      throw profileError;
+    }
+    assignedCustomerId = profile.stripe_customer_id as string | null;
+  }
+  if (assignedCustomerId !== customerId) {
+    await stripe.customers.del(customerId);
   }
 }
 
 const isCustomerEvent = (eventType: string) =>
   CUSTOMER_EVENTS.includes(eventType as Stripe.Event.Type);
 
-const getCustomerId = (
+export const getCustomerId = (
   eventObject: Stripe.Event.Data.Object,
 ): string | null => {
   const obj = eventObject as {
@@ -73,7 +113,7 @@ const getCustomerId = (
   return null;
 };
 
-const getStripeCustomer = async (customerId: string) => {
+export const getStripeCustomer = async (customerId: string) => {
   const customer = await stripe.customers.retrieve(customerId);
 
   if (isDeletedCustomer(customer)) {
@@ -88,10 +128,6 @@ const isDeletedCustomer = (
 ): customer is Stripe.DeletedCustomer =>
   "deleted" in customer && customer.deleted === true;
 
-const getUserIdFromCustomer = (customer: Stripe.Customer): string | null => {
-  const metadata = customer.metadata ?? {};
-
-  return (
-    metadata["userId"] || metadata["user_id"] || metadata["userID"] || null
-  );
-};
+export const getUserIdFromCustomer = (
+  customer: Stripe.Customer,
+): string | null => getCustomerUserId(customer.metadata);

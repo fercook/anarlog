@@ -1,25 +1,26 @@
 import { Trans, useLingui } from "@lingui/react/macro";
+import { ArrowSquareOut, CircleNotch, Plus, X } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import { fetch } from "@tauri-apps/plugin-http";
-import { ExternalLinkIcon, PlusIcon, XIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import { commands as openerCommands } from "@hypr/plugin-opener2";
-import { Input } from "@hypr/ui/components/ui/input";
+import { commands as openerCommands } from "@anlg/plugin-opener2";
+import { Input } from "@anlg/ui/components/ui/input";
 import {
   Popover,
   PopoverAnchor,
   PopoverContent,
-} from "@hypr/ui/components/ui/popover";
-import { cn } from "@hypr/utils";
+} from "@anlg/ui/components/ui/popover";
+import { cn } from "@anlg/utils";
 
 import type { TodoProvider } from "./shared";
 
 import { useAuth } from "~/auth";
-import { useBillingAccess } from "~/auth/billing";
+import { useBillingAccess } from "~/auth/billing-context";
 import { useConnections } from "~/auth/useConnections";
-import { openIntegrationUrl } from "~/shared/integration";
-import * as settings from "~/store/tinybase/store/settings";
+import { useSetSettingValue } from "~/settings/queries";
+import { useConfigValue } from "~/shared/config";
+import { useOpenIntegrationUrl } from "~/shared/integration";
 
 async function searchGitHubRepos(query: string): Promise<string[]> {
   const resp = await fetch(
@@ -39,8 +40,9 @@ export function GitHubTodoProviderContent({
 }) {
   const { t } = useLingui();
   const auth = useAuth();
-  const { isPaid, upgradeToPro } = useBillingAccess();
+  const { isPaid, upgradeToPro, isUpgradingToPro } = useBillingAccess();
   const { data: connections } = useConnections(isPaid);
+  const { openIntegration, openingAction } = useOpenIntegrationUrl();
   const [showAddInput, setShowAddInput] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const [debouncedInput, setDebouncedInput] = useState("");
@@ -54,17 +56,11 @@ export function GitHubTodoProviderContent({
     [connections, config.nangoIntegrationId],
   );
 
-  const repository =
-    settings.UI.useValue("todo_github_repository", settings.STORE_ID) ?? "";
+  const repository = useConfigValue("todo_github_repository") ?? "";
   const normalizedRepository = repository.trim();
   const hasRepository = normalizedRepository.length > 0;
 
-  const setRepository = settings.UI.useSetValueCallback(
-    "todo_github_repository",
-    (value: string) => value,
-    [],
-    settings.STORE_ID,
-  );
+  const setRepository = useSetSettingValue("todo_github_repository");
 
   useEffect(() => {
     const id = setTimeout(() => setDebouncedInput(inputValue), 300);
@@ -108,38 +104,49 @@ export function GitHubTodoProviderContent({
           <button
             type="button"
             onClick={upgradeToPro}
-            className="hover:text-muted-foreground underline transition-colors"
+            disabled={isUpgradingToPro}
+            className="hover:text-muted-foreground inline-flex items-center gap-1 underline transition-colors disabled:opacity-50"
           >
+            {isUpgradingToPro && (
+              <CircleNotch className="size-3 animate-spin" aria-hidden="true" />
+            )}
             <Trans>Upgrade for private repos.</Trans>
           </button>
         ) : providerConnections.length === 0 ? (
           <button
             type="button"
             onClick={() =>
-              openIntegrationUrl(
-                config.nangoIntegrationId,
-                undefined,
-                "connect",
-                "todo",
-              )
+              openIntegration({
+                nangoIntegrationId: config.nangoIntegrationId,
+                action: "connect",
+                returnTo: "todo",
+              })
             }
-            className="hover:text-muted-foreground underline transition-colors"
+            disabled={openingAction !== null}
+            className="hover:text-muted-foreground inline-flex items-center gap-1 underline transition-colors disabled:opacity-50"
           >
+            {openingAction === "connect" && (
+              <CircleNotch className="size-3 animate-spin" aria-hidden="true" />
+            )}
             <Trans>Connect GitHub for private repos.</Trans>
           </button>
         ) : (
           <button
             type="button"
             onClick={() =>
-              openIntegrationUrl(
-                config.nangoIntegrationId,
-                providerConnections[0]?.connection_id,
-                "disconnect",
-                "todo",
-              )
+              openIntegration({
+                nangoIntegrationId: config.nangoIntegrationId,
+                connectionId: providerConnections[0]?.connection_id,
+                action: "disconnect",
+                returnTo: "todo",
+              })
             }
-            className="hover:text-muted-foreground underline transition-colors"
+            disabled={openingAction !== null}
+            className="hover:text-muted-foreground inline-flex items-center gap-1 underline transition-colors disabled:opacity-50"
           >
+            {openingAction === "disconnect" && (
+              <CircleNotch className="size-3 animate-spin" aria-hidden="true" />
+            )}
             <Trans>Disconnect private repo access.</Trans>
           </button>
         )}
@@ -161,7 +168,7 @@ export function GitHubTodoProviderContent({
             className="text-muted-foreground hover:text-muted-foreground transition-colors"
             aria-label={t`Open repository on GitHub`}
           >
-            <ExternalLinkIcon className="size-3.5" />
+            <ArrowSquareOut className="size-3.5" />
           </button>
           <button
             type="button"
@@ -169,7 +176,7 @@ export function GitHubTodoProviderContent({
             className="text-muted-foreground hover:text-muted-foreground transition-colors"
             aria-label={t`Remove repository`}
           >
-            <XIcon className="size-3.5" />
+            <X className="size-3.5" />
           </button>
         </div>
       ) : null}
@@ -245,7 +252,7 @@ export function GitHubTodoProviderContent({
           onClick={() => setShowAddInput(true)}
           className="text-muted-foreground hover:text-foreground flex w-fit items-center gap-1 text-xs transition-colors"
         >
-          <PlusIcon className="size-3" />
+          <Plus className="size-3" />
           {hasRepository ? (
             <Trans>Replace repository</Trans>
           ) : (

@@ -1,25 +1,12 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { createContext, useCallback, useContext } from "react";
 
-import { commands as tantivy } from "@hypr/plugin-tantivy";
+import { commands as tantivy } from "@anlg/plugin-tantivy";
 
 import { buildTantivyFilters } from "./filters";
-import { indexHumans, indexOrganizations, indexSessions } from "./indexing";
-import {
-  createHumanListener,
-  createOrganizationListener,
-  createSessionListener,
-} from "./listeners";
 import type { SearchEntityType, SearchFilters, SearchHit } from "./types";
 import { normalizeQuery } from "./utils";
 
-import { type Store as MainStore } from "~/store/tinybase/store/main";
+import { trackAnalyticsEvent } from "~/analytics";
 
 export type {
   SearchDocument,
@@ -33,66 +20,13 @@ const SearchEngineContext = createContext<{
     query: string,
     filters?: SearchFilters | null,
   ) => Promise<SearchHit[]>;
-  isIndexing: boolean;
 } | null>(null);
 
 export function SearchEngineProvider({
   children,
-  store,
 }: {
   children: React.ReactNode;
-  store?: MainStore;
 }) {
-  const [isIndexing, setIsIndexing] = useState(true);
-  const listenerIds = useRef<string[]>([]);
-
-  useEffect(() => {
-    if (!store) {
-      return;
-    }
-
-    const initializeIndex = async () => {
-      setIsIndexing(true);
-
-      try {
-        await indexSessions(store);
-        await indexHumans(store);
-        await indexOrganizations(store);
-
-        const listener1 = store.addRowListener(
-          "sessions",
-          null,
-          createSessionListener(),
-        );
-        const listener2 = store.addRowListener(
-          "humans",
-          null,
-          createHumanListener(),
-        );
-        const listener3 = store.addRowListener(
-          "organizations",
-          null,
-          createOrganizationListener(),
-        );
-
-        listenerIds.current = [listener1, listener2, listener3];
-      } catch (error) {
-        console.error("Failed to create search index:", error);
-      } finally {
-        setIsIndexing(false);
-      }
-    };
-
-    void initializeIndex();
-
-    return () => {
-      listenerIds.current.forEach((id) => {
-        store.delListener(id);
-      });
-      listenerIds.current = [];
-    };
-  }, [store]);
-
   const search = useCallback(
     async (
       query: string,
@@ -100,6 +34,8 @@ export function SearchEngineProvider({
     ): Promise<SearchHit[]> => {
       const normalizedQuery = normalizeQuery(query);
       const tantivyFilters = buildTantivyFilters(filters);
+      const filterCount = filters?.created_at ? 1 : 0;
+      const startedAt = performance.now();
 
       try {
         const result = await tantivy.search({
@@ -109,10 +45,15 @@ export function SearchEngineProvider({
 
         if (result.status === "error") {
           console.error("Search failed:", result.error);
+          trackAnalyticsEvent("search_performed", {
+            outcome: "failed",
+            latency_ms: Math.round(performance.now() - startedAt),
+            filter_count: filterCount,
+          });
           return [];
         }
 
-        return result.data.hits.map((hit) => ({
+        const hits = result.data.hits.map((hit) => ({
           score: hit.score,
           document: {
             id: hit.document.id,
@@ -122,8 +63,23 @@ export function SearchEngineProvider({
             created_at: hit.document.created_at,
           },
         }));
+        trackAnalyticsEvent("search_performed", {
+          outcome: "succeeded",
+          result_count: hits.length,
+          latency_ms: Math.round(performance.now() - startedAt),
+          filter_count: filterCount,
+          entity_types: [
+            ...new Set(hits.map((hit) => hit.document.type)),
+          ].sort(),
+        });
+        return hits;
       } catch (error) {
         console.error("Search failed:", error);
+        trackAnalyticsEvent("search_performed", {
+          outcome: "failed",
+          latency_ms: Math.round(performance.now() - startedAt),
+          filter_count: filterCount,
+        });
         return [];
       }
     },
@@ -132,7 +88,6 @@ export function SearchEngineProvider({
 
   const value = {
     search,
-    isIndexing,
   };
 
   return (

@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
 use serde_json::Value;
-use tauri_plugin_notify::NotifyPluginExt;
+use tauri_plugin_notify::{MAX_OWN_WRITES_PER_BATCH, NotifyPluginExt};
 use tauri_plugin_settings::SettingsPluginExt;
 
 use crate::FsSyncPluginExt;
@@ -37,6 +37,61 @@ fn resolve_vault_path(base: &Path, path: &str) -> Result<PathBuf, String> {
     crate::path::resolve_path_inside_base(base, Path::new(path)).map_err(|e| e.to_string())
 }
 
+fn process_bounded_batches<T, E>(
+    items: Vec<T>,
+    batch_size: usize,
+    mut process: impl FnMut(Vec<T>) -> Result<(), E>,
+) -> Result<(), E> {
+    assert!(batch_size > 0);
+    let mut items = items.into_iter();
+    loop {
+        let batch: Vec<_> = items.by_ref().take(batch_size).collect();
+        if batch.is_empty() {
+            return Ok(());
+        }
+        process(batch)?;
+    }
+}
+
+fn write_own_batches<R, T, F>(
+    app: &tauri::AppHandle<R>,
+    base_path: &Path,
+    items: Vec<(T, PathBuf)>,
+    write: F,
+) -> Result<(), String>
+where
+    R: tauri::Runtime,
+    T: Send,
+    F: Fn(T, PathBuf) -> Result<(), String> + Sync,
+{
+    process_bounded_batches(items, MAX_OWN_WRITES_PER_BATCH, |batch| {
+        batch.into_par_iter().try_for_each(|(item, path)| {
+            let relative_path = path
+                .strip_prefix(base_path)
+                .map_err(|error| {
+                    format!("failed to make {} vault-relative: {error}", path.display())
+                })?
+                .to_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("path is not valid UTF-8: {}", path.display()))?;
+            if !app
+                .notify()
+                .mark_own_writes(std::slice::from_ref(&relative_path))
+            {
+                return Err("failed to reserve own-write tracking capacity".to_string());
+            }
+
+            let result = write(item, path);
+            if result.is_ok() {
+                let _ = app
+                    .notify()
+                    .mark_own_writes(std::slice::from_ref(&relative_path));
+            }
+            result
+        })
+    })
+}
+
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn deserialize(input: String) -> Result<ParsedDocument, String> {
@@ -63,20 +118,9 @@ pub(crate) async fn write_json_batch<R: tauri::Runtime>(
         })
         .collect::<Result<_, _>>()?;
 
-    let relative_paths: Vec<String> = items
-        .iter()
-        .filter_map(|(_, path)| {
-            path.strip_prefix(&base_path)
-                .ok()
-                .and_then(|p| p.to_str())
-                .map(|s| s.to_string())
-        })
-        .collect();
-
-    app.notify().mark_own_writes(&relative_paths);
-
+    let app_for_write = app.clone();
     spawn_blocking!({
-        items.into_par_iter().try_for_each(|(json, path)| {
+        write_own_batches(&app_for_write, &base_path, items, |json, path| {
             create_parent_dir_for_write(&path)?;
             let content = crate::json::serialize(json)
                 .map_err(|e| format!("failed to serialize json for {}: {e}", path.display()))?;
@@ -105,20 +149,9 @@ pub(crate) async fn write_document_batch<R: tauri::Runtime>(
         })
         .collect::<Result<_, _>>()?;
 
-    let relative_paths: Vec<String> = items
-        .iter()
-        .filter_map(|(_, path)| {
-            path.strip_prefix(&base_path)
-                .ok()
-                .and_then(|p| p.to_str())
-                .map(|s| s.to_string())
-        })
-        .collect();
-
-    app.notify().mark_own_writes(&relative_paths);
-
+    let app_for_write = app.clone();
     spawn_blocking!({
-        items.into_par_iter().try_for_each(|(doc, path)| {
+        write_own_batches(&app_for_write, &base_path, items, |doc, path| {
             create_parent_dir_for_write(&path)?;
             let content = doc
                 .render()
@@ -235,9 +268,19 @@ pub(crate) async fn audio_exist<R: tauri::Runtime>(
 pub(crate) async fn audio_delete<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     session_id: String,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let session_dir = resolve_session_dir(&app, &session_id)?;
     crate::audio::delete(&session_dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn audio_metadata<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    session_id: String,
+) -> Result<Option<crate::audio::AudioFileMetadata>, String> {
+    let session_dir = resolve_session_dir(&app, &session_id)?;
+    spawn_blocking!({ crate::audio::metadata(&session_dir).map_err(|e| e.to_string()) })
 }
 
 #[tauri::command]
@@ -278,20 +321,47 @@ pub(crate) async fn audio_import<R: tauri::Runtime>(
     })
 }
 
-fn audio_import_source_extension(filename: &str) -> String {
+fn audio_import_source_extension(filename: &str, content_type: Option<&str>) -> String {
     let extension = Path::new(filename)
         .extension()
         .and_then(|extension| extension.to_str())
         .map(str::to_ascii_lowercase);
 
     match extension.as_deref() {
-        Some("wav" | "mp3" | "ogg" | "mp4" | "m4a" | "flac") => extension.unwrap(),
-        _ => "mp3".to_string(),
+        Some("wav" | "mp3" | "ogg" | "mp4" | "m4a" | "flac" | "webm" | "aac") => {
+            return extension.unwrap();
+        }
+        Some("qta") => return "m4a".to_string(),
+        _ => {}
     }
+
+    let content_type = content_type
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .map(str::to_ascii_lowercase);
+
+    match content_type.as_deref() {
+        Some("audio/wav" | "audio/x-wav" | "audio/wave" | "audio/vnd.wave") => "wav",
+        Some("audio/mpeg" | "audio/mp3") => "mp3",
+        Some("audio/ogg") => "ogg",
+        Some(
+            "audio/mp4" | "audio/x-m4a" | "audio/m4a" | "audio/quicktime" | "audio/x-quicktime"
+            | "video/mp4" | "video/quicktime",
+        ) => "m4a",
+        Some("audio/flac" | "audio/x-flac") => "flac",
+        Some("audio/webm") => "webm",
+        Some("audio/aac" | "audio/x-aac") => "aac",
+        _ => "mp3",
+    }
+    .to_string()
 }
 
-fn audio_import_source_path(session_dir: &Path, filename: &str) -> PathBuf {
-    let extension = audio_import_source_extension(filename);
+fn audio_import_source_path(
+    session_dir: &Path,
+    filename: &str,
+    content_type: Option<&str>,
+) -> PathBuf {
+    let extension = audio_import_source_extension(filename, content_type);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -312,13 +382,15 @@ pub(crate) async fn audio_import_data<R: tauri::Runtime>(
     session_id: String,
     data: Vec<u8>,
     filename: String,
+    content_type: Option<String>,
 ) -> Result<String, String> {
     let session_dir = resolve_session_dir(&app, &session_id)?;
     let runtime = crate::runtime::TauriAudioImportRuntime::new(app);
     spawn_blocking!({
         std::fs::create_dir_all(&session_dir).map_err(|e| e.to_string())?;
 
-        let source_path = audio_import_source_path(&session_dir, &filename);
+        let source_path =
+            audio_import_source_path(&session_dir, &filename, content_type.as_deref());
         std::fs::write(&source_path, data).map_err(|e| e.to_string())?;
 
         let result =
@@ -490,6 +562,48 @@ pub(crate) async fn attachment_remove<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_batch_processing_preserves_every_item_in_order() {
+        let mut batches = Vec::new();
+
+        process_bounded_batches((0..10).collect(), 3, |batch| {
+            batches.push(batch);
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            batches.iter().map(Vec::len).collect::<Vec<_>>(),
+            [3, 3, 3, 1]
+        );
+        assert_eq!(
+            batches.into_iter().flatten().collect::<Vec<_>>(),
+            (0..10).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn audio_import_source_extension_uses_supported_filename_extension() {
+        assert_eq!(
+            audio_import_source_extension("recording.WEBM", Some("audio/mp4")),
+            "webm"
+        );
+        assert_eq!(audio_import_source_extension("recording.aac", None), "aac");
+    }
+
+    #[test]
+    fn audio_import_source_extension_recognizes_voice_memos_transfers() {
+        assert_eq!(audio_import_source_extension("Brian Shin.qta", None), "m4a");
+        assert_eq!(
+            audio_import_source_extension("Brian Shin", Some("audio/mp4; codecs=alac")),
+            "m4a"
+        );
+        assert_eq!(
+            audio_import_source_extension("Brian Shin", Some("audio/quicktime")),
+            "m4a"
+        );
+    }
 
     #[test]
     fn create_parent_dir_error_includes_parent_and_target_paths() {

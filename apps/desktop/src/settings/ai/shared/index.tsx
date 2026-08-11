@@ -1,28 +1,29 @@
 import { Icon } from "@iconify-icon/react";
 import { Trans, useLingui } from "@lingui/react/macro";
+import { ArrowSquareOut } from "@phosphor-icons/react";
 import { type AnyFieldApi, useForm } from "@tanstack/react-form";
-import { ExternalLink } from "lucide-react";
-import type { ReactNode } from "react";
+import { useMutation, useQueries } from "@tanstack/react-query";
+import { type ReactNode, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
 
-import { commands as analyticsCommands } from "@hypr/plugin-analytics";
-import type { AIProvider } from "@hypr/store";
-import { aiProviderSchema } from "@hypr/store";
+import { commands as analyticsCommands } from "@anlg/plugin-analytics";
+import type { AIProvider } from "@anlg/store";
+import { aiProviderSchema } from "@anlg/store";
 import {
   AccordionContent,
   AccordionItem,
   AccordionTrigger,
-} from "@hypr/ui/components/ui/accordion";
+} from "@anlg/ui/components/ui/accordion";
 import {
   InputGroup,
   InputGroupInput,
-} from "@hypr/ui/components/ui/input-group";
+} from "@anlg/ui/components/ui/input-group";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from "@hypr/ui/components/ui/tooltip";
-import { cn } from "@hypr/utils";
+} from "@anlg/ui/components/ui/tooltip";
+import { cn } from "@anlg/utils";
 
 import {
   getProviderSelectionBlockers,
@@ -30,11 +31,19 @@ import {
   type ProviderRequirement,
   requiresEntitlement,
 } from "./eligibility";
+import { useProviderSelectionPrompt } from "./provider-selection-prompt";
 
-import { useBillingAccess } from "~/auth/billing";
-import * as settings from "~/store/tinybase/store/settings";
+import { useBillingAccess } from "~/auth/billing-context";
+import {
+  isKeychainAccessError,
+  repairKeychainAccess,
+  useAiProviders,
+  useAiProvidersState,
+  useSetAiProvider,
+} from "~/settings/providers";
+import { SettingsAlertToast } from "~/shared/ui/settings-alert";
 
-export * from "./hypr-cloud-button";
+export * from "./anarlog-cloud-button";
 export * from "./model-combobox";
 
 type ProviderType = "stt" | "llm";
@@ -47,6 +56,8 @@ type ProviderConfig = {
   baseUrl?: string;
   disabled?: boolean;
   requirements: ProviderRequirement[];
+  checkAvailability?: (baseUrl: string, apiKey: string) => Promise<boolean>;
+  hideAdvanced?: boolean;
   links?: {
     download?: { label: string; url: string };
     models?: { label: string; url: string };
@@ -62,7 +73,7 @@ export function AnarlogProviderIcon() {
       src={ANARLOG_ICON_SRC}
       alt="Anarlog"
       data-slot="provider-logo"
-      className="size-4 object-contain object-center [clip-path:inset(6%_round_18%)]"
+      className="size-full object-contain object-center"
     />
   );
 }
@@ -89,52 +100,127 @@ export function ProviderBrandImage({
   );
 }
 
-export function ProviderIconSlot({ children }: { children: ReactNode }) {
+export function AiIconSlot({
+  children,
+  title,
+  className,
+}: {
+  children: ReactNode;
+  title?: string;
+  className?: string;
+}) {
   return (
     <span
-      data-slot="provider-icon"
+      title={title}
+      aria-label={title}
+      data-slot="ai-icon"
       className={cn([
-        "text-foreground flex size-5 shrink-0 items-center justify-center",
-        "[&_svg]:block [&_svg]:size-full [&_svg]:text-inherit",
-        "[&_iconify-icon]:text-inherit",
+        "bg-muted text-foreground flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-md",
         "[&_[data-slot=provider-brand-icon]]:[filter:var(--provider-brand-filter)]",
+        className,
       ])}
     >
-      {children}
+      <span
+        data-slot="ai-icon-art"
+        className={cn([
+          "flex size-3.5 items-center justify-center overflow-hidden",
+          "[&>img]:block [&>img]:size-full [&>svg]:block [&>svg]:size-full [&>svg]:text-inherit",
+        ])}
+      >
+        {children}
+      </span>
     </span>
   );
+}
+
+export function ProviderIconSlot({ children }: { children: ReactNode }) {
+  return <AiIconSlot>{children}</AiIconSlot>;
 }
 
 export function providerRowId(providerType: ProviderType, providerId: string) {
   return `${providerType}:${providerId}`;
 }
 
-function useIsProviderConfigured(
+export function useProviderAvailability(
+  providerType: ProviderType,
+  providers: readonly ProviderConfig[],
+): Record<string, boolean | undefined> {
+  const billing = useBillingAccess();
+  const configuredProviders = useAiProviders(providerType);
+
+  const inputs = providers
+    .filter((provider) => provider.checkAvailability)
+    .map((provider) => {
+      const config =
+        configuredProviders[providerRowId(providerType, provider.id)];
+      const baseUrl = String(config?.base_url || provider.baseUrl || "").trim();
+      const apiKey = String(config?.api_key || "").trim();
+      const isConfigured =
+        getProviderSelectionBlockers(provider.requirements, {
+          isAuthenticated: true,
+          isPaid: billing.isPaid,
+          config: { base_url: baseUrl, api_key: apiKey },
+        }).length === 0;
+
+      return { provider, baseUrl, apiKey, isConfigured };
+    });
+
+  const queries = useQueries({
+    queries: inputs.map(({ provider, baseUrl, apiKey, isConfigured }) => ({
+      queryKey: [
+        "ai-provider-availability",
+        providerType,
+        provider.id,
+        baseUrl,
+        apiKey,
+      ],
+      queryFn: () => provider.checkAvailability?.(baseUrl, apiKey) ?? false,
+      enabled: isConfigured,
+      retry: false,
+      refetchInterval: 5_000,
+    })),
+  });
+
+  const entries = inputs.map(
+    ({ provider, isConfigured }, index) =>
+      [
+        provider.id,
+        !isConfigured
+          ? false
+          : queries[index]?.isPending
+            ? undefined
+            : queries[index]?.data === true,
+      ] as const,
+  );
+
+  // Callers put this record in memo dependency lists, so its identity has to
+  // stay stable while the values do; a fresh object each render would recompute
+  // those memos and churn the derived listModels closures used as query keys.
+  const signature = entries.map(([id, value]) => `${id}=${value}`).join("|");
+
+  return useMemo(() => Object.fromEntries(entries), [signature]);
+}
+
+export function useIsProviderReady(
   providerId: string,
   providerType: ProviderType,
   providers: readonly ProviderConfig[],
 ) {
   const billing = useBillingAccess();
-  const query =
-    providerType === "stt"
-      ? settings.QUERIES.sttProviders
-      : settings.QUERIES.llmProviders;
-
-  const configuredProviders = settings.UI.useResultTable(
-    query,
-    settings.STORE_ID,
-  );
+  const configuredProviders = useAiProviders(providerType);
+  const availability = useProviderAvailability(providerType, providers);
   const providerDef = providers.find((p) => p.id === providerId);
-  const config = configuredProviders[providerRowId(providerType, providerId)];
 
-  if (!providerDef) {
-    return false;
+  if (providerDef?.checkAvailability) {
+    return availability[providerId];
   }
 
-  const baseUrl = String(config?.base_url || providerDef.baseUrl || "").trim();
+  const config = configuredProviders[providerRowId(providerType, providerId)];
+  const baseUrl = String(config?.base_url || providerDef?.baseUrl || "").trim();
   const apiKey = String(config?.api_key || "").trim();
 
   return (
+    !!providerDef &&
     getProviderSelectionBlockers(providerDef.requirements, {
       isAuthenticated: true,
       isPaid: billing.isPaid,
@@ -143,35 +229,59 @@ function useIsProviderConfigured(
   );
 }
 
-export function NonHyprProviderCard({
+export function NonAnarlogProviderCard({
   config,
   providerType,
   providers,
   providerContext,
+  currentProvider,
 }: {
   config: ProviderConfig;
   providerType: ProviderType;
   providers: readonly ProviderConfig[];
   providerContext?: ReactNode;
+  currentProvider?: string;
 }) {
   const { t } = useLingui();
   const billing = useBillingAccess();
-  const [provider, setProvider] = useProvider(providerType, config.id);
+  const [provider, providerMutation, providerStateReady] = useProvider(
+    providerType,
+    config.id,
+  );
+  const [hasUnresolvedKeychainError, setHasUnresolvedKeychainError] =
+    useState(false);
+  const [isKeychainRecoveryInProgress, setIsKeychainRecoveryInProgress] =
+    useState(false);
   const locked =
     requiresEntitlement(config.requirements, "pro") && !billing.isPaid;
-  const isConfigured = useIsProviderConfigured(
-    config.id,
-    providerType,
-    providers,
-  );
+  const isReady = useIsProviderReady(config.id, providerType, providers);
 
   const requiredFields = getRequiredConfigFields(config.requirements);
   const showApiKey = requiredFields.includes("api_key");
   const showBaseUrl = requiredFields.includes("base_url");
+  const notifyProviderSelection = useProviderSelectionPrompt({
+    providerType,
+    providerId: config.id,
+    providerName: config.displayName,
+    currentProvider,
+    providerStateReady,
+    storedApiKey: provider?.api_key,
+  });
 
   const form = useForm({
-    onSubmit: ({ value }) => {
-      setProvider(value);
+    onSubmit: async ({ value }) => {
+      try {
+        await providerMutation.mutateAsync(value);
+      } catch (error) {
+        if (isKeychainAccessError(error)) {
+          setHasUnresolvedKeychainError(true);
+        }
+        return;
+      }
+
+      setHasUnresolvedKeychainError(false);
+      notifyProviderSelection(value.api_key);
+
       void analyticsCommands.event({
         event: "ai_provider_configured",
         provider: value.type,
@@ -191,6 +301,7 @@ export function NonHyprProviderCard({
       } satisfies AIProvider),
     listeners: {
       onChange: ({ formApi }) => {
+        providerMutation.reset();
         queueMicrotask(() => {
           void formApi.handleSubmit();
         });
@@ -198,6 +309,22 @@ export function NonHyprProviderCard({
     },
     validators: { onChange: aiProviderSchema },
   });
+  const repairMutation = useMutation<void, Error>({
+    mutationFn: repairKeychainAccess,
+    onMutate: () => {
+      setIsKeychainRecoveryInProgress(true);
+    },
+    onSuccess: async () => {
+      await form.handleSubmit();
+    },
+    onSettled: () => {
+      setIsKeychainRecoveryInProgress(false);
+    },
+  });
+  const keychainToastDescription = isKeychainRecoveryInProgress
+    ? t`Unlock your login Keychain in the macOS prompt. Anarlog will retry saving this API key automatically.`
+    : (repairMutation.error?.message ??
+      t`macOS cannot access your login Keychain. Repairing briefly locks it and asks for your Mac password before Anarlog retries this API key.`);
 
   return (
     <AccordionItem
@@ -205,9 +332,25 @@ export function NonHyprProviderCard({
       value={config.id}
       className={cn([
         "bg-muted rounded-[22px] border-2",
-        isConfigured ? "border-border border-solid" : "border-dashed",
+        isReady ? "border-border border-solid" : "border-dashed",
       ])}
     >
+      <SettingsAlertToast
+        id={`provider-keychain-access:${providerType}:${config.id}`}
+        description={
+          hasUnresolvedKeychainError ? keychainToastDescription : undefined
+        }
+        variant="error"
+        lifecycle="condition-bound"
+        action={
+          isKeychainRecoveryInProgress
+            ? undefined
+            : {
+                label: t`Repair Keychain Access`,
+                onClick: () => repairMutation.mutate(),
+              }
+        }
+      />
       <AccordionTrigger
         className={cn([
           "gap-2 px-4 capitalize hover:no-underline",
@@ -263,7 +406,7 @@ export function NonHyprProviderCard({
                   className="text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 hover:underline"
                 >
                   {config.links.download.label}
-                  <ExternalLink size={12} />
+                  <ArrowSquareOut size={12} />
                 </a>
               )}
               {config.links.models && (
@@ -274,7 +417,7 @@ export function NonHyprProviderCard({
                   className="text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 hover:underline"
                 >
                   {config.links.models.label}
-                  <ExternalLink size={12} />
+                  <ArrowSquareOut size={12} />
                 </a>
               )}
               {config.links.setup && (
@@ -285,37 +428,46 @@ export function NonHyprProviderCard({
                   className="text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 hover:underline"
                 >
                   {config.links.setup.label}
-                  <ExternalLink size={12} />
+                  <ArrowSquareOut size={12} />
                 </a>
               )}
             </div>
           )}
-          {((!showBaseUrl && config.baseUrl) || !showApiKey) && (
-            <details className="flex flex-col gap-4 pt-2">
-              <summary className="text-muted-foreground hover:text-foreground cursor-pointer text-xs hover:underline">
-                <Trans>Advanced</Trans>
-              </summary>
-              <div className="mt-4 flex flex-col gap-4">
-                {!showBaseUrl && config.baseUrl && (
-                  <form.Field name="base_url">
-                    {(field) => <FormField field={field} label={t`Base URL`} />}
-                  </form.Field>
-                )}
-                {!showApiKey && (
-                  <form.Field name="api_key">
-                    {(field) => (
-                      <FormField
-                        field={field}
-                        label={t`API Key`}
-                        placeholder={t`Enter your API key (optional)`}
-                        type="password"
-                      />
-                    )}
-                  </form.Field>
-                )}
-              </div>
-            </details>
-          )}
+          {!config.hideAdvanced &&
+            ((!showBaseUrl && config.baseUrl) || !showApiKey) && (
+              <details className="flex flex-col gap-4 pt-2">
+                <summary className="text-muted-foreground hover:text-foreground cursor-pointer text-xs hover:underline">
+                  <Trans>Advanced</Trans>
+                </summary>
+                <div className="mt-4 flex flex-col gap-4">
+                  {!showBaseUrl && config.baseUrl && (
+                    <form.Field name="base_url">
+                      {(field) => (
+                        <FormField field={field} label={t`Base URL`} />
+                      )}
+                    </form.Field>
+                  )}
+                  {!showApiKey && (
+                    <form.Field name="api_key">
+                      {(field) => (
+                        <FormField
+                          field={field}
+                          label={t`API Key`}
+                          placeholder={t`Enter your API key (optional)`}
+                          type="password"
+                        />
+                      )}
+                    </form.Field>
+                  )}
+                </div>
+              </details>
+            )}
+          {providerMutation.error &&
+            !isKeychainAccessError(providerMutation.error) && (
+              <p className="text-destructive text-xs">
+                {providerMutation.error.message}
+              </p>
+            )}
         </form>
       </AccordionContent>
     </AccordionItem>
@@ -413,22 +565,12 @@ export function StyledStreamdown({
 }
 
 function useProvider(providerType: ProviderType, id: string) {
-  const rowId = providerRowId(providerType, id);
-  const providerRow = settings.UI.useRow(
-    "ai_providers",
-    rowId,
-    settings.STORE_ID,
-  );
-  const setProvider = settings.UI.useSetPartialRowCallback(
-    "ai_providers",
-    rowId,
-    (row: Partial<AIProvider>) => row,
-    [rowId],
-    settings.STORE_ID,
-  ) as (row: Partial<AIProvider>) => void;
+  const { providers, isReady } = useAiProvidersState(providerType);
+  const providerRow = providers[providerRowId(providerType, id)];
+  const providerMutation = useSetAiProvider(providerType, id);
 
   const { data } = aiProviderSchema.safeParse(providerRow);
-  return [data, setProvider] as const;
+  return [data, providerMutation, isReady] as const;
 }
 
 function FormField({

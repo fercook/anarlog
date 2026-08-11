@@ -1,5 +1,8 @@
-import { commands as openerCommands } from "@hypr/plugin-opener2";
-import { openUrlWithInstruction } from "@hypr/plugin-windows";
+import { useMutation } from "@tanstack/react-query";
+import { useCallback, useRef } from "react";
+
+import { commands as openerCommands } from "@anlg/plugin-opener2";
+import { openUrlWithInstruction } from "@anlg/plugin-windows";
 
 import { buildWebAppUrl } from "~/shared/utils";
 
@@ -27,4 +30,46 @@ export async function openIntegrationUrl(
     (u) => openerCommands.openUrl(u, null),
     { integrationId: nangoIntegrationId },
   );
+}
+
+export function useOpenIntegrationUrl() {
+  // React state cannot gate re-entry: a second click can land before the
+  // pending state commits, opening a duplicate integration flow.
+  const inFlightRef = useRef(false);
+  const { mutate, isPending, variables } = useMutation({
+    mutationFn: (input: {
+      nangoIntegrationId: string | undefined;
+      connectionId?: string;
+      action: "connect" | "reconnect" | "disconnect";
+      returnTo?: string;
+    }) =>
+      openIntegrationUrl(
+        input.nangoIntegrationId,
+        input.connectionId,
+        input.action,
+        input.returnTo,
+      ),
+  });
+
+  const openIntegration = useCallback<typeof mutate>(
+    (input, options) => {
+      if (inFlightRef.current) {
+        return;
+      }
+      inFlightRef.current = true;
+      mutate(input, {
+        ...options,
+        onSettled: (...args) => {
+          inFlightRef.current = false;
+          options?.onSettled?.(...args);
+        },
+      });
+    },
+    [mutate],
+  );
+
+  return {
+    openIntegration,
+    openingAction: isPending ? (variables?.action ?? null) : null,
+  };
 }

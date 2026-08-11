@@ -1,47 +1,58 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { platform } from "@tauri-apps/plugin-os";
 import {
-  AudioLinesIcon,
-  ArrowUpRightIcon,
-  BellIcon,
-  BookText,
-  CalendarIcon,
-  CogIcon,
-  LockIcon,
-  SlidersHorizontalIcon,
-  SparklesIcon,
-  type LucideIcon,
-  UserIcon,
-  UsersIcon,
-} from "lucide-react";
-import { useCallback } from "react";
+  ArrowUpRight,
+  ArrowsClockwise,
+  Bell,
+  BookOpen,
+  CalendarDots,
+  Code,
+  DownloadSimple,
+  FileText,
+  Gear,
+  Lightning,
+  type Icon,
+  Lock,
+  MagnifyingGlass,
+  Sparkle,
+  Sun,
+  User,
+  Users,
+  VideoCamera,
+  X,
+} from "@phosphor-icons/react";
+import { useCallback, useState } from "react";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
 import { CustomSidebarHeader } from "./custom-sidebar-header";
 
-import { type SettingsTab, useTabs } from "~/store/zustand/tabs";
+import { useAuth } from "~/auth";
+import { type SettingsTab, type TabInput, useTabs } from "~/store/zustand/tabs";
 
 type SettingsNavItem =
-  | { id: SettingsTab; label: string; icon: LucideIcon }
+  | { id: SettingsTab; label: string; icon: Icon }
   | {
-      action: "open-templates" | "open-calendar" | "open-contacts";
+      id: "automations" | "calendar" | "contacts" | "templates";
       label: string;
-      icon: LucideIcon;
+      icon: Icon;
+      destination: TabInput;
     };
 
 type SettingsNavGroup = { label: string; items: SettingsNavItem[] };
 
 export function SettingsNav() {
   const { t } = useLingui();
+  const signedIn = Boolean(useAuth().session);
+  const [search, setSearch] = useState("");
   const currentTab = useTabs((state) => state.currentTab);
-  const openNew = useTabs((state) => state.openNew);
   const updateSettingsTabState = useTabs(
     (state) => state.updateSettingsTabState,
   );
+  const openNew = useTabs((state) => state.openNew);
 
-  const activeTab =
+  const requestedTab =
     currentTab?.type === "settings" ? (currentTab.state.tab ?? "app") : "app";
+  const activeTab = requestedTab === "audio" ? "meetings" : requestedTab;
 
   const setActiveTab = useCallback(
     (tab: SettingsTab) => {
@@ -52,113 +63,183 @@ export function SettingsNav() {
     [currentTab, updateSettingsTabState],
   );
 
-  const handleOpenTemplates = useCallback(() => {
-    openNew({ type: "templates" });
-  }, [openNew]);
-
-  const handleOpenCalendar = useCallback(() => {
-    openNew({ type: "calendar" });
-  }, [openNew]);
-
-  const handleOpenContacts = useCallback(() => {
-    openNew({ type: "contacts", state: { selected: null } });
-  }, [openNew]);
-
   const groups: SettingsNavGroup[] = [
     {
-      label: t`General`,
+      label: t`App`,
       items: [
-        { id: "app", label: t`App`, icon: CogIcon },
-        { id: "account", label: t`Account`, icon: UserIcon },
-        { id: "notifications", label: t`Notifications`, icon: BellIcon },
+        { id: "app", label: t`General`, icon: Gear },
+        { id: "account", label: t`Account`, icon: User },
+        { id: "appearance", label: t`Appearance`, icon: Sun },
+        { id: "notifications", label: t`Notifications`, icon: Bell },
       ],
     },
     {
-      label: t`Context`,
+      label: t`Workspace`,
       items: [
+        { id: "meetings", label: t`Meetings`, icon: VideoCamera },
         {
-          action: "open-calendar",
+          id: "calendar",
           label: t`Calendar`,
-          icon: CalendarIcon,
+          icon: CalendarDots,
+          destination: { type: "calendar" },
         },
         {
-          action: "open-contacts",
+          id: "contacts",
           label: t`Contacts`,
-          icon: UsersIcon,
+          icon: Users,
+          destination: { type: "contacts" },
         },
         {
-          action: "open-templates",
+          id: "templates",
           label: t`Templates`,
-          icon: BookText,
+          icon: FileText,
+          destination: { type: "templates" },
+        },
+        {
+          id: "automations",
+          label: t`Automations`,
+          icon: Lightning,
+          destination: { type: "automations" },
         },
       ],
     },
     {
       label: "AI",
       items: [
-        { id: "transcription", label: t`Transcription`, icon: AudioLinesIcon },
-        { id: "intelligence", label: t`Intelligence`, icon: SparklesIcon },
+        { id: "transcription", label: t`Transcription`, icon: Sparkle },
+        { id: "intelligence", label: t`Intelligence`, icon: Sparkle },
         {
-          id: "personalization",
-          label: t`Personalization`,
-          icon: SlidersHorizontalIcon,
+          id: "dictionary",
+          label: t`Dictionary`,
+          icon: BookOpen,
         },
       ],
     },
+    {
+      label: t`Data`,
+      items: [
+        ...(signedIn
+          ? [{ id: "sync" as const, label: t`Sync`, icon: ArrowsClockwise }]
+          : []),
+        { id: "imports", label: t`Imports`, icon: DownloadSimple },
+      ],
+    },
+    {
+      label: t`Advanced`,
+      items: [
+        { id: "permissions", label: t`Permissions`, icon: Lock },
+        { id: "developers", label: t`Developers`, icon: Code },
+      ],
+    },
   ];
-  const isMacos = platform() === "macos";
-  if (isMacos) {
-    groups[0].items.push({
-      id: "permissions" as const,
-      label: t`Permissions`,
-      icon: LockIcon,
-    });
-  }
+
+  const query = search.trim().toLowerCase();
+  const visibleGroups = query
+    ? groups
+        .map((group) =>
+          group.label.toLowerCase().includes(query)
+            ? group
+            : {
+                ...group,
+                items: group.items.filter((item) =>
+                  item.label.toLowerCase().includes(query),
+                ),
+              },
+        )
+        .filter((group) => group.items.length > 0)
+    : groups;
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
-      <CustomSidebarHeader title={<Trans>Settings</Trans>} />
+      <CustomSidebarHeader />
+      <div className="pb-2">
+        <div
+          className={cn([
+            "border-border bg-accent/50 flex h-8 w-full shrink-0 items-center gap-2 rounded-lg border px-3",
+            "focus-within:bg-accent transition-colors",
+          ])}
+        >
+          <MagnifyingGlass className="text-muted-foreground h-4 w-4 shrink-0" />
+          <input
+            type="text"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setSearch("");
+              }
+            }}
+            placeholder={t`Search settings...`}
+            className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-sm placeholder:text-sm focus:outline-hidden"
+          />
+          {search ? (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              className={cn([
+                "size-4 shrink-0",
+                "text-muted-foreground hover:text-foreground",
+                "transition-colors",
+              ])}
+              aria-label={t`Clear search`}
+            >
+              <X className="size-4" />
+            </button>
+          ) : null}
+        </div>
+      </div>
       <div className="scrollbar-hide flex-1 overflow-y-auto">
-        <div className="flex flex-col gap-4 pb-2">
-          {groups.map((group) => (
+        <div className="flex flex-col gap-5 pb-2">
+          {visibleGroups.length === 0 ? (
+            <div className="text-muted-foreground px-3 py-8 text-center">
+              <MagnifyingGlass
+                size={32}
+                className="text-muted-foreground/70 mx-auto mb-2"
+              />
+              <p className="text-sm">
+                <Trans>No results found.</Trans>
+              </p>
+            </div>
+          ) : null}
+          {visibleGroups.map((group) => (
             <div key={group.label} className="flex flex-col gap-0.5">
-              <span className="text-muted-foreground px-3 pb-1 text-[11px] font-medium tracking-wider uppercase">
+              <span className="text-muted-foreground/60 px-3 pb-1 text-[11px] font-medium tracking-wider uppercase">
                 {group.label}
               </span>
               {group.items.map((item) => {
-                const isSettingsItem = "id" in item;
-
                 return (
                   <button
-                    key={isSettingsItem ? item.id : item.action}
+                    key={item.id}
                     onClick={() => {
-                      if (!isSettingsItem) {
-                        if (item.action === "open-templates") {
-                          handleOpenTemplates();
-                        } else if (item.action === "open-calendar") {
-                          handleOpenCalendar();
-                        } else {
-                          handleOpenContacts();
-                        }
+                      if ("destination" in item) {
+                        openNew(item.destination);
                         return;
                       }
 
-                      setActiveTab(item.id as SettingsTab);
+                      setActiveTab(item.id);
                     }}
                     className={cn([
                       "flex w-full items-center gap-2 rounded-full px-3 py-2 text-left text-sm",
                       "transition-colors",
-                      isSettingsItem && activeTab === item.id
+                      activeTab === item.id
                         ? "bg-sidebar-accent text-foreground font-medium"
                         : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground",
                     ])}
                   >
-                    <item.icon size={15} className="shrink-0" />
+                    <item.icon
+                      size={15}
+                      className="shrink-0"
+                      data-testid={`settings-nav-icon-${item.id}`}
+                    />
                     <span className="min-w-0 flex-1 truncate">
                       {item.label}
                     </span>
-                    {!isSettingsItem ? (
-                      <ArrowUpRightIcon size={13} className="shrink-0" />
+                    {"destination" in item ? (
+                      <ArrowUpRight
+                        aria-hidden
+                        className="text-muted-foreground/70 size-3.5 shrink-0"
+                        data-testid={`settings-nav-destination-icon-${item.id}`}
+                      />
                     ) : null}
                   </button>
                 );

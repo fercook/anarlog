@@ -6,12 +6,11 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { forwardRef, useImperativeHandle } from "react";
+import { forwardRef, useImperativeHandle, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { commands } from "~/types/tauri.gen";
-
 const mocks = vi.hoisted(() => ({
+  runtimePlatform: null as "windows" | "linux" | null,
   currentTab: {
     active: true,
     pinned: false,
@@ -36,20 +35,29 @@ const mocks = vi.hoisted(() => ({
     resize: vi.fn(),
   },
   tabContentRenderCount: 0,
-  devtoolsPanelActionListeners: [] as Array<
-    (event: { payload: { action: string } }) => void
-  >,
-  windowsCommands: {
-    devtoolsPanelHide: vi.fn(async () => ({ status: "ok" as const })),
-    devtoolsPanelShow: vi.fn(async () => ({ status: "ok" as const })),
+  upcomingMeetingStatus: null as null | {
+    itemKey: string;
+    label: string;
+    title: string;
   },
-  updateControl: {
-    status: null as null | "available" | "downloading" | "ready" | "failed",
-    version: null as string | null,
+  setUpcomingMeetingStatus: null as
+    | null
+    | ((
+        status: null | { itemKey: string; label: string; title: string },
+      ) => void),
+}));
+
+vi.mock("@tauri-apps/plugin-os", () => ({
+  platform: () => {
+    if (mocks.runtimePlatform === null) {
+      throw new Error("Tauri runtime unavailable");
+    }
+
+    return mocks.runtimePlatform;
   },
 }));
 
-vi.mock("@hypr/ui/components/ui/resizable", () => ({
+vi.mock("@anlg/ui/components/ui/resizable", () => ({
   ResizablePanelGroup: ({
     autoSaveId,
     children,
@@ -155,25 +163,6 @@ vi.mock("~/contexts/shell", () => ({
   }),
 }));
 
-vi.mock("@hypr/plugin-windows", () => ({
-  commands: mocks.windowsCommands,
-  events: {
-    devtoolsPanelAction: {
-      listen: vi.fn(
-        async (listener: (event: { payload: { action: string } }) => void) => {
-          mocks.devtoolsPanelActionListeners.push(listener);
-          return () => {
-            mocks.devtoolsPanelActionListeners =
-              mocks.devtoolsPanelActionListeners.filter(
-                (candidate) => candidate !== listener,
-              );
-          };
-        },
-      ),
-    },
-  },
-}));
-
 vi.mock("~/store/zustand/tabs", () => ({
   uniqueIdfromTab: (tab: { type: string }) => tab.type,
   useTabs: (
@@ -205,9 +194,8 @@ vi.mock("./tab-content", () => ({
   },
 }));
 
-vi.mock("./update-banner", () => ({
-  SidebarTimelineUpdateButton: () => <button type="button">Update</button>,
-  useDesktopUpdateControl: () => mocks.updateControl,
+vi.mock("~/sidebar/note-filter-menu", () => ({
+  SidebarNoteFilterMenu: () => <button type="button">Filter notes</button>,
 }));
 
 vi.mock("./useShortcuts", () => ({
@@ -223,7 +211,11 @@ vi.mock("~/shared/useNewNote", () => ({
 }));
 
 vi.mock("~/sidebar/timeline/upcoming-meeting", () => ({
-  useSidebarUpcomingMeetingStatus: () => null,
+  useSidebarUpcomingMeetingStatus: () => {
+    const [status, setStatus] = useState(mocks.upcomingMeetingStatus);
+    mocks.setUpcomingMeetingStatus = setStatus;
+    return status;
+  },
 }));
 
 import { ClassicMainBody } from "./body";
@@ -245,6 +237,7 @@ function rectWithWidth(width: number) {
 describe("ClassicMainBody", () => {
   beforeEach(() => {
     cleanup();
+    mocks.runtimePlatform = null;
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       value: 1600,
@@ -269,13 +262,8 @@ describe("ClassicMainBody", () => {
     mocks.leftSidebarPanelHandle.isExpanded.mockClear();
     mocks.leftSidebarPanelHandle.resize.mockClear();
     mocks.tabContentRenderCount = 0;
-    mocks.devtoolsPanelActionListeners = [];
-    mocks.windowsCommands.devtoolsPanelHide.mockClear();
-    mocks.windowsCommands.devtoolsPanelShow.mockClear();
-    mocks.updateControl.status = null;
-    mocks.updateControl.version = null;
-    vi.mocked(commands.showDevtool).mockClear();
-    vi.mocked(commands.showDevtool).mockResolvedValue(true);
+    mocks.upcomingMeetingStatus = null;
+    mocks.setUpcomingMeetingStatus = null;
   });
 
   it("wraps the expanded left sidebar in a persistent resizable panel", () => {
@@ -309,7 +297,7 @@ describe("ClassicMainBody", () => {
     expect(panels[0]?.dataset.flexGrow).toBe("var(--left-sidebar-panel-size)");
     expect(panels[0]?.dataset.minWidth).toBe("200");
     expect(panels[0]?.dataset.maxWidth).toBe("360");
-    expect(panels[0]?.dataset.transition).toContain("flex-grow");
+    expect(panels[0]?.dataset.transition).toBeUndefined();
     expect(panels[1]?.dataset.panelId).toBe("classic-main-content");
     expect(panels[1]?.dataset.order).toBe("2");
 
@@ -324,6 +312,9 @@ describe("ClassicMainBody", () => {
     );
 
     expect(sidebarContent?.className).toContain("translate-x-0");
+    expect(sidebarContent?.className).toContain(
+      "transition-[opacity,transform]",
+    );
     expect(sidebarContent?.getAttribute("aria-hidden")).toBe("false");
     expect(sidebarChrome).toBeNull();
     expect(sidebarTimelineHeader).toBeTruthy();
@@ -352,6 +343,7 @@ describe("ClassicMainBody", () => {
     ["calendar", {}],
     ["contacts", { state: { selected: null } }],
     ["templates", { state: { selectedMineId: null, selectedWebIndex: null } }],
+    ["automations", {}],
   ])("keeps the %s left sidebar fixed", (type, extraTabState) => {
     mocks.currentTab = {
       active: true,
@@ -404,6 +396,29 @@ describe("ClassicMainBody", () => {
       "12.5%",
     );
   });
+
+  it.each([
+    ["settings", { state: { tab: "app" } }],
+    ["calendar", {}],
+    ["contacts", { state: { selected: null } }],
+    ["automations", {}],
+    ["templates", { state: { selectedMineId: null, selectedWebIndex: null } }],
+  ] as const)(
+    "leaves the %s chrome row back button to the sidebar header",
+    (type, extraTabState) => {
+      mocks.currentTab = {
+        active: true,
+        pinned: false,
+        slotId: `slot-${type}`,
+        type,
+        ...extraTabState,
+      };
+
+      render(<ClassicMainBody />);
+
+      expect(screen.queryByRole("button", { name: "Go back" })).toBeNull();
+    },
+  );
 
   it("settles the startup left sidebar default against the rendered body width", async () => {
     let bodyWidth = 1000;
@@ -574,16 +589,35 @@ describe("ClassicMainBody", () => {
     );
   });
 
-  it("keeps the update button in the fixed sidebar control group", () => {
-    mocks.updateControl.status = "available";
-    mocks.updateControl.version = "1.0.34";
+  it("updates the upcoming meeting badge without rerendering tab content", () => {
+    mocks.leftsidebar.expanded = false;
+    render(<ClassicMainBody />);
+    const initialRenderCount = mocks.tabContentRenderCount;
 
+    act(() => {
+      mocks.setUpcomingMeetingStatus?.({
+        itemKey: "event-standup",
+        label: "In 1m",
+        title: "Team standup",
+      });
+    });
+
+    expect(
+      screen.getByTestId("collapsed-sidebar-upcoming-meeting-badge"),
+    ).toBeTruthy();
+    expect(mocks.tabContentRenderCount).toBe(initialRenderCount);
+  });
+
+  it("keeps the note filter beside the new note button", () => {
     render(<ClassicMainBody />);
 
-    const searchButton = screen.getByRole("button", { name: "Search" });
-    const updateButton = screen.getByRole("button", { name: "Update" });
+    const newNoteButton = screen.getByRole("button", { name: "New note" });
+    const filterButton = screen.getByRole("button", { name: "Filter notes" });
 
-    expect(updateButton.parentElement).toBe(searchButton.parentElement);
+    expect(filterButton.parentElement).toBe(newNoteButton.parentElement);
+    expect(newNoteButton.compareDocumentPosition(filterButton)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
   });
 
   it("keeps near-equal sidebar size commits in sync with drag-time CSS variables", () => {
@@ -663,7 +697,7 @@ describe("ClassicMainBody", () => {
     expect(panels[1]?.dataset.minWidth).toBe("500");
   });
 
-  it("collapses the sidebar panel and unmounts hidden timeline content", () => {
+  it("collapses the sidebar panel while keeping hidden timeline content mounted", () => {
     mocks.leftsidebar.expanded = false;
 
     render(<ClassicMainBody />);
@@ -672,7 +706,7 @@ describe("ClassicMainBody", () => {
 
     expect(resizeHandle.dataset.className).toContain("pointer-events-none");
     expect(resizeHandle.dataset.className).toContain("w-0");
-    expect(screen.queryByTestId("classic-main-sidebar")).toBeNull();
+    expect(screen.getByTestId("classic-main-sidebar")).toBeTruthy();
 
     const panels = screen.getAllByTestId("panel");
     expect(panels).toHaveLength(2);
@@ -680,13 +714,16 @@ describe("ClassicMainBody", () => {
     expect(panels[0]?.dataset.flexGrow).toBe("0");
     expect(panels[0]?.dataset.minWidth).toBe("0");
     expect(panels[0]?.dataset.maxWidth).toBe("0");
-    expect(panels[0]?.dataset.transition).toContain("flex-grow");
+    expect(panels[0]?.dataset.transition).toBeUndefined();
 
     const sidebarContent = document.querySelector<HTMLElement>(
       "[data-left-sidebar-panel-content]",
     );
     expect(sidebarContent?.className).toContain("-translate-x-3");
     expect(sidebarContent?.className).toContain("opacity-0");
+    expect(
+      document.querySelector("[data-sidebar-timeline-header]"),
+    ).toBeTruthy();
     expect(sidebarContent?.getAttribute("aria-hidden")).toBe("true");
     expect(sidebarContent?.hasAttribute("inert")).toBe(true);
   });
@@ -694,16 +731,22 @@ describe("ClassicMainBody", () => {
   it("resizes the collapsed sidebar panel before reopening it", () => {
     mocks.leftsidebar.expanded = false;
 
-    render(<ClassicMainBody />);
+    const { rerender } = render(<ClassicMainBody />);
+    const mountedSidebar = screen.getByTestId("classic-main-sidebar");
 
     fireEvent.click(screen.getByRole("button", { name: "Show sidebar" }));
 
     expect(mocks.leftSidebarPanelHandle.resize).toHaveBeenCalledWith(12.5);
     expect(mocks.leftSidebarPanelHandle.expand).not.toHaveBeenCalled();
     expect(mocks.leftsidebar.toggleExpanded).toHaveBeenCalledTimes(1);
+
+    mocks.leftsidebar.expanded = true;
+    rerender(<ClassicMainBody />);
+
+    expect(screen.getByTestId("classic-main-sidebar")).toBe(mountedSidebar);
   });
 
-  it("restores sidebar transitions when a resize is interrupted by collapse", () => {
+  it("keeps layout transitions disabled when resize is interrupted by collapse", () => {
     const { rerender } = render(<ClassicMainBody />);
 
     act(() => {
@@ -718,104 +761,10 @@ describe("ClassicMainBody", () => {
     mocks.leftsidebar.expanded = false;
     rerender(<ClassicMainBody />);
 
-    expect(screen.getAllByTestId("panel")[0]?.dataset.transition).toContain(
-      "flex-grow",
-    );
+    expect(
+      screen.getAllByTestId("panel")[0]?.dataset.transition,
+    ).toBeUndefined();
     expect(mocks.leftsidebar.toggleExpanded).toHaveBeenCalledTimes(1);
-  });
-
-  it("shows the devtools button until the panel opens, then restores it when closed", async () => {
-    render(<ClassicMainBody />);
-
-    const searchButton = screen.getByRole("button", { name: "Search" });
-    const newNoteButton = screen.getByRole("button", { name: "New note" });
-    const devtoolsButton = await screen.findByRole("button", {
-      name: "Show devtools panel",
-    });
-
-    expect(searchButton.compareDocumentPosition(newNoteButton)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING,
-    );
-    expect(newNoteButton.compareDocumentPosition(devtoolsButton)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING,
-    );
-    expect(devtoolsButton.parentElement).toBe(newNoteButton.parentElement);
-
-    fireEvent.click(devtoolsButton);
-
-    expect(mocks.windowsCommands.devtoolsPanelShow).toHaveBeenCalledTimes(1);
-    expect(mocks.windowsCommands.devtoolsPanelHide).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("button", { name: "Show devtools panel" }),
-    ).toBeTruthy();
-
-    act(() => {
-      for (const listener of mocks.devtoolsPanelActionListeners) {
-        listener({ payload: { action: "panel:opened" } });
-      }
-    });
-
-    await waitFor(() => {
-      expect(
-        screen.queryByRole("button", { name: "Show devtools panel" }),
-      ).toBeNull();
-    });
-
-    act(() => {
-      for (const listener of mocks.devtoolsPanelActionListeners) {
-        listener({ payload: { action: "panel:closed" } });
-      }
-    });
-
-    expect(
-      await screen.findByRole("button", { name: "Show devtools panel" }),
-    ).toBeTruthy();
-  });
-
-  it("hides the devtools button when the native panel is opened outside the sidebar", async () => {
-    render(<ClassicMainBody />);
-
-    expect(
-      await screen.findByRole("button", { name: "Show devtools panel" }),
-    ).toBeTruthy();
-
-    await waitFor(() => {
-      expect(mocks.devtoolsPanelActionListeners).toHaveLength(1);
-    });
-
-    act(() => {
-      for (const listener of mocks.devtoolsPanelActionListeners) {
-        listener({ payload: { action: "panel:opened" } });
-      }
-    });
-
-    expect(
-      screen.queryByRole("button", { name: "Show devtools panel" }),
-    ).toBeNull();
-
-    act(() => {
-      for (const listener of mocks.devtoolsPanelActionListeners) {
-        listener({ payload: { action: "panel:closed" } });
-      }
-    });
-
-    expect(
-      await screen.findByRole("button", { name: "Show devtools panel" }),
-    ).toBeTruthy();
-  });
-
-  it("does not show the devtools button when devtools are disabled", async () => {
-    vi.mocked(commands.showDevtool).mockResolvedValue(false);
-
-    render(<ClassicMainBody />);
-
-    await waitFor(() => {
-      expect(commands.showDevtool).toHaveBeenCalledTimes(1);
-    });
-    expect(
-      screen.queryByRole("button", { name: "Show devtools panel" }),
-    ).toBeNull();
-    expect(mocks.devtoolsPanelActionListeners).toHaveLength(0);
   });
 
   it("renders expanded sidebar controls in the sidebar layout", () => {

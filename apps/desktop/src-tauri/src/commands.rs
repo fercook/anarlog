@@ -1,4 +1,4 @@
-use crate::AppExt;
+use crate::{AppExt, embedded_cli::EmbeddedCliStatus};
 
 const STAGING_BUNDLE_ID: &str = "com.hyprnote.staging";
 
@@ -55,19 +55,17 @@ pub fn show_devtool<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> bool {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn get_tinybase_values<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-) -> Result<Option<String>, String> {
-    app.get_tinybase_values()
+pub fn complete_app_exit<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    crate::mark_exit_flush_complete();
+    app.exit(0);
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn set_tinybase_values<R: tauri::Runtime>(
+pub async fn get_tinybase_values<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
-    v: String,
-) -> Result<(), String> {
-    app.set_tinybase_values(v)
+) -> Result<Option<String>, String> {
+    app.get_tinybase_values()
 }
 
 #[tauri::command]
@@ -102,6 +100,22 @@ pub async fn set_recently_opened_sessions<R: tauri::Runtime>(
     v: String,
 ) -> Result<(), String> {
     app.set_recently_opened_sessions(v)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn check_embedded_cli<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<EmbeddedCliStatus, String> {
+    Ok(crate::embedded_cli::check(&app))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn install_embedded_cli<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<EmbeddedCliStatus, String> {
+    crate::embedded_cli::install(&app)
 }
 
 #[cfg(test)]

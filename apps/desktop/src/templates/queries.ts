@@ -1,8 +1,8 @@
 import { useMutation } from "@tanstack/react-query";
 import { useCallback } from "react";
 
-import { eq, max, ne, sql, templates } from "@hypr/db";
-import type { TemplateSection } from "@hypr/store";
+import { eq, max, ne, sql, templates } from "@anlg/db";
+import type { TemplateSection } from "@anlg/store";
 
 import {
   assertCanonicalTemplateSections,
@@ -10,7 +10,13 @@ import {
   parseStoredTemplateSections,
   parseStoredTemplateTargets,
 } from "./codec";
+import {
+  DEFAULT_TEMPLATE_ICON,
+  normalizeTemplateIcon,
+  type TemplateIcon,
+} from "./template-icon";
 
+import { trackAnalyticsEvent } from "~/analytics";
 import { db, useDrizzleLiveQuery } from "~/db";
 
 type TemplateRow = (typeof templates)["$inferSelect"];
@@ -22,6 +28,7 @@ type TemplateLiveRow = {
   pinned: boolean;
   pin_order: number | null;
   category: string | null;
+  icon_json: unknown;
   targets_json: unknown;
   sections_json: unknown;
 };
@@ -33,6 +40,7 @@ export type UserTemplate = {
   pinned: boolean;
   pinOrder?: number;
   category?: string;
+  icon: TemplateIcon;
   targets?: string[];
   sections: TemplateSection[];
 };
@@ -40,7 +48,7 @@ export type UserTemplate = {
 export type UserTemplateDraft = Pick<
   UserTemplate,
   "title" | "description" | "category" | "targets" | "sections"
->;
+> & { icon?: TemplateIcon };
 
 const templateRowSelection = {
   id: templates.id,
@@ -49,6 +57,7 @@ const templateRowSelection = {
   pinned: templates.pinned,
   pinOrder: templates.pinOrder,
   category: templates.category,
+  iconJson: templates.iconJson,
   targetsJson: templates.targetsJson,
   sectionsJson: templates.sectionsJson,
   createdAt: templates.createdAt,
@@ -62,6 +71,7 @@ function toUserTemplate(
   pinned: boolean,
   pinOrder: number | null,
   category: string | null,
+  iconJson: unknown,
   targetsJson: unknown,
   sectionsJson: unknown,
 ): UserTemplate {
@@ -72,6 +82,7 @@ function toUserTemplate(
     pinned,
     pinOrder: pinOrder ?? undefined,
     category: category ?? undefined,
+    icon: normalizeTemplateIcon(iconJson),
     targets: parseStoredTemplateTargets(targetsJson, id),
     sections: parseStoredTemplateSections(sectionsJson, id),
   };
@@ -86,6 +97,7 @@ function mapTemplateRows(rows: TemplateRow[]): UserTemplate[] {
       row.pinned,
       row.pinOrder,
       row.category,
+      row.iconJson,
       row.targetsJson,
       row.sectionsJson,
     ),
@@ -101,6 +113,7 @@ function mapTemplateLiveRows(rows: TemplateLiveRow[]): UserTemplate[] {
       row.pinned,
       row.pin_order,
       row.category,
+      row.icon_json,
       row.targets_json,
       row.sections_json,
     ),
@@ -155,7 +168,9 @@ export async function getTemplateById(
   return mapTemplateRows([row])[0] ?? null;
 }
 
-export function useCreateTemplate() {
+export function useCreateTemplate(
+  entryPoint: "templates" | "session_note" = "templates",
+) {
   const { mutateAsync } = useMutation({
     mutationFn: async (template: UserTemplateDraft) => {
       const id = crypto.randomUUID();
@@ -174,6 +189,7 @@ export function useCreateTemplate() {
         description: template.description,
         pinned: false,
         category: template.category,
+        iconJson: template.icon ?? DEFAULT_TEMPLATE_ICON,
         targetsJson: targets ?? null,
         sectionsJson: sections,
       };
@@ -184,6 +200,11 @@ export function useCreateTemplate() {
         updatedAt: sql`strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`,
       });
 
+      trackAnalyticsEvent("template_created", {
+        entry_point: entryPoint,
+        section_count: sections.length,
+        target_count: targets?.length ?? 0,
+      });
       return id;
     },
     onError: (error) => {
@@ -214,6 +235,7 @@ export function useSaveTemplate() {
           pinned: template.pinned,
           pinOrder: template.pinOrder ?? null,
           category: template.category ?? null,
+          iconJson: normalizeTemplateIcon(template.icon),
           targetsJson: targets ?? null,
           sectionsJson: sections,
           updatedAt: sql`strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`,
@@ -234,6 +256,9 @@ export function useDeleteTemplate() {
   const { mutateAsync } = useMutation({
     mutationFn: async (id: string) => {
       await db.delete(templates).where(eq(templates.id, id));
+      trackAnalyticsEvent("template_deleted", {
+        entry_point: "templates",
+      });
     },
     onError: (error) => {
       console.error("[useDeleteTemplate]", error);

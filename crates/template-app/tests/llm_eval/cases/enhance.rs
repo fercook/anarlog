@@ -1,4 +1,4 @@
-use hypr_template_eval::{EvalCase, EvalMessage, Expectation, Failed, PromptFragment};
+use anlg_template_eval::{EvalCase, EvalMessage, Expectation, Failed, PromptFragment};
 use template_app::{
     EnhanceSystem, EnhanceTemplate, EnhanceUser, Participant, Segment, Session, Template,
     TemplateSection, Transcript, render,
@@ -12,8 +12,11 @@ pub fn structured_summary(samples: usize) -> Result<EvalCase, Failed> {
         messages: vec![
             EvalMessage {
                 role: "system".to_string(),
-                content: render(Template::EnhanceSystem(EnhanceSystem { language: None }))
-                    .map_err(render_failed)?,
+                content: render(Template::EnhanceSystem(EnhanceSystem {
+                    language: None,
+                    prompt_override: String::new(),
+                }))
+                .map_err(render_failed)?,
             },
             EvalMessage {
                 role: "user".to_string(),

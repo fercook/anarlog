@@ -14,17 +14,17 @@ import {
   useEditorState,
 } from "@handlewithcare/react-prosemirror";
 import {
-  CodeIcon,
-  Heading1Icon,
-  Heading2Icon,
-  Heading3Icon,
-  ListIcon,
-  ListOrderedIcon,
-  ListTodoIcon,
-  MinusIcon,
-  QuoteIcon,
-  TextIcon,
-} from "lucide-react";
+  Code,
+  ListBullets,
+  ListChecks,
+  ListNumbers,
+  Minus,
+  Quotes,
+  TextHOne,
+  TextHThree,
+  TextHTwo,
+  TextT,
+} from "@phosphor-icons/react";
 import { setBlockType } from "prosemirror-commands";
 import { wrapInList } from "prosemirror-schema-list";
 import type { EditorState, Transaction } from "prosemirror-state";
@@ -32,7 +32,7 @@ import type { EditorView } from "prosemirror-view";
 import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
 import { schema } from "../note/schema";
 import { createTaskItemAttrs } from "../tasks";
@@ -68,7 +68,7 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
     id: "paragraph",
     label: "Text",
     description: "Plain text",
-    icon: TextIcon,
+    icon: TextT,
     keywords: ["text", "paragraph", "plain"],
     action(view, from, to) {
       clearSlashAndRun(view, from, to, setBlockType(schema.nodes.paragraph));
@@ -78,7 +78,7 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
     id: "heading1",
     label: "Heading 1",
     description: "Large heading",
-    icon: Heading1Icon,
+    icon: TextHOne,
     keywords: ["heading", "h1", "title", "large"],
     action(view, from, to) {
       clearSlashAndRun(
@@ -93,7 +93,7 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
     id: "heading2",
     label: "Heading 2",
     description: "Medium heading",
-    icon: Heading2Icon,
+    icon: TextHTwo,
     keywords: ["heading", "h2", "subtitle", "medium"],
     action(view, from, to) {
       clearSlashAndRun(
@@ -108,7 +108,7 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
     id: "heading3",
     label: "Heading 3",
     description: "Small heading",
-    icon: Heading3Icon,
+    icon: TextHThree,
     keywords: ["heading", "h3", "small"],
     action(view, from, to) {
       clearSlashAndRun(
@@ -123,7 +123,7 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
     id: "bulletList",
     label: "Bullet List",
     description: "Unordered list",
-    icon: ListIcon,
+    icon: ListBullets,
     keywords: ["bullet", "list", "unordered", "ul"],
     action(view, from, to) {
       clearSlashAndRun(view, from, to, wrapInList(schema.nodes.bulletList));
@@ -133,7 +133,7 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
     id: "orderedList",
     label: "Numbered List",
     description: "Ordered list",
-    icon: ListOrderedIcon,
+    icon: ListNumbers,
     keywords: ["numbered", "list", "ordered", "ol"],
     action(view, from, to) {
       clearSlashAndRun(view, from, to, wrapInList(schema.nodes.orderedList));
@@ -143,7 +143,7 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
     id: "taskList",
     label: "Task List",
     description: "List with checkboxes",
-    icon: ListTodoIcon,
+    icon: ListChecks,
     keywords: ["task", "todo", "checkbox", "check"],
     action(view, from, to) {
       const tr = view.state.tr.delete(from, to);
@@ -163,7 +163,7 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
     id: "blockquote",
     label: "Quote",
     description: "Block quote",
-    icon: QuoteIcon,
+    icon: Quotes,
     keywords: ["quote", "blockquote", "callout"],
     action(view, from, to) {
       clearSlashAndRun(view, from, to, (state, dispatch) => {
@@ -182,7 +182,7 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
     id: "codeBlock",
     label: "Code Block",
     description: "Code with syntax highlighting",
-    icon: CodeIcon,
+    icon: Code,
     keywords: ["code", "pre", "block", "snippet"],
     action(view, from, to) {
       clearSlashAndRun(view, from, to, setBlockType(schema.nodes.codeBlock));
@@ -192,7 +192,7 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
     id: "horizontalRule",
     label: "Divider",
     description: "Horizontal rule",
-    icon: MinusIcon,
+    icon: Minus,
     keywords: ["divider", "horizontal", "rule", "line", "hr"],
     action(view, from, to) {
       const tr = view.state.tr.delete(from, to);
@@ -357,39 +357,36 @@ export function SlashCommandMenu() {
       ref={popupRef}
       data-editor-escape-consumer
       className={cn([
-        "absolute z-[9999] max-h-64 w-[240px]",
-        "border-border bg-card/95 overflow-y-auto rounded-lg border p-1",
-        "shadow-[0_2px_8px_rgba(0,0,0,0.08),0_18px_42px_-16px_rgba(0,0,0,0.34)] backdrop-blur-sm",
+        "absolute z-[9999] max-h-64 w-[224px]",
+        "bg-popover text-popover-foreground ring-border overflow-y-auto rounded-[1rem] p-1 ring-1",
+        "text-sm shadow-lg",
       ])}
       style={{ top: 0, left: 0 }}
     >
-      <div className="text-muted-foreground px-1.5 py-0.5 text-[0.65rem] font-semibold tracking-wide uppercase select-none">
+      <div className="text-muted-foreground px-2 pb-0.5 text-[10px] font-semibold tracking-wide uppercase select-none">
         Commands
       </div>
-      {items.map((item, index) => (
-        <button
-          key={item.id}
-          className={cn([
-            "flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left",
-            "cursor-pointer border-none bg-transparent transition-colors",
-            index === selectedIndex && "bg-muted",
-          ])}
-          onClick={() => executeCommand(item)}
-          onMouseEnter={() => setSelectedIndex(index)}
-        >
-          <span className="border-border bg-muted flex size-7 shrink-0 items-center justify-center rounded-md border">
-            <item.icon className="text-muted-foreground size-3.5" />
-          </span>
-          <span className="flex flex-col gap-px overflow-hidden">
-            <span className="text-foreground truncate text-[0.8rem] font-medium">
+      <div className="space-y-0.5">
+        {items.map((item, index) => (
+          <button
+            key={item.id}
+            className={cn([
+              "flex h-8 w-full items-center gap-1.5 rounded-xl px-2 text-left",
+              "cursor-pointer border-none bg-transparent transition-colors outline-none",
+              index === selectedIndex && "bg-muted",
+            ])}
+            onClick={() => executeCommand(item)}
+            onMouseEnter={() => setSelectedIndex(index)}
+          >
+            <span className="text-muted-foreground flex size-4 shrink-0 items-center justify-center">
+              <item.icon className="size-4" />
+            </span>
+            <span className="text-popover-foreground min-w-0 flex-1 truncate text-sm leading-4">
               {item.label}
             </span>
-            <span className="text-muted-foreground truncate text-[0.7rem]">
-              {item.description}
-            </span>
-          </span>
-        </button>
-      ))}
+          </button>
+        ))}
+      </div>
     </div>,
     document.body,
   );

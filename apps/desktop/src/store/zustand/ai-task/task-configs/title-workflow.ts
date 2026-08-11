@@ -1,11 +1,8 @@
 import { generateId, type LanguageModel, streamText } from "ai";
 
-import { commands as templateCommands } from "@hypr/plugin-template";
+import { commands as templateCommands } from "@anlg/plugin-template";
 
 import type { TaskArgsMapTransformed, TaskConfig } from ".";
-
-import { deterministicGenerationSettings } from "~/ai/model-settings";
-import type { Store } from "~/store/tinybase/store/main";
 
 const AI_GENERATION_MAX_RETRIES = 4;
 const TITLE_MAX_OUTPUT_TOKENS = 128;
@@ -23,19 +20,17 @@ async function* executeWorkflow(params: {
   args: TaskArgsMapTransformed["title"];
   onProgress: (step: any) => void;
   signal: AbortSignal;
-  store: Store;
 }) {
-  const { model, args, onProgress, signal, store } = params;
+  const { model, args, onProgress, signal } = params;
 
   const system = await getSystemPrompt(args);
-  const prompt = await getUserPrompt(args, store);
+  const prompt = await getUserPrompt(args);
 
   onProgress({ type: "generating" });
 
   const id = generateId();
   const result = streamText({
     model,
-    ...deterministicGenerationSettings(model),
     system,
     prompt,
     abortSignal: signal,
@@ -66,10 +61,7 @@ async function getSystemPrompt(args: TaskArgsMapTransformed["title"]) {
   return result.data;
 }
 
-async function getUserPrompt(
-  args: TaskArgsMapTransformed["title"],
-  _store: Store,
-) {
+async function getUserPrompt(args: TaskArgsMapTransformed["title"]) {
   const { enhancedNote } = args;
 
   const result = await templateCommands.render({

@@ -1,0 +1,31 @@
+[package]
+name = "anarlog-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "anarlog"
+path = "src/main.rs"
+
+[dependencies]
+anlg-agent-access = { workspace = true }
+anlg-db-app = { workspace = true }
+anlg-db-core = { workspace = true }
+anlg-user-error = { workspace = true }
+
+clap = { workspace = true, features = ["derive", "env"] }
+dirs = { workspace = true }
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+sentry = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-std", "macros", "rt-multi-thread"] }
+url = { workspace = true }
+
+[dev-dependencies]
+cli-docs = { path = "../../crates/cli-docs" }
+insta = { workspace = true, features = ["json"] }
+rmcp = { workspace = true, features = ["client"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+tempfile = { workspace = true }

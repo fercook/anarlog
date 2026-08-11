@@ -1,5 +1,5 @@
 begin;
-select plan(11);
+select plan(14);
 
 select tests.create_supabase_user('pro', 'pro@example.com');
 select tests.create_supabase_user('free', 'free@example.com');
@@ -38,6 +38,15 @@ select results_eq(
   $$select has_table_privilege('supabase_auth_admin', 'stripe.subscriptions', 'SELECT')$$,
   array[true],
   'supabase_auth_admin has SELECT privilege on stripe.subscriptions'
+);
+
+select results_eq(
+  $$
+  select bool_and(has_column_privilege('supabase_auth_admin', 'stripe.customers', column_name, 'SELECT'))
+  from unnest(array['id', 'invoice_settings', 'default_source']) as required_columns(column_name)
+  $$,
+  array[true],
+  'supabase_auth_admin can read the stripe customer columns used by the auth hook'
 );
 
 select results_eq(
@@ -105,8 +114,8 @@ update public.profiles
 set stripe_customer_id = 'cus_trialing'
 where id = tests.get_supabase_uid('trialing');
 
-insert into stripe.customers (id)
-values ('cus_trialing')
+insert into stripe.customers (id, invoice_settings)
+values ('cus_trialing', '{"default_payment_method":"pm_trialing"}')
 on conflict (id) do nothing;
 
 insert into stripe.subscriptions (id, customer, status, trial_end, created)
@@ -141,6 +150,21 @@ select results_eq(
   $$,
   array['1738627200'],
   'custom_access_token_hook sets trial_end for trialing user'
+);
+
+select results_eq(
+  $$
+  select (
+    public.custom_access_token_hook(
+      jsonb_build_object(
+        'user_id', tests.get_supabase_uid('trialing')::text,
+        'claims', '{}'::jsonb
+      )
+    ) -> 'claims' -> 'has_payment_method'
+  )::text
+  $$,
+  array['true'],
+  'custom_access_token_hook detects a customer-level trial payment method'
 );
 
 select tests.create_supabase_user('active', 'active@example.com');
@@ -183,6 +207,19 @@ select is(
   ),
   null,
   'custom_access_token_hook does not set subscription_status for user without subscription'
+);
+
+select is(
+  (
+    public.custom_access_token_hook(
+      jsonb_build_object(
+        'user_id', tests.get_supabase_uid('active')::text,
+        'claims', '{}'::jsonb
+      )
+    ) -> 'claims' -> 'has_payment_method'
+  ),
+  'false'::jsonb,
+  'custom_access_token_hook reports a missing payment method'
 );
 
 select * from finish();

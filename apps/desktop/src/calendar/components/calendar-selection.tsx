@@ -1,14 +1,14 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import {
-  CalendarOffIcon,
-  CheckIcon,
-  EllipsisIcon,
-  Loader2Icon,
-  RefreshCwIcon,
-} from "lucide-react";
-import { type MouseEvent } from "react";
+  ArrowsClockwise,
+  CalendarSlash,
+  Check,
+  CircleNotch,
+  DotsThree,
+} from "@phosphor-icons/react";
+import { type MouseEvent, useRef, useState } from "react";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
 import {
   type MenuItemDef,
@@ -31,7 +31,10 @@ export interface CalendarGroup {
 
 interface CalendarSelectionProps {
   groups: CalendarGroup[];
-  onToggle: (calendar: CalendarItem, enabled: boolean) => void;
+  onToggle: (
+    calendar: CalendarItem,
+    enabled: boolean,
+  ) => void | Promise<unknown>;
   onRefresh?: () => void;
   className?: string;
   isLoading?: boolean;
@@ -58,14 +61,14 @@ export function CalendarSelection({
       >
         {isLoading ? (
           <>
-            <Loader2Icon className="text-muted-foreground/70 mb-2 size-6 animate-spin" />
+            <CircleNotch className="text-muted-foreground/70 mb-2 size-6 animate-spin" />
             <p className="text-muted-foreground text-xs">
               <Trans>Loading calendars...</Trans>
             </p>
           </>
         ) : (
           <>
-            <CalendarOffIcon className="text-muted-foreground/70 mb-2 size-6" />
+            <CalendarSlash className="text-muted-foreground/70 mb-2 size-6" />
             <div className="text-muted-foreground flex items-center gap-1 text-xs">
               <p>
                 <Trans>No calendars found</Trans>
@@ -77,7 +80,7 @@ export function CalendarSelection({
                   className="text-muted-foreground hover:bg-accent hover:text-muted-foreground rounded p-1 transition-colors"
                   aria-label={t`Refresh calendars`}
                 >
-                  <RefreshCwIcon className="size-3" />
+                  <ArrowsClockwise className="size-3" />
                 </button>
               ) : null}
             </div>
@@ -169,7 +172,7 @@ function CalendarGroupMenuButton({
       ])}
       aria-label={t`Open calendar account actions`}
     >
-      <EllipsisIcon className="size-4" />
+      <DotsThree className="size-4" />
     </button>
   );
 }
@@ -181,14 +184,33 @@ function CalendarToggleRow({
 }: {
   calendar: CalendarItem;
   enabled: boolean;
-  onToggle: (enabled: boolean) => void;
+  onToggle: (enabled: boolean) => void | Promise<unknown>;
 }) {
   const color = calendar.color ?? "#888";
+
+  // Optimistic check state: the write goes through the DB queue and the
+  // enabled prop only flips after the live query re-emits. The sequence
+  // number keeps a stale rejection from reverting a newer toggle.
+  const [pending, setPending] = useState<boolean | null>(null);
+  const toggleSeqRef = useRef(0);
+  if (pending !== null && pending === enabled) {
+    setPending(null);
+  }
+  const shownEnabled = pending ?? enabled;
 
   return (
     <button
       type="button"
-      onClick={() => onToggle(!enabled)}
+      onClick={() => {
+        const next = !shownEnabled;
+        const seq = ++toggleSeqRef.current;
+        setPending(next);
+        void Promise.resolve(onToggle(next)).catch(() => {
+          if (toggleSeqRef.current === seq) {
+            setPending(null);
+          }
+        });
+      }}
       className="flex w-full items-center gap-2 py-1 pr-2 pl-0 text-left"
     >
       <div
@@ -197,16 +219,13 @@ function CalendarToggleRow({
           "transition-colors duration-100",
         ])}
         style={
-          enabled
+          shownEnabled
             ? { backgroundColor: color, borderColor: color }
             : { borderColor: color }
         }
       >
-        {enabled && (
-          <CheckIcon
-            className="text-primary-foreground size-3"
-            strokeWidth={3}
-          />
+        {shownEnabled && (
+          <Check className="text-primary-foreground size-3" weight="bold" />
         )}
       </div>
       <span className="truncate text-sm">{calendar.title}</span>

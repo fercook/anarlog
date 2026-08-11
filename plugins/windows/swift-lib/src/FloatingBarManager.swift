@@ -10,11 +10,14 @@ final class FloatingBarManager {
   private let settingsModel = FloatingOverlaySettingsModel.shared
   private let placement = FloatingPanelPositionController()
   private var displayChangeObserver: Any?
-  private var followActiveScreenTimer: Timer?
   private var isApplyingExternalState = false
   private var cancellables = Set<AnyCancellable>()
+  private var commandCoalescer: FloatingBarCommandCoalescer!
 
   private init() {
+    commandCoalescer = FloatingBarCommandCoalescer { [weak self] action in
+      self?.apply(action)
+    }
     model.$isExpanded
       .removeDuplicates()
       .sink { [weak self] isExpanded in
@@ -30,76 +33,94 @@ final class FloatingBarManager {
   }
 
   func show() {
-    DispatchQueue.main.async { [weak self] in
-      guard let self else { return }
-
-      if let panel = self.panel {
-        self.position(panel, force: true)
-        self.startFollowingActiveScreen()
-        panel.orderFrontRegardless()
-        return
-      }
-
-      FloatingBarFonts.register()
-
-      let panel = self.createPanel()
-      let hostingView = NSHostingView(
-        rootView: FloatingBarView(
-          model: self.model,
-          settings: self.settingsModel,
-          panelOrigin: { [weak self] in self?.panel?.frame.origin },
-          movePanel: { [weak self] origin in
-            guard let self, let panel = self.panel else { return }
-            self.placement.moveByUserDrag(
-              panel,
-              to: origin,
-              anchorOffset: self.controlAnchorOffset(for: self.currentLayout))
-          }))
-      hostingView.frame = NSRect(
-        x: 0,
-        y: 0,
-        width: self.currentSize.width,
-        height: self.currentSize.height)
-      hostingView.autoresizingMask = [.width, .height]
-
-      panel.contentView = hostingView
-      self.position(panel, force: true)
-      panel.orderFrontRegardless()
-      self.panel = panel
-      self.startFollowingActiveScreen()
-    }
+    commandCoalescer.enqueueShow()
   }
 
   func hide() {
-    DispatchQueue.main.async { [weak self] in
-      guard let self, let panel = self.panel else { return }
-      self.stopFollowingActiveScreen()
-      FloatingOverlaySettingsPanelManager.shared.hide()
-      panel.orderOut(nil)
-      self.panel = nil
-      self.placement.resetActiveScreen()
-    }
+    commandCoalescer.enqueueHide()
   }
 
   func update(state: FloatingBarStatePayload) {
-    DispatchQueue.main.async { [weak self] in
-      guard let self else { return }
-      self.isApplyingExternalState = true
-      self.model.status = state.status
-      self.model.amplitude = min(max(state.amplitude, 0), 1)
-      self.model.colorScheme = state.colorScheme
-      self.model.title = state.title
-      self.model.liveCaptionToggleVisible = state.liveCaptionToggleVisible
-      self.model.transcriptBubbles = state.transcriptBubbles
-      self.settingsModel.apply(floatingBarState: state)
-      self.model.isExpanded =
-        state.liveCaptionToggleVisible && !self.settingsModel.liveCaptionMinimized
-      self.isApplyingExternalState = false
-      if let panel = self.panel {
-        let didResize = self.resize(panel)
-        if !didResize {
-          self.position(panel, force: true)
-        }
+    commandCoalescer.enqueueUpdate(state)
+  }
+
+  private func apply(_ action: FloatingBarCommandCoalescer.Action) {
+    dispatchPrecondition(condition: .onQueue(.main))
+
+    switch action {
+    case .show:
+      applyShow()
+    case .hide:
+      applyHide()
+    case .update(let state):
+      applyUpdate(state)
+    }
+  }
+
+  private func applyShow() {
+    if let panel {
+      position(panel, force: true)
+      startObservingDisplayChanges()
+      panel.orderFrontRegardless()
+      return
+    }
+
+    FloatingBarFonts.register()
+
+    let panel = createPanel()
+    let hostingView = NSHostingView(
+      rootView: FloatingBarView(
+        model: model,
+        settings: settingsModel,
+        panelOrigin: { [weak self] in self?.panel?.frame.origin },
+        movePanel: { [weak self] origin in
+          guard let self, let panel = self.panel else { return }
+          self.placement.moveByUserDrag(
+            panel,
+            to: origin,
+            anchorOffset: self.controlAnchorOffset(for: self.currentLayout))
+        }))
+    hostingView.frame = NSRect(
+      x: 0,
+      y: 0,
+      width: currentSize.width,
+      height: currentSize.height)
+    hostingView.autoresizingMask = [.width, .height]
+
+    panel.contentView = hostingView
+    position(panel, force: true)
+    panel.orderFrontRegardless()
+    self.panel = panel
+    startObservingDisplayChanges()
+  }
+
+  private func applyHide() {
+    guard let panel else { return }
+    stopObservingDisplayChanges()
+    FloatingOverlaySettingsPanelManager.shared.hide()
+    panel.orderOut(nil)
+    self.panel = nil
+    placement.resetActiveScreen()
+  }
+
+  private func applyUpdate(_ state: FloatingBarStatePayload) {
+    isApplyingExternalState = true
+    model.status = state.status
+    model.amplitude = min(max(state.amplitude, 0), 1)
+    model.colorScheme = state.colorScheme
+    model.title = state.title
+    model.liveCaptionToggleVisible = state.liveCaptionToggleVisible
+    if let transcriptBubbles = state.transcriptBubbles {
+      model.transcriptBubbles = transcriptBubbles
+    }
+    settingsModel.apply(floatingBarState: state)
+    model.isExpanded =
+      state.liveCaptionToggleVisible && !settingsModel.liveCaptionMinimized
+    isApplyingExternalState = false
+    if let panel {
+      let didResize = resize(panel)
+      if !didResize {
+        position(panel, force: true)
       }
     }
   }
@@ -141,7 +162,8 @@ final class FloatingBarManager {
       panel,
       force: force,
       size: size,
-      anchorOffset: controlAnchorOffset(for: layout)
+      anchorOffset: controlAnchorOffset(for: layout),
+      followsPointer: false
     ) { screen, size in
       let frame = screen.visibleFrame
       let x = frame.maxX - size.width - FloatingBarLayout.screenMargin
@@ -236,15 +258,8 @@ final class FloatingBarManager {
     )
   }
 
-  private func startFollowingActiveScreen() {
-    guard followActiveScreenTimer == nil else { return }
-
-    let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
-      guard let self, let panel = self.panel else { return }
-      self.position(panel)
-    }
-    RunLoop.main.add(timer, forMode: .common)
-    followActiveScreenTimer = timer
+  private func startObservingDisplayChanges() {
+    guard displayChangeObserver == nil else { return }
 
     displayChangeObserver = NotificationCenter.default.addObserver(
       forName: NSApplication.didChangeScreenParametersNotification,
@@ -256,10 +271,7 @@ final class FloatingBarManager {
     }
   }
 
-  private func stopFollowingActiveScreen() {
-    followActiveScreenTimer?.invalidate()
-    followActiveScreenTimer = nil
-
+  private func stopObservingDisplayChanges() {
     if let displayChangeObserver {
       NotificationCenter.default.removeObserver(displayChangeObserver)
       self.displayChangeObserver = nil

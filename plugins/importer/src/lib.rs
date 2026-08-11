@@ -1,6 +1,7 @@
-use tauri::Wry;
+use tauri::{Manager, Wry};
 
 mod commands;
+mod connected_mcp;
 mod error;
 mod ext;
 mod sources;
@@ -17,9 +18,13 @@ fn make_specta_builder<R: tauri::Runtime>() -> tauri_specta::Builder<R> {
     tauri_specta::Builder::<R>::new()
         .plugin_name(PLUGIN_NAME)
         .commands(tauri_specta::collect_commands![
+            commands::begin_connected_import,
+            commands::complete_connected_import,
+            commands::sync_connected_import,
             commands::list_available_sources::<Wry>,
             commands::run_import::<Wry>,
             commands::run_import_dry::<Wry>,
+            commands::read_text_files,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Result)
 }
@@ -29,7 +34,10 @@ pub fn init<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
 
     tauri::plugin::Builder::new(PLUGIN_NAME)
         .invoke_handler(specta_builder.invoke_handler())
-        .setup(|_app, _api| Ok(()))
+        .setup(|app, _api| {
+            app.manage(connected_mcp::ConnectedImportOAuthState::default());
+            Ok(())
+        })
         .build()
 }
 

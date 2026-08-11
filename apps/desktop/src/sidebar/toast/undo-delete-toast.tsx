@@ -1,12 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { AnimatePresence, motion } from "motion/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
+import { type CSSProperties, useCallback, useMemo } from "react";
 
-import { cn } from "@hypr/utils";
+import { sonnerToast } from "@anlg/ui/components/ui/toast";
 
-import { restoreSessionData } from "~/store/tinybase/store/deleteSession";
-import * as main from "~/store/tinybase/store/main";
+import { restoreDeletedSession } from "~/session/queries";
+import { useMountEffect } from "~/shared/hooks/useMountEffect";
 import { useTabs } from "~/store/zustand/tabs";
 import { UNDO_TIMEOUT_MS, useUndoDelete } from "~/store/zustand/undo-delete";
 
@@ -34,75 +32,92 @@ function useToastGroups(): ToastGroup[] {
       }
     }
 
-    const groups: ToastGroup[] = [];
-
-    for (const { sessionId, addedAt } of singles) {
-      groups.push({
-        key: sessionId,
-        sessionIds: [sessionId],
-        isBatch: false,
-        addedAt,
-      });
-    }
+    const groups: ToastGroup[] = singles.map(({ sessionId, addedAt }) => ({
+      key: sessionId,
+      sessionIds: [sessionId],
+      isBatch: false,
+      addedAt,
+    }));
 
     for (const [batchId, sessionIds] of batchMap) {
-      const earliest = Math.min(
-        ...sessionIds.map((id) => pendingDeletions[id].addedAt),
-      );
       groups.push({
         key: batchId,
         sessionIds,
         isBatch: true,
-        addedAt: earliest,
+        addedAt: Math.min(
+          ...sessionIds.map((id) => pendingDeletions[id].addedAt),
+        ),
       });
     }
 
-    groups.sort((a, b) => a.addedAt - b.addedAt);
-    return groups;
+    return groups.sort((a, b) => a.addedAt - b.addedAt);
   }, [pendingDeletions]);
 }
 
 function useRestoreGroup() {
-  const store = main.UI.useStore(main.STORE_ID);
   const queryClient = useQueryClient();
   const pendingDeletions = useUndoDelete((state) => state.pendingDeletions);
+  const addDeletion = useUndoDelete((state) => state.addDeletion);
   const clearDeletion = useUndoDelete((state) => state.clearDeletion);
   const clearBatch = useUndoDelete((state) => state.clearBatch);
   const openCurrent = useTabs((state) => state.openCurrent);
+  const invalidateResource = useTabs((state) => state.invalidateResource);
 
   return useCallback(
     (group: ToastGroup) => {
-      if (!store) return;
+      const entries = group.sessionIds
+        .map((sessionId) => pendingDeletions[sessionId])
+        .filter((pending) => pending !== undefined);
 
-      for (const sessionId of group.sessionIds) {
-        const pending = pendingDeletions[sessionId];
-        if (!pending) continue;
-        restoreSessionData(store, pending.data);
-        void queryClient.invalidateQueries({
-          predicate: (query) =>
-            query.queryKey.length >= 2 &&
-            query.queryKey[0] === "audio" &&
-            query.queryKey[1] === sessionId,
-        });
-      }
-
-      if (group.sessionIds.length > 0) {
-        openCurrent({
-          type: "sessions",
-          id: group.sessionIds[0],
-        });
-      }
-
+      // Optimistic: dismiss the toast (also cancelling the finalize timers)
+      // and reopen the tab before the restore writes commit.
       if (group.isBatch) {
         clearBatch(group.key);
       } else {
         clearDeletion(group.sessionIds[0]);
       }
+      if (group.sessionIds.length > 0) {
+        openCurrent({ type: "sessions", id: group.sessionIds[0] });
+      }
+
+      void (async () => {
+        const remaining = [...entries];
+        try {
+          while (remaining.length > 0) {
+            const pending = remaining[0];
+            await restoreDeletedSession(pending.data);
+            remaining.shift();
+            const sessionId = pending.data.session.id;
+            void queryClient.invalidateQueries({
+              predicate: (query) =>
+                query.queryKey.length >= 2 &&
+                query.queryKey[0] === "audio" &&
+                query.queryKey[1] === sessionId,
+            });
+          }
+        } catch (error) {
+          console.error("[undo-delete] failed to restore session", error);
+          sonnerToast.error("Could not restore deleted note");
+          // Re-add the unrestored deletions so their undo toast (and the
+          // finalize path) comes back instead of leaving them tombstoned,
+          // and close the optimistically reopened tab — it still points at
+          // a tombstoned note.
+          for (const pending of remaining) {
+            addDeletion(
+              pending.data,
+              pending.onDeleteConfirm ?? undefined,
+              pending.batchId ?? undefined,
+            );
+            invalidateResource("sessions", pending.data.session.id);
+          }
+        }
+      })();
     },
     [
-      store,
       pendingDeletions,
       openCurrent,
+      invalidateResource,
+      addDeletion,
       clearDeletion,
       clearBatch,
       queryClient,
@@ -110,217 +125,62 @@ function useRestoreGroup() {
   );
 }
 
-function useConfirmGroup() {
-  const confirmDeletion = useUndoDelete((state) => state.confirmDeletion);
-  const confirmBatch = useUndoDelete((state) => state.confirmBatch);
-
-  return useCallback(
-    (group: ToastGroup) => {
-      if (group.isBatch) {
-        confirmBatch(group.key);
-      } else {
-        confirmDeletion(group.sessionIds[0]);
-      }
-    },
-    [confirmDeletion, confirmBatch],
-  );
-}
-
-function useGroupCountdown(group: ToastGroup) {
-  const pendingDeletions = useUndoDelete((state) => state.pendingDeletions);
-  const [remaining, setRemaining] = useState(UNDO_TIMEOUT_MS);
-
-  const { earliest, isPaused, frozenRemaining } = useMemo(() => {
-    let min = Infinity;
-    let paused = false;
-    let frozen = 0;
-
-    for (const id of group.sessionIds) {
-      const p = pendingDeletions[id];
-      if (!p) continue;
-      min = Math.min(min, p.data.deletedAt);
-      if (p.paused && p.pausedAt) {
-        paused = true;
-        const elapsed = p.pausedAt - p.data.deletedAt;
-        frozen = Math.max(0, UNDO_TIMEOUT_MS - elapsed);
-      }
-    }
-
-    return {
-      earliest: min === Infinity ? Date.now() : min,
-      isPaused: paused,
-      frozenRemaining: frozen,
-    };
-  }, [group.sessionIds, pendingDeletions]);
-
-  useEffect(() => {
-    if (isPaused) {
-      setRemaining(frozenRemaining);
-      return;
-    }
-
-    const update = () => {
-      const elapsed = Date.now() - earliest;
-      setRemaining(Math.max(0, UNDO_TIMEOUT_MS - elapsed));
-    };
-    update();
-    const id = setInterval(update, 100);
-    return () => clearInterval(id);
-  }, [earliest, isPaused, frozenRemaining]);
-
-  return Math.ceil(remaining / 1000);
-}
-
 export function UndoDeleteToast() {
   const groups = useToastGroups();
 
-  return createPortal(
-    <AnimatePresence mode="popLayout">
-      {groups.map((group, index) => (
-        <ToastPill
-          key={group.key}
-          group={group}
-          index={index}
-          total={groups.length}
-        />
-      ))}
-    </AnimatePresence>,
-    document.body,
-  );
+  return groups.map((group) => (
+    <UndoDeleteSonnerToast
+      key={`${group.key}:${group.sessionIds.join(":")}`}
+      group={group}
+    />
+  ));
 }
 
-const SIDEBAR_SELECTOR = "[data-testid='main-app-shell']";
-
-function ToastPill({
-  group,
-  index,
-  total,
-}: {
-  group: ToastGroup;
-  index: number;
-  total: number;
-}) {
+function UndoDeleteSonnerToast({ group }: { group: ToastGroup }) {
   const restoreGroup = useRestoreGroup();
-  const confirmGroup = useConfirmGroup();
-  const seconds = useGroupCountdown(group);
   const pendingDeletions = useUndoDelete((state) => state.pendingDeletions);
-  const pauseGroup = useUndoDelete((state) => state.pauseGroup);
-  const resumeGroup = useUndoDelete((state) => state.resumeGroup);
-
-  const [contentOffset, setContentOffset] = useState(0);
-
-  useEffect(() => {
-    const computeOffset = () => {
-      const shell = document.querySelector(SIDEBAR_SELECTOR);
-      if (!shell) {
-        setContentOffset(0);
-        return;
-      }
-
-      const panels = document.querySelectorAll("[data-panel-id]");
-      const bodyPanel = panels[0];
-      if (!bodyPanel) {
-        setContentOffset(0);
-        return;
-      }
-
-      const bodyRect = bodyPanel.getBoundingClientRect();
-      const bodyCenter = bodyRect.left + bodyRect.width / 2;
-      const windowCenter = window.innerWidth / 2;
-      setContentOffset(bodyCenter - windowCenter);
-    };
-
-    computeOffset();
-    window.addEventListener("resize", computeOffset);
-
-    const resizeObserver = new ResizeObserver(computeOffset);
-    const panels = document.querySelectorAll("[data-panel-id]");
-    for (const panel of panels) {
-      resizeObserver.observe(panel);
-    }
-
-    return () => {
-      window.removeEventListener("resize", computeOffset);
-      resizeObserver.disconnect();
-    };
-  }, []);
-
-  const handleMouseEnter = useCallback(() => {
-    pauseGroup(group.sessionIds);
-  }, [pauseGroup, group.sessionIds]);
-
-  const handleMouseLeave = useCallback(() => {
-    resumeGroup(group.sessionIds);
-  }, [resumeGroup, group.sessionIds]);
-
-  const title = useMemo(() => {
-    if (group.isBatch) return null;
-    const p = pendingDeletions[group.sessionIds[0]];
-    return p?.data.session.title || "Untitled";
-  }, [group, pendingDeletions]);
-
-  const stackOffset = (total - 1 - index) * 44;
-  const isTop = index === total - 1;
-
-  const count = group.sessionIds.length;
-  const label = group.isBatch ? `Deleting ${count} notes` : `Deleting ${title}`;
-
-  return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: -20, scale: 0.95 }}
-      animate={{
-        opacity: isTop ? 1 : 0.7,
-        y: stackOffset,
-        scale: 1,
-      }}
-      exit={{ opacity: 0, y: -20, scale: 0.95 }}
-      transition={{ duration: 0.2, ease: "easeOut" }}
-      style={{
-        zIndex: 50 + index,
-        pointerEvents: isTop ? "auto" : "none",
-        left: `calc(50% + ${contentOffset}px)`,
-      }}
-      className="fixed top-14 -translate-x-1/2"
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
-    >
-      <div
-        className={cn([
-          "flex items-center gap-3 py-1.5 pr-1.5 pl-4",
-          "bg-card text-card-foreground rounded-full",
-          "border-border border shadow-lg backdrop-blur-none",
-        ])}
-      >
-        <span className="text-muted-foreground max-w-50 truncate text-sm">
-          {label}...
-        </span>
-
-        <button
-          onClick={() => confirmGroup(group)}
-          className={cn([
-            "rounded-full px-3 py-1.5 text-xs font-medium",
-            "whitespace-nowrap",
-            "bg-destructive text-destructive-foreground",
-            "hover:bg-destructive/90",
-            "transition-colors",
-          ])}
-        >
-          Delete
-        </button>
-
-        <button
-          onClick={() => restoreGroup(group)}
-          className={cn([
-            "rounded-full px-3 py-1.5 text-xs font-medium",
-            "whitespace-nowrap",
-            "border-border bg-muted text-foreground hover:bg-accent border",
-            "transition-colors",
-          ])}
-        >
-          Undo {seconds}s
-        </button>
-      </div>
-    </motion.div>
+  const title = group.isBatch
+    ? null
+    : pendingDeletions[group.sessionIds[0]]?.data.session.title || "Untitled";
+  const noteLabel = group.sessionIds.length === 1 ? "note" : "notes";
+  const label = group.isBatch
+    ? `${group.sessionIds.length} ${noteLabel} deleted`
+    : `${title} deleted`;
+  const remainingDuration = Math.max(
+    0,
+    group.addedAt + UNDO_TIMEOUT_MS - Date.now(),
   );
+  const progress = remainingDuration / UNDO_TIMEOUT_MS;
+
+  useMountEffect(() => {
+    const toastId = `undo-delete:${group.key}`;
+
+    sonnerToast.message(label, {
+      id: toastId,
+      duration: Infinity,
+      closeButton: false,
+      description: (
+        <span
+          aria-hidden="true"
+          className="undo-delete-toast-gauge bg-primary block h-full w-full"
+          style={
+            {
+              "--undo-delete-duration": `${remainingDuration}ms`,
+              "--undo-delete-progress": progress,
+            } as CSSProperties
+          }
+        />
+      ),
+      descriptionClassName:
+        "bg-muted absolute inset-x-0 bottom-0 h-1 overflow-hidden rounded-b-xl",
+      action: {
+        label: "Undo",
+        onClick: () => restoreGroup(group),
+      },
+    });
+
+    return () => sonnerToast.dismiss(toastId);
+  });
+
+  return null;
 }

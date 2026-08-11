@@ -1,18 +1,22 @@
 import { useLingui } from "@lingui/react/macro";
-import { SquareIcon } from "lucide-react";
+import { Square, Users } from "@phosphor-icons/react";
+import { platform } from "@tauri-apps/plugin-os";
 import {
+  createContext,
   memo,
   type DragEvent,
   type RefCallback,
   useCallback,
+  useContext,
   useMemo,
+  useState,
 } from "react";
 
-import { commands as fsSyncCommands } from "@hypr/plugin-fs-sync";
-import { commands as openerCommands } from "@hypr/plugin-opener2";
-import { DancingSticks } from "@hypr/ui/components/ui/dancing-sticks";
-import { Spinner } from "@hypr/ui/components/ui/spinner";
-import { cn, format, getYear, safeParseDate, TZDate } from "@hypr/utils";
+import { commands as fsSyncCommands } from "@anlg/plugin-fs-sync";
+import { commands as openerCommands } from "@anlg/plugin-opener2";
+import { DancingSticks } from "@anlg/ui/components/ui/dancing-sticks";
+import { Spinner } from "@anlg/ui/components/ui/spinner";
+import { cn, format, getYear, safeParseDate, TZDate } from "@anlg/utils";
 
 import {
   type EventTimelineItem,
@@ -22,22 +26,26 @@ import {
   TimelinePrecision,
 } from "./utils";
 
+import { useIgnoredEvents } from "~/calendar/ignored-events";
 import { writeSessionContextDragData } from "~/chat/context/session-drag";
 import { useDeleteSession } from "~/session/hooks/useDeleteSession";
 import { useIsSessionEnhancing } from "~/session/hooks/useEnhancedNotes";
+import { getOrCreateSessionForEventId } from "~/session/queries";
 import { getSessionEvent } from "~/session/utils";
 import { openStandaloneNoteWindow } from "~/session/window";
 import type { MenuItemDef } from "~/shared/hooks/useNativeContextMenu";
 import { InteractiveButton } from "~/shared/ui/interactive-button";
-import { useIgnoredEvents } from "~/store/tinybase/hooks";
-import * as main from "~/store/tinybase/store/main";
-import { getOrCreateSessionForEventId } from "~/store/tinybase/store/sessions";
 import { useSessionTitle } from "~/store/zustand/live-title";
 import { useTabs } from "~/store/zustand/tabs";
 import { useTimelineSelection } from "~/store/zustand/timeline-selection";
 import { useListener } from "~/stt/contexts";
 
 const EMPTY_TIMELINE_ITEM_KEYS: string[] = [];
+const EMPTY_MANAGED_SHARED_SESSION_IDS = new Set<string>();
+
+export const ManagedSharedSessionIdsContext = createContext<
+  ReadonlySet<string>
+>(EMPTY_MANAGED_SHARED_SESSION_IDS);
 
 type ItemBaseProps = {
   title: string;
@@ -45,6 +53,7 @@ type ItemBaseProps = {
   isLive?: boolean;
   amplitude?: number;
   showSpinner?: boolean;
+  isShared?: boolean;
   selected: boolean;
   ignored?: boolean;
   muted?: boolean;
@@ -133,6 +142,7 @@ const ItemBase = memo(function ItemBase({
   isLive,
   amplitude,
   showSpinner,
+  isShared,
   selected,
   ignored,
   muted,
@@ -176,7 +186,7 @@ const ItemBase = memo(function ItemBase({
     <div
       ref={setItemRef}
       data-sidebar-timeline-session-id={timelineSessionId}
-      className="group/sidebar-live-item relative"
+      className="group/sidebar-live-item relative [contain-intrinsic-size:auto_56px] [content-visibility:auto]"
     >
       <InteractiveButton
         onClick={ignored ? undefined : onClick}
@@ -196,7 +206,7 @@ const ItemBase = memo(function ItemBase({
           isUpcoming &&
             !isLive && [
               "bg-destructive/8 text-foreground",
-              "hover:bg-destructive/12 focus-visible:ring-destructive/25",
+              "focus-visible:ring-destructive/25",
             ],
           isLive && [
             "bg-destructive text-destructive-foreground hover:bg-destructive/90",
@@ -211,7 +221,7 @@ const ItemBase = memo(function ItemBase({
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <div
               className={cn(
-                "pointer-events-none truncate text-sm font-normal",
+                "pointer-events-none min-w-0 truncate text-sm font-normal",
                 ignored && "line-through",
               )}
             >
@@ -230,6 +240,12 @@ const ItemBase = memo(function ItemBase({
               </div>
             )}
           </div>
+          {isShared ? (
+            <Users
+              aria-label={t`Shared note`}
+              className="text-muted-foreground size-3.5 shrink-0"
+            />
+          ) : null}
         </div>
       </InteractiveButton>
       {showUpcomingGauge ? (
@@ -285,7 +301,7 @@ const ItemBase = memo(function ItemBase({
             aria-hidden
             className="hidden items-center justify-center group-hover/sidebar-live-item:flex"
           >
-            <SquareIcon size={10} className="fill-current" />
+            <Square size={10} weight="fill" />
           </span>
         </button>
       ) : null}
@@ -300,6 +316,7 @@ function itemBasePropsAreEqual(prev: ItemBaseProps, next: ItemBaseProps) {
     prev.isLive === next.isLive &&
     prev.amplitude === next.amplitude &&
     prev.showSpinner === next.showSpinner &&
+    prev.isShared === next.isShared &&
     prev.selected === next.selected &&
     prev.ignored === next.ignored &&
     prev.muted === next.muted &&
@@ -345,7 +362,6 @@ const EventItem = memo(
     upcomingProgress?: number;
   }) => {
     const { t } = useLingui();
-    const store = main.UI.useStore(main.STORE_ID);
     const openCurrent = useTabs((state) => state.openCurrent);
 
     const eventId = item.id;
@@ -368,14 +384,21 @@ const EventItem = memo(
       [item.data.started_at, precision, timezone],
     );
 
+    const [isOpening, setIsOpening] = useState(false);
     const openEvent = useCallback(() => {
-      if (!store || !eventId) {
-        return;
-      }
-
-      const sessionId = getOrCreateSessionForEventId(store, eventId, title);
-      openCurrent({ id: sessionId, type: "sessions" });
-    }, [eventId, store, title, openCurrent]);
+      if (!eventId || isOpening) return;
+      setIsOpening(true);
+      void getOrCreateSessionForEventId(eventId, title)
+        .then((sessionId) => {
+          openCurrent({ id: sessionId, type: "sessions" });
+        })
+        .catch((error) => {
+          console.error("[timeline] failed to open event note", error);
+        })
+        .finally(() => {
+          setIsOpening(false);
+        });
+    }, [eventId, title, openCurrent, isOpening]);
 
     const itemKey = `event-${item.id}`;
     const muted = isTimelineItemInFuture(item);
@@ -462,6 +485,7 @@ const EventItem = memo(
       <ItemBase
         title={title}
         displayTime={displayTime}
+        showSpinner={isOpening}
         selected={selected}
         ignored={ignored}
         muted={muted}
@@ -506,15 +530,10 @@ const SessionItem = memo(
     const { t } = useLingui();
     const openCurrent = useTabs((state) => state.openCurrent);
     const deleteSession = useDeleteSession();
+    const managedSharedSessionIds = useContext(ManagedSharedSessionIdsContext);
 
     const sessionId = item.id;
-    const storeTitle = main.UI.useCell(
-      "sessions",
-      sessionId,
-      "title",
-      main.STORE_ID,
-    ) as string | undefined;
-    const title = useSessionTitle(sessionId, storeTitle);
+    const title = useSessionTitle(sessionId, item.data.title ?? undefined);
 
     const { sessionMode, stop, amplitude } = useListener((state) => {
       const sessionMode = state.getSessionMode(sessionId);
@@ -531,10 +550,7 @@ const SessionItem = memo(
     const showSpinner =
       !selected && !isLive && (isFinalizing || isEnhancing || isBatching);
 
-    const sessionEvent = useMemo(
-      () => getSessionEvent(item.data),
-      [item.data.event_json],
-    );
+    const sessionEvent = getSessionEvent(item.data);
 
     const displayTime = useMemo(
       () =>
@@ -578,10 +594,13 @@ const SessionItem = memo(
     );
 
     const handleDelete = useCallback(() => {
-      deleteSession(sessionId, sessionEvent?.tracking_id);
-    }, [deleteSession, sessionId, sessionEvent?.tracking_id]);
+      deleteSession(sessionId, {
+        trackingId: sessionEvent?.tracking_id,
+        title,
+      });
+    }, [deleteSession, sessionId, sessionEvent?.tracking_id, title]);
 
-    const handleShowInFinder = useCallback(async () => {
+    const handleShowInFolder = useCallback(async () => {
       const result = await fsSyncCommands.sessionDir(sessionId);
       if (result.status === "ok") {
         await openerCommands.openPath(result.data, null);
@@ -597,8 +616,8 @@ const SessionItem = memo(
         },
         {
           id: "show",
-          text: t`Show in Finder`,
-          action: handleShowInFinder,
+          text: platform() === "macos" ? t`Show in Finder` : t`Show in folder`,
+          action: handleShowInFolder,
         },
         { separator: true as const },
         {
@@ -607,7 +626,7 @@ const SessionItem = memo(
           action: handleDelete,
         },
       ],
-      [handleOpenStandaloneWindow, handleShowInFinder, handleDelete, t],
+      [handleOpenStandaloneWindow, handleShowInFolder, handleDelete, t],
     );
 
     return (
@@ -620,6 +639,7 @@ const SessionItem = memo(
           Math.min(Math.hypot(amplitude?.mic ?? 0, amplitude?.speaker ?? 0), 1),
         )}
         showSpinner={showSpinner}
+        isShared={managedSharedSessionIds.has(sessionId)}
         selected={selected}
         muted={muted}
         multiSelected={multiSelected}

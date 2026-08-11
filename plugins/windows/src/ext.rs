@@ -229,6 +229,8 @@ impl AppWindow {
             window.destroy()?;
         }
 
+        crate::clear_window_state(app, &self.label());
+
         Ok(())
     }
 
@@ -268,6 +270,13 @@ impl AppWindow {
         }
 
         if let Some(window) = self.get(app) {
+            if matches!(self, Self::Main) {
+                use tauri_plugin_window_state::{StateFlags, WindowExt};
+
+                let _ = window.restore_state(StateFlags::SIZE | StateFlags::POSITION);
+            }
+
+            self.ensure_visible(app, &window);
             window.show()?;
             window.set_focus()?;
             return Ok(Some(window));
@@ -285,9 +294,15 @@ impl AppWindow {
     {
         use tauri_plugin_window_state::{StateFlags, WindowExt};
 
-        let _ = window.restore_state(StateFlags::SIZE);
+        let state_flags = if matches!(self, Self::Main) {
+            StateFlags::SIZE | StateFlags::POSITION
+        } else {
+            StateFlags::SIZE
+        };
+        let _ = window.restore_state(state_flags);
 
         self.position_new_window(app, window)?;
+        self.ensure_visible(app, window);
         window.show()?;
         window.set_focus()?;
 
@@ -354,14 +369,28 @@ impl AppWindow {
         let window = if let Some(window) = self.try_show_existing(app)? {
             window
         } else {
+            let label = self.label();
             let ready_rx = app
                 .try_state::<WindowReadyState>()
-                .map(|state| state.register(self.label()));
+                .map(|state| state.register(label.clone()));
 
-            let window = self.build_window(app)?;
+            let window = match self.build_window(app) {
+                Ok(window) => window,
+                Err(error) => {
+                    if let Some((registration_id, _)) = ready_rx
+                        && let Some(state) = app.try_state::<WindowReadyState>()
+                    {
+                        state.unregister(&label, registration_id);
+                    }
+                    return Err(error);
+                }
+            };
 
-            if let Some(rx) = ready_rx {
+            if let Some((registration_id, rx)) = ready_rx {
                 let _ = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
+                if let Some(state) = app.try_state::<WindowReadyState>() {
+                    state.unregister(&label, registration_id);
+                }
             }
 
             self.finalize_show(app, &window)?;

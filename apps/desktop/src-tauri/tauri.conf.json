@@ -28,23 +28,49 @@
     "active": true,
     "createUpdaterArtifacts": true,
     "targets": "all",
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libpipewire-0.3-0",
+          "libpulse0",
+          "libasound2",
+          "libssl3",
+          "libstdc++6",
+          "ca-certificates",
+          "desktop-file-utils",
+          "xdg-utils",
+          "libayatana-appindicator3-1"
+        ]
+      }
+    },
     "externalBin": [],
     "icon": [
-      "icons/stable/32x32.png",
-      "icons/stable/128x128.png",
-      "icons/stable/128x128@2x.png",
-      "icons/stable/icon.icns",
-      "icons/stable/icon.ico"
+      "icons/dev/32x32.png",
+      "icons/dev/128x128.png",
+      "icons/dev/128x128@2x.png",
+      "icons/dev/icon.icns",
+      "icons/dev/icon.ico"
     ],
     "resources": {
       "../../../plugins/windows/swift-lib/src/Resources/CabinSketch-Regular.ttf": "CabinSketch-Regular.ttf",
       "../../../plugins/windows/swift-lib/src/Resources/OFL.txt": "CabinSketch-OFL.txt",
+      "resources/anagram/AppIcon.icns": "icons/anagram.icns",
+      "resources/anagram-dark/AppIcon.icns": "icons/anagram-dark.icns",
+      "resources/dev/AppIcon.icns": "icons/dev.icns",
+      "resources/dev-dark/AppIcon.icns": "icons/dev-dark.icns",
+      "resources/staging/AppIcon.icns": "icons/staging.icns",
+      "resources/staging-dark/AppIcon.icns": "icons/staging-dark.icns",
       "icons/stable/icon.icns": "icons/stable.icns",
+      "resources/stable-dark/AppIcon.icns": "icons/stable-dark.icns",
       "resources/notification-icons": "notification-icons"
     },
     "macOS": {
-      "minimumSystemVersion": "14.2",
-      "frameworks": [],
+      "minimumSystemVersion": "15.0",
+      "frameworks": [
+        "../../../crates/cloudsync/vendor/cloudsync/macos/aarch64/cloudsync.dylib"
+      ],
       "entitlements": "./Entitlements.plist",
       "dmg": {
         "background": "assets/dmg-background-stable.png",
@@ -63,8 +89,7 @@
       },
       "files": {
         "Resources/mlx-swift_Cmlx.bundle/default.metallib": "resources/mlx.metallib",
-        "Resources/AppIcon.incs": "resources/stable/AppIcon.icns",
-        "Resources/Assets.car": "resources/stable/Assets.car"
+        "Resources/AppIcon.icns": "resources/dev/AppIcon.icns"
       }
     }
   },
@@ -72,7 +97,8 @@
     "deep-link": {
       "desktop": {
         "schemes": [
-          "hyprnote",
+          "anarlog-dev",
+          "hypr",
           "char"
         ]
       }

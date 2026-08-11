@@ -3,38 +3,56 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
+import { beginCloudsyncActivity, endCloudsyncActivity } from "@anlg/plugin-db";
+
 import { isAudioUploadFile, useUploadFile } from "./useUploadFile";
 
 const {
+  audioSourceMetadataMock,
   audioImportDataMock,
   audioImportMock,
   audioImportListenMock,
+  downloadDirMock,
+  selectFileMock,
+  parseSubtitleMock,
+  createTranscriptMock,
+  enhanceMock,
+  queueAutoEnhanceIfSummaryEmptyMock,
   handleBatchFailedMock,
   handleBatchStartedMock,
   updateBatchProgressMock,
   clearBatchSessionMock,
+  catalogLocalSessionAudioMock,
   runBatchMock,
-  useStoreMock,
-  useValuesMock,
+  useSessionMock,
+  updateSessionMock,
   useTabsMock,
   updateSessionTabStateMock,
 } = vi.hoisted(() => ({
+  audioSourceMetadataMock: vi.fn(),
   audioImportDataMock: vi.fn(),
   audioImportMock: vi.fn(),
   audioImportListenMock: vi.fn(),
+  downloadDirMock: vi.fn(),
+  selectFileMock: vi.fn(),
+  parseSubtitleMock: vi.fn(),
+  createTranscriptMock: vi.fn(),
+  enhanceMock: vi.fn(),
+  queueAutoEnhanceIfSummaryEmptyMock: vi.fn(),
   handleBatchFailedMock: vi.fn(),
   handleBatchStartedMock: vi.fn(),
   updateBatchProgressMock: vi.fn(),
   clearBatchSessionMock: vi.fn(),
+  catalogLocalSessionAudioMock: vi.fn(),
   runBatchMock: vi.fn(),
-  useStoreMock: vi.fn(),
-  useValuesMock: vi.fn(),
+  useSessionMock: vi.fn(),
+  updateSessionMock: vi.fn(),
   useTabsMock: vi.fn(),
   updateSessionTabStateMock: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/path", () => ({
-  downloadDir: vi.fn(),
+  downloadDir: downloadDirMock,
   resolveResource: vi.fn((path: string) =>
     Promise.resolve(`/resources/${path}`),
   ),
@@ -42,20 +60,24 @@ vi.mock("@tauri-apps/api/path", () => ({
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
-  open: vi.fn(),
+  open: selectFileMock,
 }));
 
-vi.mock("@hypr/plugin-fs-sync", () => ({
+vi.mock("@anlg/plugin-fs-sync", () => ({
   commands: {
     audioImport: audioImportMock,
     audioImportData: audioImportDataMock,
-    audioSourceMetadata: vi.fn(),
+    audioSourceMetadata: audioSourceMetadataMock,
   },
   events: {
     audioImportEvent: {
       listen: audioImportListenMock,
     },
   },
+}));
+
+vi.mock("@anlg/plugin-transcription", () => ({
+  commands: { parseSubtitle: parseSubtitleMock },
 }));
 
 vi.mock("./contexts", () => ({
@@ -75,35 +97,27 @@ vi.mock("./useRunBatch", () => ({
 
 vi.mock("~/services/enhancer", () => ({
   getEnhancerService: vi.fn(() => ({
-    enhance: vi.fn(),
-    queueAutoEnhanceIfSummaryEmpty: vi.fn(),
+    enhance: enhanceMock,
+    queueAutoEnhanceIfSummaryEmpty: queueAutoEnhanceIfSummaryEmptyMock,
   })),
 }));
 
-vi.mock("~/store/tinybase/store/main", () => ({
-  STORE_ID: "main",
-  UI: {
-    useStore: useStoreMock,
-    useValues: useValuesMock,
-  },
+vi.mock("~/session/attachments", () => ({
+  catalogLocalSessionAudio: catalogLocalSessionAudioMock,
+}));
+
+vi.mock("~/session/queries", () => ({
+  useSession: useSessionMock,
+  useUpdateSession: () => updateSessionMock,
 }));
 
 vi.mock("~/store/zustand/tabs", () => ({
   useTabs: useTabsMock,
 }));
 
-function createStore() {
-  const sessions = new Map<string, Record<string, unknown>>([
-    ["session-1", { event_json: "" }],
-  ]);
-
-  return {
-    getCell: (tableId: string, rowId: string, cellId: string) =>
-      tableId === "sessions" ? sessions.get(rowId)?.[cellId] : undefined,
-    setCell: vi.fn(),
-    setRow: vi.fn(),
-  };
-}
+vi.mock("~/stt/queries", () => ({
+  createTranscript: createTranscriptMock,
+}));
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -123,15 +137,57 @@ describe("useUploadFile", () => {
       status: "ok",
       data: "/vault/sessions/session-1/audio.wav",
     });
+    audioImportMock.mockResolvedValue({
+      status: "ok",
+      data: "/vault/sessions/session-1/audio.wav",
+    });
     audioImportListenMock.mockResolvedValue(vi.fn());
+    audioSourceMetadataMock.mockResolvedValue({
+      status: "ok",
+      data: {
+        createdAt: "2026-03-26T12:00:00.000Z",
+        modifiedAt: null,
+        durationMs: 30_000,
+      },
+    });
+    downloadDirMock.mockResolvedValue("/downloads");
+    selectFileMock.mockResolvedValue("/tmp/replacement.wav");
+    catalogLocalSessionAudioMock.mockResolvedValue(undefined);
     runBatchMock.mockResolvedValue(undefined);
-    useStoreMock.mockReturnValue(createStore());
-    useValuesMock.mockReturnValue({ user_id: "user-1" });
+    createTranscriptMock.mockResolvedValue(undefined);
+    enhanceMock.mockResolvedValue({ type: "started", noteId: "note-1" });
+    queueAutoEnhanceIfSummaryEmptyMock.mockResolvedValue({ type: "queued" });
+    useSessionMock.mockReturnValue({
+      id: "session-1",
+      user_id: "user-1",
+      raw_md: "",
+      event_json: "",
+    });
+    updateSessionMock.mockResolvedValue(undefined);
     useTabsMock.mockImplementation((selector) =>
       selector({
         tabs: [],
         updateSessionTabState: updateSessionTabStateMock,
       }),
+    );
+  });
+
+  test("infers the session date for an ordinary audio upload", async () => {
+    const { result } = renderHook(() => useUploadFile("session-1"), {
+      wrapper: createWrapper(),
+    });
+
+    act(() => {
+      result.current.uploadAudio();
+    });
+
+    await waitFor(() => {
+      expect(updateSessionMock).toHaveBeenCalledWith({
+        created_at: "2026-03-26T11:59:30.000Z",
+      });
+    });
+    expect(audioSourceMetadataMock).toHaveBeenCalledWith(
+      "/tmp/replacement.wav",
     );
   });
 
@@ -151,19 +207,122 @@ describe("useUploadFile", () => {
       result.current.processAudioFile(file);
     });
 
-    await waitFor(() => {
-      expect(audioImportDataMock).toHaveBeenCalled();
-    });
+    await waitFor(() => expect(runBatchMock).toHaveBeenCalled());
     expect(audioImportDataMock).toHaveBeenCalledWith(
       "session-1",
       [1, 2, 3],
       "drop.wav",
+      "audio/wav",
     );
     expect(audioImportMock).not.toHaveBeenCalled();
     expect(runBatchMock).toHaveBeenCalledWith(
       "/vault/sessions/session-1/audio.wav",
+      { promotion: { scope: "whole_session" } },
     );
+    expect(catalogLocalSessionAudioMock).toHaveBeenCalledWith("session-1");
+    expect(audioImportDataMock.mock.invocationCallOrder[0]).toBeLessThan(
+      catalogLocalSessionAudioMock.mock.invocationCallOrder[0]!,
+    );
+    expect(
+      catalogLocalSessionAudioMock.mock.invocationCallOrder[0],
+    ).toBeLessThan(runBatchMock.mock.invocationCallOrder[0]!);
     expect(handleBatchFailedMock).not.toHaveBeenCalled();
+  });
+
+  test("rejects oversized pathless audio before reading it into IPC memory", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const { result } = renderHook(() => useUploadFile("session-1"), {
+      wrapper: createWrapper(),
+    });
+    const file = {
+      name: "drop.wav",
+      type: "audio/wav",
+      size: 4 * 1024 * 1024 + 1,
+      arrayBuffer: vi.fn(),
+    } as unknown as File;
+
+    act(() => result.current.processAudioFile(file));
+
+    await waitFor(() => {
+      expect(handleBatchFailedMock).toHaveBeenCalledWith(
+        "session-1",
+        "Audio files without a native path must be smaller than 4 MB",
+      );
+    });
+    expect(file.arrayBuffer).not.toHaveBeenCalled();
+    expect(audioImportDataMock).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  test("validates actual audio bytes before expanding them for IPC", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const { result } = renderHook(() => useUploadFile("session-1"), {
+      wrapper: createWrapper(),
+    });
+    const file = {
+      name: "drop.wav",
+      type: "audio/wav",
+      size: 0,
+      arrayBuffer: vi
+        .fn()
+        .mockResolvedValue(new ArrayBuffer(4 * 1024 * 1024 + 1)),
+    } as unknown as File;
+
+    act(() => result.current.processAudioFile(file));
+
+    await waitFor(() => {
+      expect(handleBatchFailedMock).toHaveBeenCalledWith(
+        "session-1",
+        "Audio files without a native path must be smaller than 4 MB",
+      );
+    });
+    expect(audioImportDataMock).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  test("keeps CloudSync deferred until imported-audio summary scheduling settles", async () => {
+    let finishSummaryScheduling: (() => void) | undefined;
+    queueAutoEnhanceIfSummaryEmptyMock.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishSummaryScheduling = resolve;
+      }),
+    );
+    const { result } = renderHook(() => useUploadFile("session-1"), {
+      wrapper: createWrapper(),
+    });
+    const file = new File([new Uint8Array([1, 2, 3])], "drop.wav", {
+      type: "audio/wav",
+    });
+    Object.defineProperty(file, "arrayBuffer", {
+      value: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]).buffer),
+    });
+
+    act(() => {
+      result.current.processAudioFile(file);
+    });
+
+    await waitFor(() => {
+      expect(queueAutoEnhanceIfSummaryEmptyMock).toHaveBeenCalledWith(
+        "session-1",
+      );
+    });
+    expect(beginCloudsyncActivity).toHaveBeenCalledWith(
+      "transcription",
+      expect.stringMatching(/^session-1:audio-import:/),
+    );
+    expect(endCloudsyncActivity).not.toHaveBeenCalled();
+
+    finishSummaryScheduling?.();
+    await waitFor(() => {
+      expect(endCloudsyncActivity).toHaveBeenCalledWith(
+        "transcription",
+        vi.mocked(beginCloudsyncActivity).mock.calls[0]?.[1],
+      );
+    });
   });
 
   test.each(["webm", "aac"])(
@@ -193,7 +352,113 @@ describe("useUploadFile", () => {
         "session-1",
         [1, 2, 3],
         `drop.${extension}`,
+        null,
       );
     },
   );
+
+  test("imports copied Voice Memos audio using its QuickTime MIME", async () => {
+    const { result } = renderHook(() => useUploadFile("session-1"), {
+      wrapper: createWrapper(),
+    });
+    const file = new File([new Uint8Array([1, 2, 3])], "Brian Shin.qta", {
+      type: "audio/quicktime",
+      lastModified: 1_700_000_000_000,
+    });
+    Object.defineProperty(file, "arrayBuffer", {
+      value: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]).buffer),
+    });
+
+    act(() => {
+      result.current.processAudioFile(file);
+    });
+
+    await waitFor(() => expect(runBatchMock).toHaveBeenCalled());
+    expect(audioImportDataMock).toHaveBeenCalledWith(
+      "session-1",
+      [1, 2, 3],
+      "Brian Shin.qta",
+      "audio/quicktime",
+    );
+  });
+
+  test("continues transcription when imported audio cataloging fails", async () => {
+    catalogLocalSessionAudioMock.mockRejectedValueOnce(
+      new Error("catalog unavailable"),
+    );
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const { result } = renderHook(() => useUploadFile("session-1"), {
+      wrapper: createWrapper(),
+    });
+    const file = new File([new Uint8Array([1, 2, 3])], "drop.wav", {
+      type: "audio/wav",
+    });
+    Object.defineProperty(file, "arrayBuffer", {
+      value: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]).buffer),
+    });
+
+    act(() => result.current.processAudioFile(file));
+
+    await waitFor(() => expect(runBatchMock).toHaveBeenCalled());
+    expect(handleBatchFailedMock).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith(
+      "[upload] failed to catalog imported audio",
+      expect.any(Error),
+    );
+    consoleError.mockRestore();
+  });
+
+  test("persists imported subtitles before enhancing", async () => {
+    let resolveWrite: (() => void) | undefined;
+    createTranscriptMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveWrite = resolve;
+        }),
+    );
+    parseSubtitleMock.mockResolvedValue({
+      status: "ok",
+      data: {
+        tokens: [{ text: "Hello", start_time: 0, end_time: 500 }],
+      },
+    });
+    const { result } = renderHook(() => useUploadFile("session-1"), {
+      wrapper: createWrapper(),
+    });
+
+    act(() => {
+      result.current.processFile("/tmp/session.vtt", "transcript");
+    });
+
+    await waitFor(() => {
+      expect(createTranscriptMock).toHaveBeenCalledTimes(1);
+    });
+    expect(enhanceMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveWrite?.();
+    });
+    await waitFor(() => {
+      expect(enhanceMock).toHaveBeenCalledWith("session-1");
+    });
+    expect(createTranscriptMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-1",
+        ownerUserId: "user-1",
+        source: "subtitle_import",
+        words: [
+          expect.objectContaining({
+            text: "Hello",
+            start_ms: 0,
+            end_ms: 500,
+          }),
+        ],
+      }),
+    );
+    expect(createTranscriptMock.mock.invocationCallOrder[0]).toBeLessThan(
+      enhanceMock.mock.invocationCallOrder[0],
+    );
+  });
 });

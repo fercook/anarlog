@@ -1,7 +1,7 @@
-import { waitTauriDriverReady } from "@crabnebula/tauri-driver";
-import { waitTestRunnerBackendReady } from "@crabnebula/test-runner-backend";
 import type { Frameworks } from "@wdio/types";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { Socket } from "node:net";
+import os from "node:os";
 import path from "node:path";
 
 import { TestRecorder } from "./record.js";
@@ -14,7 +14,7 @@ let killedTestRunnerBackend = false;
 
 const defaultAppPath = path.resolve(
   import.meta.dirname,
-  "../../apps/desktop/src-tauri/target/release/hyprnote-dev",
+  "../../apps/desktop/src-tauri/target/release/anarlog-dev",
 );
 const appPath = process.env.APP_BINARY_PATH
   ? path.resolve(process.env.APP_BINARY_PATH)
@@ -41,7 +41,7 @@ export const config = {
   framework: "mocha",
   mochaOpts: {
     ui: "bdd",
-    timeout: 60000,
+    timeout: process.env.E2E_VIRTUAL_AUDIO === "1" ? 180_000 : 60_000,
   },
   autoCompileOpts: {
     autoCompile: true,
@@ -64,6 +64,8 @@ export const config = {
         process.exit(1);
       }
 
+      const { waitTestRunnerBackendReady } =
+        await import("@crabnebula/test-runner-backend");
       testRunnerBackend = spawn("pnpm", ["exec", "test-runner-backend"], {
         stdio: "inherit",
         shell: true,
@@ -98,22 +100,29 @@ export const config = {
   beforeSession: async () => {
     const env = { ...process.env, ONBOARDING: "0" };
     const useXvfb = process.platform === "linux" && !!process.env.CI;
+    const tauriDriverCommand =
+      process.platform === "linux"
+        ? path.join(
+            process.env.CARGO_HOME ?? path.join(os.homedir(), ".cargo"),
+            "bin",
+            "tauri-driver",
+          )
+        : "tauri-driver";
+    killedTauriDriver = false;
 
     if (useXvfb) {
       console.log("Starting tauri-driver with xvfb-run (ONBOARDING=0)...");
-      tauriDriver = spawn("xvfb-run", ["-a", "pnpm", "exec", "tauri-driver"], {
+      tauriDriver = spawn("xvfb-run", ["-a", tauriDriverCommand], {
         stdio: [null, process.stdout, process.stderr],
         env,
-        shell: true,
       });
     } else {
       console.log(
         `Starting tauri-driver on ${process.platform} (ONBOARDING=0)...`,
       );
-      tauriDriver = spawn("pnpm", ["exec", "tauri-driver"], {
+      tauriDriver = spawn(tauriDriverCommand, [], {
         stdio: [null, process.stdout, process.stderr],
         env,
-        shell: true,
       });
     }
 
@@ -131,8 +140,8 @@ export const config = {
     await waitTauriDriverReady();
   },
 
-  afterSession: () => {
-    closeTauriDriver();
+  afterSession: async () => {
+    await closeTauriDriver();
   },
 
   onComplete: () => {
@@ -141,7 +150,18 @@ export const config = {
   },
 };
 
-function closeTauriDriver() {
+async function closeTauriDriver() {
+  killedTauriDriver = true;
+  if (!tauriDriver || tauriDriver.exitCode !== null) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    tauriDriver.once("exit", () => resolve());
+    tauriDriver.kill();
+  });
+}
+
+function killTauriDriver() {
   killedTauriDriver = true;
   tauriDriver?.kill();
 }
@@ -162,8 +182,31 @@ function onShutdown(fn: () => void) {
   process.on("SIGBREAK", cleanup);
 }
 
-onShutdown(closeTauriDriver);
+onShutdown(killTauriDriver);
 
 async function sleep(ms: number) {
   return await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitTauriDriverReady() {
+  await new Promise<void>((resolve) => {
+    const tryPort = () => {
+      const socket = new Socket();
+      socket.setTimeout(1000);
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve();
+      });
+      socket.once("timeout", () => {
+        socket.destroy();
+        setTimeout(tryPort, 200);
+      });
+      socket.once("error", () => {
+        socket.destroy();
+        setTimeout(tryPort, 200);
+      });
+      socket.connect(4444, "127.0.0.1");
+    };
+    tryPort();
+  });
 }

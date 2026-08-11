@@ -1,28 +1,24 @@
 import { useLingui } from "@lingui/react/macro";
-import { ArrowLeftIcon } from "lucide-react";
+import { ArrowLeft } from "@phosphor-icons/react";
 import { type ReactNode, useCallback } from "react";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
 import { useShell } from "~/contexts/shell";
+import { useWindowControlsGutter } from "~/shared/hooks/useWindowControlsGutter";
 import { useTabs } from "~/store/zustand/tabs";
 
-export function CustomSidebarHeader({
-  title,
-  children,
-}: {
-  title: ReactNode;
-  children?: ReactNode;
-}) {
+export function CustomSidebarHeader({ children }: { children?: ReactNode }) {
   const { t } = useLingui();
   const { chat } = useShell();
+  const showWindowControlsGutter = useWindowControlsGutter();
   const currentTab = useTabs((state) => state.currentTab);
   const tabs = useTabs((state) => state.tabs);
   const select = useTabs((state) => state.select);
   const openCurrent = useTabs((state) => state.openCurrent);
 
   const handleBack = useCallback(() => {
-    if (chat.mode !== "FloatingClosed") {
+    if (currentTab?.type !== "automations" && chat.mode !== "FloatingClosed") {
       chat.sendEvent({ type: "CLOSE" });
       return;
     }
@@ -43,7 +39,10 @@ export function CustomSidebarHeader({
   return (
     <div
       data-tauri-drag-region
-      className="-mt-11 flex h-12 shrink-0 items-start py-0 pt-[9px] pr-1 pl-[76px]"
+      className={cn([
+        "flex h-12 shrink-0 items-start py-0 pt-[9px] pr-1",
+        showWindowControlsGutter ? "pl-[76px]" : "pl-2",
+      ])}
     >
       <div
         data-tauri-drag-region
@@ -54,11 +53,8 @@ export function CustomSidebarHeader({
           title={t`Back`}
           onClick={handleBack}
         >
-          <ArrowLeftIcon size={14} />
+          <ArrowLeft size={16} />
         </CustomSidebarHeaderButton>
-        <h3 className="truncate font-sans text-sm font-medium select-none">
-          {title}
-        </h3>
       </div>
       {children ? (
         <div
@@ -93,7 +89,7 @@ function CustomSidebarHeaderButton({
       data-tauri-drag-region="false"
       disabled={disabled}
       className={cn([
-        "relative z-50 flex size-6 shrink-0 items-center justify-center rounded-full",
+        "relative z-50 flex size-7 shrink-0 items-center justify-center rounded-full",
         "text-muted-foreground hover:bg-accent hover:text-foreground transition-colors",
         "focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-hidden",
         "disabled:text-muted-foreground/70 disabled:hover:text-muted-foreground/70 disabled:hover:bg-transparent",

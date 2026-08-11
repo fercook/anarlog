@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub use hypr_importer_core::ir::{
+pub use anlg_importer_core::ir::{
     Collection, CollectionStats, EnhancedNote, Human, Organization, Session, SessionParticipant,
     Tag, TagMapping, Template, TemplateSection, Transcript, Word,
 };
@@ -10,14 +10,12 @@ pub use hypr_importer_core::ir::{
 #[serde(rename_all = "snake_case")]
 pub enum TransformKind {
     HyprnoteV0,
-    Granola,
     AsIs,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ImportSourceKind {
-    Granola,
     HyprnoteV0Stable,
     HyprnoteV0Nightly,
     AsIs,
@@ -65,16 +63,6 @@ impl ImportSource {
         })
     }
 
-    pub fn granola() -> Option<Self> {
-        let path = hypr_granola::default_supabase_path();
-        Some(Self {
-            kind: Some(ImportSourceKind::Granola),
-            transform: TransformKind::Granola,
-            path,
-            name: "Granola".to_string(),
-        })
-    }
-
     pub fn is_available(&self) -> bool {
         self.path.exists()
     }
@@ -112,7 +100,6 @@ impl From<ImportSourceKind> for ImportSource {
         match kind {
             ImportSourceKind::HyprnoteV0Stable => Self::hyprnote_stable().unwrap(),
             ImportSourceKind::HyprnoteV0Nightly => Self::hyprnote_nightly().unwrap(),
-            ImportSourceKind::Granola => Self::granola().unwrap(),
             ImportSourceKind::AsIs => Self {
                 kind: Some(ImportSourceKind::AsIs),
                 transform: TransformKind::AsIs,
@@ -170,4 +157,37 @@ impl From<CollectionStats> for ImportStats {
 pub struct ImportDataResult {
     pub stats: ImportStats,
     pub data: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportTextFile {
+    pub path: String,
+    pub name: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedImportAuthorization {
+    pub provider_id: String,
+    pub authorization_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedImportCredentials {
+    pub provider_id: String,
+    pub client_id: String,
+    pub client_secret: Option<String>,
+    pub token_json: String,
+    pub token_received_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedImportSyncResult {
+    pub files: Vec<ImportTextFile>,
+    pub credentials: ConnectedImportCredentials,
+    pub warnings: Vec<String>,
 }

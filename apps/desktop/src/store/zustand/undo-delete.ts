@@ -1,69 +1,13 @@
 import { create } from "zustand";
 
-type SessionRow = {
+type DeletedSession = {
   id: string;
-  user_id: string;
-  created_at: string;
-  folder_id: string;
-  event_json: string;
   title: string;
-  raw_md: string;
-};
-
-type TranscriptRow = {
-  id: string;
-  user_id: string;
-  created_at: string;
-  session_id: string;
-  started_at: number;
-  ended_at?: number;
-  words: string;
-  speaker_hints: string;
-  memo_md: string;
-};
-
-type ParticipantRow = {
-  id: string;
-  user_id: string;
-  session_id: string;
-  human_id: string;
-  source: string;
-};
-
-type TagSessionRow = {
-  id: string;
-  user_id: string;
-  tag_id: string;
-  session_id: string;
-};
-
-type EnhancedNoteRow = {
-  id: string;
-  user_id: string;
-  session_id: string;
-  content: string;
-  template_id: string;
-  position: number;
-  title: string;
-};
-
-type SessionKeyFactsRow = {
-  id: string;
-  user_id: string;
-  session_id: string;
-  created_at: string;
-  updated_at: string;
-  content: string;
-  source_hash: string;
 };
 
 export type DeletedSessionData = {
-  session: SessionRow;
-  transcripts: TranscriptRow[];
-  participants: ParticipantRow[];
-  tagSessions: TagSessionRow[];
-  enhancedNotes: EnhancedNoteRow[];
-  keyFacts: SessionKeyFactsRow | null;
+  session: DeletedSession;
+  tombstone: string;
   deletedAt: number;
 };
 
@@ -72,28 +16,22 @@ export const UNDO_TIMEOUT_MS = 5000;
 export type PendingDeletion = {
   data: DeletedSessionData;
   timeoutId: ReturnType<typeof setTimeout> | null;
-  onDeleteConfirm: (() => void) | null;
+  onDeleteConfirm: (() => void | Promise<unknown>) | null;
   addedAt: number;
   batchId: string | null;
-  paused: boolean;
-  pausedAt: number | null;
 };
 
 interface UndoDeleteState {
   pendingDeletions: Record<string, PendingDeletion>;
   addDeletion: (
     data: DeletedSessionData,
-    onConfirm?: () => void,
+    onConfirm?: () => void | Promise<unknown>,
     batchId?: string,
   ) => void;
   clearDeletion: (sessionId: string) => void;
-  confirmDeletion: (sessionId: string) => void;
+  confirmDeletion: (sessionId: string) => void | Promise<unknown>;
   clearBatch: (batchId: string) => void;
   confirmBatch: (batchId: string) => void;
-  pauseSession: (sessionId: string) => void;
-  resumeSession: (sessionId: string) => void;
-  pauseGroup: (sessionIds: string[]) => void;
-  resumeGroup: (sessionIds: string[]) => void;
 }
 
 export const useUndoDelete = create<UndoDeleteState>((set, get) => ({
@@ -120,8 +58,6 @@ export const useUndoDelete = create<UndoDeleteState>((set, get) => ({
           onDeleteConfirm: onConfirm ?? null,
           addedAt: Date.now(),
           batchId: batchId ?? null,
-          paused: false,
-          pausedAt: null,
         },
       },
     }));
@@ -145,10 +81,9 @@ export const useUndoDelete = create<UndoDeleteState>((set, get) => ({
     const pending = get().pendingDeletions[sessionId];
     if (!pending) return;
 
-    if (pending.onDeleteConfirm) {
-      pending.onDeleteConfirm();
-    }
+    const result = pending.onDeleteConfirm?.();
     get().clearDeletion(sessionId);
+    return result;
   },
 
   clearBatch: (batchId) => {
@@ -168,72 +103,15 @@ export const useUndoDelete = create<UndoDeleteState>((set, get) => ({
       get().confirmDeletion(sessionId);
     }
   },
-
-  pauseSession: (sessionId) => {
-    const pending = get().pendingDeletions[sessionId];
-    if (!pending || pending.paused) return;
-
-    if (pending.timeoutId) {
-      clearTimeout(pending.timeoutId);
-    }
-
-    set((state) => {
-      const current = state.pendingDeletions[sessionId];
-      if (!current) return state;
-      return {
-        pendingDeletions: {
-          ...state.pendingDeletions,
-          [sessionId]: {
-            ...current,
-            timeoutId: null,
-            paused: true,
-            pausedAt: Date.now(),
-          },
-        },
-      };
-    });
-  },
-
-  resumeSession: (sessionId) => {
-    const pending = get().pendingDeletions[sessionId];
-    if (!pending || !pending.paused || !pending.pausedAt) return;
-
-    const pauseDuration = Date.now() - pending.pausedAt;
-    const newDeletedAt = pending.data.deletedAt + pauseDuration;
-    const elapsed = Date.now() - newDeletedAt;
-    const remaining = Math.max(0, UNDO_TIMEOUT_MS - elapsed);
-
-    const timeoutId = setTimeout(() => {
-      get().confirmDeletion(sessionId);
-    }, remaining);
-
-    set((state) => {
-      const current = state.pendingDeletions[sessionId];
-      if (!current) return state;
-      return {
-        pendingDeletions: {
-          ...state.pendingDeletions,
-          [sessionId]: {
-            ...current,
-            timeoutId,
-            paused: false,
-            pausedAt: null,
-            data: { ...current.data, deletedAt: newDeletedAt },
-          },
-        },
-      };
-    });
-  },
-
-  pauseGroup: (sessionIds) => {
-    for (const id of sessionIds) {
-      get().pauseSession(id);
-    }
-  },
-
-  resumeGroup: (sessionIds) => {
-    for (const id of sessionIds) {
-      get().resumeSession(id);
-    }
-  },
 }));
+
+// App exit must not strand notes soft-deleted with live shared links: confirm
+// every pending deletion now and let the caller await the finalize work.
+export function confirmAllPendingDeletions(): Promise<void> {
+  const { pendingDeletions, confirmDeletion } = useUndoDelete.getState();
+  return Promise.allSettled(
+    Object.keys(pendingDeletions).map((sessionId) =>
+      confirmDeletion(sessionId),
+    ),
+  ).then(() => undefined);
+}

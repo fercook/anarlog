@@ -12,19 +12,21 @@ import {
   useEditorState,
 } from "@handlewithcare/react-prosemirror";
 import {
-  BoldIcon,
-  CodeIcon,
-  HighlighterIcon,
-  ItalicIcon,
-  StrikethroughIcon,
-} from "lucide-react";
+  ChatCenteredDots,
+  Code,
+  Highlighter,
+  TextB,
+  TextItalic,
+  TextStrikethrough,
+  TextUnderline,
+} from "@phosphor-icons/react";
 import { toggleMark } from "prosemirror-commands";
 import type { MarkType } from "prosemirror-model";
 import type { EditorState } from "prosemirror-state";
 import { useRef } from "react";
 import { createPortal } from "react-dom";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
 import { schema } from "../note/schema";
 
@@ -59,20 +61,31 @@ const TOOLBAR_BUTTONS: {
   icon: React.ComponentType<{ className?: string }>;
   markType: MarkType;
 }[] = [
-  { id: "bold", icon: BoldIcon, markType: schema.marks.bold },
-  { id: "italic", icon: ItalicIcon, markType: schema.marks.italic },
-  { id: "strike", icon: StrikethroughIcon, markType: schema.marks.strike },
-  { id: "code", icon: CodeIcon, markType: schema.marks.code },
-  { id: "highlight", icon: HighlighterIcon, markType: schema.marks.highlight },
+  { id: "bold", icon: TextB, markType: schema.marks.bold },
+  { id: "italic", icon: TextItalic, markType: schema.marks.italic },
+  { id: "underline", icon: TextUnderline, markType: schema.marks.underline },
+  { id: "strike", icon: TextStrikethrough, markType: schema.marks.strike },
+  { id: "code", icon: Code, markType: schema.marks.code },
+  { id: "highlight", icon: Highlighter, markType: schema.marks.highlight },
 ];
 
-export function FormatToolbar() {
+export function FormatToolbar({
+  onComment,
+  showFormatting = true,
+}: {
+  onComment?: () => void;
+  showFormatting?: boolean;
+}) {
   const toolbarRef = useRef<HTMLDivElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
 
   const editorState = useEditorState();
+  const canFormatSelection = editorState
+    ? showFormatting && !selectionTouchesTitleHeading(editorState)
+    : false;
   const shouldShowToolbar = editorState
-    ? !editorState.selection.empty && !selectionTouchesTitleHeading(editorState)
+    ? !editorState.selection.empty &&
+      (canFormatSelection || onComment !== undefined)
     : false;
 
   const toggle = useEditorEventCallback((view, markType: MarkType) => {
@@ -128,31 +141,51 @@ export function FormatToolbar() {
   return createPortal(
     <div
       ref={toolbarRef}
+      role="toolbar"
+      aria-label="Format selection"
       className={cn([
-        "border-border bg-card/95 fixed flex items-center gap-0.5 rounded-lg border p-1",
-        "shadow-[0_2px_8px_rgba(0,0,0,0.08),0_18px_42px_-16px_rgba(0,0,0,0.34)] backdrop-blur-sm",
+        "bg-popover ring-border fixed flex items-center gap-0.5 rounded-xl p-1 ring-1",
+        "shadow-lg",
       ])}
       style={{ top: 0, left: 0, zIndex: 40 }}
       onMouseDown={(e) => e.preventDefault()}
     >
-      {TOOLBAR_BUTTONS.map((button) => {
-        const active = isMarkActive(editorState, button.markType);
-        return (
-          <button
-            key={button.id}
-            className={cn([
-              "flex size-8 items-center justify-center rounded-md",
-              "cursor-pointer border-none transition-colors",
-              active
-                ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:bg-accent bg-transparent",
-            ])}
-            onClick={() => toggle(button.markType)}
-          >
-            <button.icon className="size-4" />
-          </button>
-        );
-      })}
+      {canFormatSelection &&
+        TOOLBAR_BUTTONS.map((button) => {
+          const active = isMarkActive(editorState, button.markType);
+          return (
+            <button
+              key={button.id}
+              aria-pressed={active}
+              className={cn([
+                "flex size-7 items-center justify-center rounded-md",
+                "cursor-pointer border-none transition-colors",
+                active
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground bg-transparent",
+              ])}
+              onClick={() => toggle(button.markType)}
+            >
+              <button.icon className="size-4" />
+            </button>
+          );
+        })}
+      {canFormatSelection && onComment && (
+        <span className="bg-border mx-0.5 h-4 w-px" aria-hidden="true" />
+      )}
+      {onComment && (
+        <button
+          type="button"
+          aria-label="Comment"
+          className={cn([
+            "text-muted-foreground flex size-7 items-center justify-center rounded-md",
+            "hover:bg-accent hover:text-accent-foreground cursor-pointer border-none bg-transparent transition-colors",
+          ])}
+          onClick={onComment}
+        >
+          <ChatCenteredDots className="size-4" />
+        </button>
+      )}
     </div>,
     document.body,
   );

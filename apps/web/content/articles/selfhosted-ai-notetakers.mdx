@@ -16,7 +16,7 @@ If you don't want your meeting audio on someone else's servers, these are your o
 |              |             |                 |                                               |                    |                                |
 | ------------ | ----------- | --------------- | --------------------------------------------- | ------------------ | ------------------------------ |
 | **Tool**     | **License** | **Platform**    | **Local STT**                                 | **Local LLM**      | **Pricing**                    |
-| **Anarlog**     | MIT         | macOS           | Parakeet V3, Parakeet Batch + 7 cloud         | Ollama / LM Studio | Free (local) · $8–$25/mo cloud |
+| **Anarlog**     | MIT         | macOS           | Parakeet V3, Parakeet Batch + 7 cloud         | Ollama / LM Studio | Free (local) · $15/mo cloud |
 | **Meetily**  | MIT         | Windows, macOS  | Whisper, Parakeet                             | Ollama             | Free · $10/mo Pro              |
 | **Scriberr** | MIT         | Docker (web)    | Whisper.cpp                                   | Ollama             | Free                           |
 | **Vibe**     | MIT         | Win, Mac, Linux | Whisper.cpp                                   | No built-in        | Free                           |
@@ -32,7 +32,7 @@ If you don't want your meeting audio on someone else's servers, these are your o
 
 [Anarlog](https://anarlog.so/) is the only tool on this list that handles the full meeting workflow in one app — capture, transcription, note-taking, summarization, and structured export. 
 
-It ships with a built-in notepad where you write during the meeting, and the AI merges your manual notes with the transcript into structured output using your template. Notes are plain Markdown files on disk. Open them in Obsidian, VS Code, whatever.
+It ships with a built-in notepad where you write during the meeting, and the AI merges your manual notes with the transcript into structured output using your template. The canonical meeting record is local SQLite, with Markdown export when you need a portable copy.
 
 #### Setup
 
@@ -42,7 +42,7 @@ It ships with a built-in notepad where you write during the meeting, and the AI 
 
 **Summarization:** Configured separately. Point it at Ollama or LM Studio for offline, or add a key for OpenAI, Anthropic, or Gemini.
 
-**Storage:** Local filesystem
+**Storage:** Local SQLite, with attachments and recordings kept as local files
 
 #### What else
 
@@ -55,7 +55,7 @@ Calendar integration (Apple, Google, Outlook) with auto-record on event start. A
 
 #### Pricing
 
-Free for fully local use (on-device STT + local LLM). Cloud features available at $8–$25/month.
+Free for fully local use (on-device STT + local LLM). Cloud features available at $15/month or $150/year.
 
 ### 2. Meetily
 
@@ -111,7 +111,7 @@ Useful when you want one shared interface and don't need anything installed on i
 
 #### Pricing
 
-Free and open-source (MIT). Self-host only.
+Free and open-source (MIT). The desktop application is local-first; do not treat it as a supported self-hosted server product.
 
 ### 4. Vibe
 

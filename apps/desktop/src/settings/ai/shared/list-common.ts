@@ -1,6 +1,8 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { Effect } from "effect";
 
+import { modelName } from "./model-id";
+
 export type ModelIgnoreReason =
   | "common_keyword"
   | "old_model"
@@ -32,6 +34,8 @@ export const DEFAULT_RESULT: ListModelsResult = {
   metadata: {},
 };
 export const REQUEST_TIMEOUT = "5 seconds";
+const MAX_MODEL_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_ERROR_RESPONSE_BYTES = 64 * 1024;
 
 const commonIgnoreKeywords = [
   "embed",
@@ -51,11 +55,10 @@ const commonIgnoreKeywords = [
 ] as const;
 
 const modelPriorityPatterns = [
-  /(?:^|\/)gpt-5\.5-pro$/,
   /(?:^|\/)gpt-5\.5$/,
   /(?:^|\/)(?:chat-latest|gpt-chat-latest)$/,
+  /(?:^|\/)claude-opus-5$/,
   /(?:^|\/)claude-sonnet-(?:5|latest)$/,
-  /(?:^|\/)gpt-5\.4-pro$/,
   /(?:^|\/)gpt-5\.4$/,
   /(?:^|\/)gpt-5\.4-mini$/,
   /(?:^|\/)gpt-5\.4-nano$/,
@@ -63,6 +66,8 @@ const modelPriorityPatterns = [
   /(?:^|\/)claude-opus-4[-.]8$/,
   /(?:^|\/)claude-sonnet-4[-.]6$/,
   /(?:^|\/)claude-haiku-4[-.]5(?:-\d{8})?$/,
+  /(?:^|\/)gemini-3\.6-flash$/,
+  /(?:^|\/)gemini-3\.5-flash-lite$/,
   /(?:^|\/)gemini-3\.1-pro-preview$/,
   /(?:^|\/)gemini-3\.5-flash$/,
   /(?:^|\/)gemini-3-flash-preview$/,
@@ -80,13 +85,57 @@ export const fetchJson = (url: string, headers: Record<string, string>) =>
     try: async () => {
       const r = await tauriFetch(url, { method: "GET", headers });
       if (!r.ok) {
-        const errorBody = await r.text();
+        const errorBody = await readResponseTextWithLimit(
+          r,
+          MAX_ERROR_RESPONSE_BYTES,
+        );
         throw new Error(`HTTP ${r.status}: ${errorBody}`);
       }
-      return r.json();
+      return JSON.parse(
+        await readResponseTextWithLimit(r, MAX_MODEL_RESPONSE_BYTES),
+      ) as unknown;
     },
     catch: (e) => e,
   });
+
+export async function readResponseTextWithLimit(
+  response: Response,
+  limit: number,
+): Promise<string> {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > limit) {
+    throw new Error(`Response body exceeds ${limit} bytes`);
+  }
+
+  if (!response.body) {
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > limit) {
+      throw new Error(`Response body exceeds ${limit} bytes`);
+    }
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > limit) {
+        await reader.cancel();
+        throw new Error(`Response body exceeds ${limit} bytes`);
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+    chunks.push(decoder.decode());
+    return chunks.join("");
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 export const shouldIgnoreCommonKeywords = (id: string): boolean => {
   const lowerId = id.toLowerCase();
@@ -96,27 +145,44 @@ export const shouldIgnoreCommonKeywords = (id: string): boolean => {
 export const isDateSnapshot = (id: string): boolean => {
   if (/-\d{4}-\d{2}-\d{2}/.test(id)) return true;
   if (/-\d{8}$/.test(id)) return true;
-  if (/-\d{4}$/.test(id)) return true;
+  if (/-20\d{2}$/.test(id)) return true;
   return false;
 };
 
 export const isNonChatModel = (id: string): boolean => {
   const lowerId = id.toLowerCase();
-  const name = lowerId.includes("/") ? lowerId.split("/").pop()! : lowerId;
+  const name = modelName(id);
 
   if (/^o\d/.test(name)) return true;
   if (/^gpt-4o-/.test(name)) return true;
   if (/^gpt-4\.1/.test(name)) return true;
   if (name.startsWith("ft:") || lowerId.startsWith("ft:")) return true;
-  if (/^gemma/.test(name)) return true;
   if (/^nano-banana/.test(name)) return true;
 
   return false;
 };
 
+export const isNonStreamingModel = (id: string): boolean => {
+  const name = modelName(id);
+  return /^gpt-\d+(?:\.\d+)*-pro(?:$|-)/.test(name);
+};
+
+export const removeNonStreamingModels = (
+  result: ListModelsResult,
+): ListModelsResult => {
+  return {
+    models: result.models.filter((id) => !isNonStreamingModel(id)),
+    ignored: result.ignored.filter(({ id }) => !isNonStreamingModel(id)),
+    metadata: Object.fromEntries(
+      Object.entries(result.metadata).filter(
+        ([id]) => !isNonStreamingModel(id),
+      ),
+    ),
+  };
+};
+
 export const isOldModel = (id: string): boolean => {
-  const lowerId = id.toLowerCase();
-  const name = lowerId.includes("/") ? lowerId.split("/").pop()! : lowerId;
+  const name = modelName(id);
   const dashedName = name.replace(/\./g, "-");
 
   if (/^gpt-3\.5/.test(name)) return true;
@@ -151,7 +217,7 @@ export const isOldModel = (id: string): boolean => {
 
 export const sortModelsByRecency = (models: string[]): string[] => {
   const priority = (model: string) => {
-    const normalized = model.toLowerCase();
+    const normalized = modelName(model);
     const index = modelPriorityPatterns.findIndex((pattern) =>
       pattern.test(normalized),
     );

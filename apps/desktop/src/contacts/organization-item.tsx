@@ -1,60 +1,30 @@
-import { Building2, Pin } from "lucide-react";
+import { Buildings, PushPin } from "@phosphor-icons/react";
 import React, { useCallback } from "react";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
+import { ContactImage } from "~/contacts/contact-avatar";
+import { type OrganizationRecord, toggleContactPin } from "~/contacts/queries";
 import { useNativeContextMenu } from "~/shared/hooks/useNativeContextMenu";
-import * as main from "~/store/tinybase/store/main";
 
 export function OrganizationItem({
-  organizationId,
+  organization,
   active,
   onClick,
   onDelete,
 }: {
-  organizationId: string;
+  organization: OrganizationRecord;
   active: boolean;
   onClick: () => void;
   onDelete?: (id: string) => void;
 }) {
-  const organization = main.UI.useRow(
-    "organizations",
-    organizationId,
-    main.STORE_ID,
-  );
   const isPinned = Boolean(organization.pinned);
-  const store = main.UI.useStore(main.STORE_ID);
 
   const togglePin = useCallback(() => {
-    if (!store) return;
-
-    const currentPinned = store.getCell(
-      "organizations",
-      organizationId,
-      "pinned",
-    );
-    if (currentPinned) {
-      store.setPartialRow("organizations", organizationId, {
-        pinned: false,
-        pin_order: 0,
-      });
-    } else {
-      const allOrgs = store.getTable("organizations");
-      const allHumans = store.getTable("humans");
-      const maxOrgOrder = Object.values(allOrgs).reduce((max, o) => {
-        const order = (o.pin_order as number | undefined) ?? 0;
-        return Math.max(max, order);
-      }, 0);
-      const maxHumanOrder = Object.values(allHumans).reduce((max, h) => {
-        const order = (h.pin_order as number | undefined) ?? 0;
-        return Math.max(max, order);
-      }, 0);
-      store.setPartialRow("organizations", organizationId, {
-        pinned: true,
-        pin_order: Math.max(maxOrgOrder, maxHumanOrder) + 1,
-      });
-    }
-  }, [store, organizationId]);
+    void toggleContactPin("organization", organization.id).catch((error) => {
+      console.error("[contacts] failed to toggle organization pin", error);
+    });
+  }, [organization.id]);
 
   const showContextMenu = useNativeContextMenu([
     {
@@ -65,7 +35,7 @@ export function OrganizationItem({
     {
       id: "delete-org",
       text: "Delete Organization",
-      action: () => onDelete?.(organizationId),
+      action: () => onDelete?.(organization.id),
     },
   ]);
 
@@ -76,10 +46,6 @@ export function OrganizationItem({
     },
     [togglePin],
   );
-
-  if (!organization) {
-    return null;
-  }
 
   return (
     <div
@@ -98,9 +64,13 @@ export function OrganizationItem({
         active ? "bg-accent" : "hover:bg-accent/50",
       ])}
     >
-      <div className="bg-muted flex h-8 w-8 shrink-0 items-center justify-center rounded-full">
-        <Building2 className="text-muted-foreground h-4 w-4" />
-      </div>
+      {organization.avatarDataUrl ? (
+        <ContactImage src={organization.avatarDataUrl} size={32} />
+      ) : (
+        <div className="bg-muted flex h-8 w-8 shrink-0 items-center justify-center rounded-full">
+          <Buildings className="text-muted-foreground h-4 w-4" />
+        </div>
+      )}
       <div className="min-w-0 flex-1">
         <div className="truncate font-medium">{organization.name}</div>
       </div>
@@ -114,7 +84,7 @@ export function OrganizationItem({
         ])}
         aria-label={isPinned ? "Unpin organization" : "Pin organization"}
       >
-        <Pin className="size-3.5" fill={isPinned ? "currentColor" : "none"} />
+        <PushPin className="size-3.5" weight={isPinned ? "fill" : "regular"} />
       </button>
     </div>
   );

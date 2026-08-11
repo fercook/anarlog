@@ -5,17 +5,20 @@ import {
   Link,
   Outlet,
   Scripts,
+  useRouterState,
 } from "@tanstack/react-router";
 
-import { Toaster } from "@hypr/ui/components/ui/toast";
+import { Toaster } from "@anlg/ui/components/ui/toast";
 
 import { WebProviders } from "@/components/web-providers";
+import { isTelemetryPrivateLocation } from "@/lib/auth-route-privacy";
 import {
   ANARLOG_SITE_URL,
   DEFAULT_OG_IMAGE_URL,
   ROOT_DESCRIPTION,
   ROOT_KEYWORDS,
   ROOT_TITLE,
+  getCanonicalUrl,
 } from "@/lib/seo";
 import appCss from "@/styles.css?url";
 
@@ -45,7 +48,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       { property: "og:type", content: "website" },
       { property: "og:title", content: ROOT_TITLE },
       { property: "og:description", content: ROOT_DESCRIPTION },
-      { property: "og:url", content: ANARLOG_SITE_URL },
+      { property: "og:url", content: getCanonicalUrl() },
       {
         property: "og:image",
         content: DEFAULT_OG_IMAGE_URL,
@@ -53,11 +56,11 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       { property: "og:image:width", content: "1200" },
       { property: "og:image:height", content: "630" },
       { name: "twitter:card", content: "summary_large_image" },
-      { name: "twitter:site", content: "@anarlog" },
-      { name: "twitter:creator", content: "@anarlog" },
+      { name: "twitter:site", content: "@anarlogapp" },
+      { name: "twitter:creator", content: "@anarlogapp" },
       { name: "twitter:title", content: ROOT_TITLE },
       { name: "twitter:description", content: ROOT_DESCRIPTION },
-      { name: "twitter:url", content: ANARLOG_SITE_URL },
+      { name: "twitter:url", content: getCanonicalUrl() },
       {
         name: "twitter:image",
         content: DEFAULT_OG_IMAGE_URL,
@@ -96,9 +99,16 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 
 function RootApp() {
   const { queryClient } = Route.useRouteContext();
+  const telemetryEnabled = useRouterState({
+    select: (state) =>
+      !isTelemetryPrivateLocation(
+        state.location.pathname,
+        state.location.search,
+      ),
+  });
 
   return (
-    <WebProviders queryClient={queryClient}>
+    <WebProviders queryClient={queryClient} telemetryEnabled={telemetryEnabled}>
       <Outlet />
     </WebProviders>
   );

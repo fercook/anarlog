@@ -4,7 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use hypr_db_core::Db;
+use anlg_db_core::Db;
 use sqlx::migrate::{
     AppliedMigration, Migrate, MigrateError as SqlxMigrateError, Migration, MigrationType,
 };
@@ -241,7 +241,12 @@ impl Migrate for DbMigrateConnection<'_> {
                 MigrationScope::CloudsyncAlter {
                     table_name: cs_table,
                 } => {
-                    if !self.db.cloudsync_enabled() {
+                    let cloudsync_table_enabled = self.db.cloudsync_enabled()
+                        && anlg_db_core::cloudsync_is_enabled_on(&mut *self.conn, cs_table)
+                            .await
+                            .map_err(cloudsync_error)?;
+
+                    if !cloudsync_table_enabled {
                         return <SqliteConnection as Migrate>::apply(
                             &mut *self.conn,
                             table_name,
@@ -252,18 +257,18 @@ impl Migrate for DbMigrateConnection<'_> {
 
                     let start = Instant::now();
 
-                    hypr_db_core::cloudsync_begin_alter_on(&mut *self.conn, cs_table)
+                    anlg_db_core::cloudsync_begin_alter_on(&mut *self.conn, cs_table)
                         .await
                         .map_err(cloudsync_error)?;
 
-                    execute_migration(&mut *self.conn, migration).await?;
+                    execute_migration(&mut self.conn, migration).await?;
 
-                    hypr_db_core::cloudsync_commit_alter_on(&mut *self.conn, cs_table)
+                    anlg_db_core::cloudsync_commit_alter_on(&mut *self.conn, cs_table)
                         .await
                         .map_err(cloudsync_error)?;
 
                     let elapsed = start.elapsed();
-                    update_execution_time(&mut *self.conn, migration.version, elapsed).await?;
+                    update_execution_time(&mut self.conn, migration.version, elapsed).await?;
 
                     Ok(elapsed)
                 }

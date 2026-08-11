@@ -15,7 +15,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM rust:${RUST_VERSION}-bookworm AS build
 ARG APP_VERSION
-RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev libclang-dev ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked
 ENV APP_VERSION=${APP_VERSION}
 WORKDIR /app
@@ -26,10 +26,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 COPY Cargo.toml Cargo.lock ./
 RUN sed -i '/^members = \[/,/^\]/c\members = ["apps/api", "crates/*"]' Cargo.toml
 COPY crates crates
+COPY packages/pricing/src/trial-policy.json packages/pricing/src/trial-policy.json
 COPY apps/api apps/api
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    cargo clean -p chatwoot -p progenitor-utils
+    cargo clean -p progenitor-utils
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     cargo build --release -p api

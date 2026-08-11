@@ -1,9 +1,9 @@
 {
-  "name": "@hypr/plugin-webhook",
+  "name": "@anlg/plugin-webhook",
   "private": true,
   "main": "./js/index.ts",
   "scripts": {
-    "codegen": "cargo test -p tauri-plugin-windows",
+    "codegen": "cargo test -p tauri-plugin-webhook",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

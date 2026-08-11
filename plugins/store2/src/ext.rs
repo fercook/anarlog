@@ -2,32 +2,68 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 
-static SCOPE_LOCKS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+use tauri::Manager;
 
-fn get_scope_lock(scope: &str) -> Arc<Mutex<()>> {
-    let mut locks = SCOPE_LOCKS.lock().unwrap();
-    locks
-        .entry(scope.to_string())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
+static STORE_WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+pub(crate) struct Store2State<R: tauri::Runtime> {
+    stores: Mutex<HashMap<PathBuf, Arc<tauri_plugin_store::Store<R>>>>,
+}
+
+impl<R: tauri::Runtime> Default for Store2State<R> {
+    fn default() -> Self {
+        Self {
+            stores: Mutex::new(HashMap::new()),
+        }
+    }
 }
 
 pub const FILENAME: &str = "store.json";
+
+fn load_store_defaults(
+    path: &std::path::Path,
+) -> Result<HashMap<String, serde_json::Value>, crate::Error> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(Into::into),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(error) => Err(error.into()),
+    }
+}
 
 fn resolve_store_dir<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<PathBuf, crate::Error> {
     let bundle_id: &str = app.config().identifier.as_ref();
-    let global_base = hypr_storage::global::compute_default_base(bundle_id)
-        .ok_or(hypr_storage::Error::DataDirUnavailable)?;
+    let global_base = anlg_storage::global::compute_default_base(bundle_id)
+        .ok_or(anlg_storage::Error::DataDirUnavailable)?;
     std::fs::create_dir_all(&global_base)?;
 
-    Ok(hypr_storage::vault::resolve_custom(&global_base, &global_base).unwrap_or(global_base))
+    Ok(anlg_storage::vault::resolve_custom(&global_base, &global_base).unwrap_or(global_base))
 }
 
 pub fn store_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, crate::Error> {
     Ok(resolve_store_dir(app)?.join(FILENAME))
+}
+
+fn save_store<R: tauri::Runtime>(
+    store: &tauri_plugin_store::Store<R>,
+    path: &std::path::Path,
+) -> Result<(), crate::Error> {
+    let _guard = STORE_WRITE_LOCK.lock().unwrap();
+    save_store_locked(store, path)
+}
+
+fn save_store_locked<R: tauri::Runtime>(
+    store: &tauri_plugin_store::Store<R>,
+    path: &std::path::Path,
+) -> Result<(), crate::Error> {
+    let entries = store
+        .entries()
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+    let content = serde_json::to_string_pretty(&entries)?;
+    anlg_storage::fs::atomic_write(path, &content)?;
+    Ok(())
 }
 
 pub struct Store2<'a, R: tauri::Runtime, M: tauri::Manager<R>> {
@@ -40,26 +76,53 @@ impl<'a, R: tauri::Runtime, M: tauri::Manager<R>> Store2<'a, R, M> {
         store_path(self.manager.app_handle())
     }
 
-    pub fn store(&self) -> Result<Arc<tauri_plugin_store::Store<R>>, crate::Error> {
+    fn store_with_path(
+        &self,
+    ) -> Result<(Arc<tauri_plugin_store::Store<R>>, PathBuf), crate::Error> {
         let app = self.manager.app_handle();
-        let store_path = store_path(app)?;
-        <tauri::AppHandle<R> as tauri_plugin_store::StoreExt<R>>::store(app, &store_path)
-            .map_err(Into::into)
+        let path = store_path(app)?;
+        let state = app.state::<Store2State<R>>();
+        let mut retained = state.stores.lock().unwrap();
+        if let Some(store) = retained.get(&path) {
+            return Ok((Arc::clone(store), path));
+        }
+
+        use tauri_plugin_store::StoreExt;
+
+        let defaults = load_store_defaults(&path)?;
+        let store = app
+            .store_builder(&path)
+            .defaults(defaults)
+            .disable_auto_save()
+            .build()?;
+        store.close_resource();
+        retained.insert(path.clone(), Arc::clone(&store));
+        Ok((store, path))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn store(&self) -> Result<Arc<tauri_plugin_store::Store<R>>, crate::Error> {
+        self.store_with_path().map(|(store, _)| store)
+    }
+
+    pub fn save(&self) -> Result<(), crate::Error> {
+        let (store, path) = self.store_with_path()?;
+        save_store(&store, &path)
     }
 
     pub fn scoped_store<K: ScopedStoreKey>(
         &self,
         scope: impl Into<String>,
     ) -> Result<ScopedStore<R, K>, crate::Error> {
-        let store = self.store()?;
-        Ok(ScopedStore::new(store, scope.into()))
+        let (store, path) = self.store_with_path()?;
+        Ok(ScopedStore::new(store, path, scope.into()))
     }
 
     pub fn reset(&self) -> Result<(), crate::Error> {
-        let store = self.store()?;
+        let (store, path) = self.store_with_path()?;
+        let _guard = STORE_WRITE_LOCK.lock().unwrap();
         store.clear();
-        store.save()?;
-        Ok(())
+        save_store_locked(&store, &path)
     }
 }
 
@@ -87,21 +150,23 @@ impl ScopedStoreKey for String {}
 
 pub struct ScopedStore<R: tauri::Runtime, K: ScopedStoreKey> {
     scope: String,
+    path: PathBuf,
     store: Arc<tauri_plugin_store::Store<R>>,
     _marker: std::marker::PhantomData<K>,
 }
 
 impl<R: tauri::Runtime, K: ScopedStoreKey> ScopedStore<R, K> {
-    pub fn new(store: Arc<tauri_plugin_store::Store<R>>, scope: String) -> Self {
+    pub fn new(store: Arc<tauri_plugin_store::Store<R>>, path: PathBuf, scope: String) -> Self {
         Self {
             scope,
+            path,
             store,
             _marker: std::marker::PhantomData,
         }
     }
 
     pub fn save(&self) -> Result<(), crate::Error> {
-        self.store.save().map_err(Into::into)
+        save_store(&self.store, &self.path)
     }
 
     pub fn get<T: serde::de::DeserializeOwned>(&self, key: K) -> Result<Option<T>, crate::Error> {
@@ -122,8 +187,7 @@ impl<R: tauri::Runtime, K: ScopedStoreKey> ScopedStore<R, K> {
     }
 
     pub fn set<T: serde::Serialize>(&self, key: K, value: T) -> Result<(), crate::Error> {
-        let lock = get_scope_lock(&self.scope);
-        let _guard = lock.lock().unwrap();
+        let _guard = STORE_WRITE_LOCK.lock().unwrap();
 
         let mut sub_store = match self.store.get(&self.scope) {
             Some(v) => match v.as_str() {
@@ -137,12 +201,11 @@ impl<R: tauri::Runtime, K: ScopedStoreKey> ScopedStore<R, K> {
 
         let json_string = serde_json::to_string(&sub_store)?;
         self.store.set(&self.scope, json_string);
-        Ok(())
+        save_store_locked(&self.store, &self.path)
     }
 
     pub fn delete(&self, key: K) -> Result<(), crate::Error> {
-        let lock = get_scope_lock(&self.scope);
-        let _guard = lock.lock().unwrap();
+        let _guard = STORE_WRITE_LOCK.lock().unwrap();
 
         let mut sub_store = match self.store.get(&self.scope) {
             Some(v) => match v.as_str() {
@@ -158,14 +221,13 @@ impl<R: tauri::Runtime, K: ScopedStoreKey> ScopedStore<R, K> {
 
         let json_string = serde_json::to_string(&sub_store)?;
         self.store.set(&self.scope, json_string);
-        Ok(())
+        save_store_locked(&self.store, &self.path)
     }
 
     pub fn clear(&self) -> Result<(), crate::Error> {
-        let lock = get_scope_lock(&self.scope);
-        let _guard = lock.lock().unwrap();
+        let _guard = STORE_WRITE_LOCK.lock().unwrap();
 
         self.store.delete(&self.scope);
-        Ok(())
+        save_store_locked(&self.store, &self.path)
     }
 }

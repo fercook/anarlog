@@ -1,12 +1,13 @@
 mod commands;
 mod ext;
 mod menu_items;
+mod schedule;
 mod tray_icon;
 
 pub use ext::*;
-pub use menu_items::{HyprMenuItem, UpdateMenuState};
+pub use menu_items::{AnlgMenuItem, UpdateMenuState, handle_agenda_menu_event};
 
-const PLUGIN_NAME: &str = "hypr-tray";
+const PLUGIN_NAME: &str = "anlg-tray";
 
 pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     let specta_builder = make_specta_builder();
@@ -62,6 +63,8 @@ fn make_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         .plugin_name(PLUGIN_NAME)
         .commands(tauri_specta::collect_commands![
             commands::set_tray_icon_visible,
+            commands::set_tray_schedule,
+            commands::set_tray_recording_title,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Result)
 }

@@ -1,18 +1,18 @@
 import type { EditorView } from "prosemirror-view";
 import {
   forwardRef,
+  type MouseEventHandler,
   type UIEventHandler,
   useCallback,
   useDeferredValue,
   useEffect,
   useImperativeHandle,
   useRef,
-  useState,
 } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 
-import type { NoteEditorRef } from "@hypr/editor/note";
-import { cn } from "@hypr/utils";
+import type { NoteEditorRef } from "@anlg/editor/note";
+import { cn } from "@anlg/utils";
 
 import { Enhanced } from "./enhanced";
 import { Header, useEditorTabs } from "./header";
@@ -21,7 +21,10 @@ import { SearchBar } from "./search/bar";
 import { useSearch } from "./search/context";
 import { Transcript } from "./transcript";
 
-import { useCaretNearBottom } from "~/session/components/caret-position-context";
+import {
+  registerCanonicalSessionEditor,
+  unregisterCanonicalSessionEditor,
+} from "~/session-sharing/editor-activity";
 import { useCurrentNoteTab } from "~/session/components/shared";
 import { useScrollPreservation } from "~/shared/hooks/useScrollPreservation";
 import type { SessionMode } from "~/store/zustand/listener/general";
@@ -39,6 +42,10 @@ export interface NoteInputHandle {
 
 type NoteInputProps = {
   tab: Extract<Tab, { type: "sessions" }>;
+  rawMd: string;
+  sessionTitle: string;
+  eventTitle?: string;
+  eventDescription?: string;
   onNavigateToTitle?: (pixelWidth?: number) => void;
   onScroll?: UIEventHandler<HTMLDivElement>;
   editorTabs?: TabEditorView[];
@@ -46,6 +53,7 @@ type NoteInputProps = {
   handleTabChange?: (view: TabEditorView) => void;
   hideHeader?: boolean;
   sessionMode?: SessionMode;
+  transcriptEditMode?: boolean;
 };
 
 export function shouldShowTranscriptTabSpinner(sessionMode: SessionMode) {
@@ -131,6 +139,10 @@ const NoteInputContent = forwardRef<
   (
     {
       tab,
+      rawMd,
+      sessionTitle,
+      eventTitle,
+      eventDescription,
       onNavigateToTitle,
       onScroll,
       editorTabs,
@@ -138,13 +150,11 @@ const NoteInputContent = forwardRef<
       commitTabChange,
       hideHeader = false,
       sessionMode,
+      transcriptEditMode = false,
     },
     ref,
   ) => {
     const internalEditorRef = useRef<NoteEditorRef>(null);
-    const [container, setContainer] = useState<HTMLDivElement | null>(null);
-    const [view, setView] = useState<EditorView | null>(null);
-
     const sessionId = tab.id;
     const deferredCurrentTab = useDeferredValue(currentTab);
     const renderedCurrentTab = editorTabs.some((editorTab) =>
@@ -250,22 +260,6 @@ const NoteInputContent = forwardRef<
       }
     }, [renderedCurrentTab, isMeetingInProgress]);
 
-    const handleViewReady = useCallback((editorView: EditorView) => {
-      setView(editorView);
-    }, []);
-
-    const handleViewDisposed = useCallback((editorView: EditorView) => {
-      setView((currentView) =>
-        currentView === editorView ? null : currentView,
-      );
-    }, []);
-
-    useCaretNearBottom({
-      view,
-      container,
-      enabled: true,
-    });
-
     const search = useSearch();
     const showSearchBar = search?.isVisible ?? false;
     const isEditableTab =
@@ -276,13 +270,57 @@ const NoteInputContent = forwardRef<
       search?.close();
     }, [currentTab]);
 
-    const handleContainerClick = () => {
+    const handleContainerMouseDown: MouseEventHandler<HTMLDivElement> = (
+      event,
+    ) => {
       if (!isEditableTab) {
         return;
       }
 
-      internalEditorRef.current?.commands.focus();
+      if (event.button !== 0) {
+        return;
+      }
+
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+
+      if (target.closest(".ProseMirror") !== null) {
+        return;
+      }
+
+      if (
+        target.closest(
+          "button, a, input, textarea, select, [role='button'], [contenteditable='true']",
+        ) !== null
+      ) {
+        return;
+      }
+
+      if (event.currentTarget.querySelector(".ProseMirror") === null) {
+        return;
+      }
+
+      event.preventDefault();
+      internalEditorRef.current?.commands.focusAtTrailingEmptyLine();
     };
+
+    const handleSessionViewReady = useCallback(
+      (view: EditorView) =>
+        registerCanonicalSessionEditor(sessionId, view, () => {
+          const editor = internalEditorRef.current;
+          if (!editor || editor.view !== view) {
+            throw new Error("Canonical session editor changed");
+          }
+          editor.flushPendingChanges();
+        }),
+      [sessionId],
+    );
+    const handleSessionViewDisposed = useCallback(
+      (view: EditorView) => unregisterCanonicalSessionEditor(sessionId, view),
+      [sessionId],
+    );
 
     return (
       <div className="-mx-2 flex h-full flex-col">
@@ -306,41 +344,47 @@ const NoteInputContent = forwardRef<
 
         <div className="relative flex-1 overflow-hidden">
           <div
-            ref={(node) => {
-              scrollRef.current = node;
-              setContainer(node);
-            }}
-            onClick={handleContainerClick}
+            ref={scrollRef}
+            onMouseDown={handleContainerMouseDown}
             onScroll={onScroll}
             className={cn([
               "h-full px-3",
               "pt-2",
               renderedCurrentTab.type === "transcript"
                 ? "overflow-hidden pb-0"
-                : "scroll-fade-y overflow-auto pb-6",
+                : "overflow-x-hidden overflow-y-auto pb-6",
             ])}
           >
             {renderedCurrentTab.type === "enhanced" && (
               <Enhanced
                 ref={internalEditorRef}
                 sessionId={sessionId}
+                sessionTitle={sessionTitle}
                 enhancedNoteId={renderedCurrentTab.id}
                 onNavigateToTitle={onNavigateToTitle}
-                onViewReady={handleViewReady}
-                onViewDisposed={handleViewDisposed}
+                onViewReady={handleSessionViewReady}
+                onViewDisposed={handleSessionViewDisposed}
               />
             )}
             {renderedCurrentTab.type === "raw" && (
               <RawEditor
                 ref={internalEditorRef}
                 sessionId={sessionId}
+                rawMd={rawMd}
+                sessionTitle={sessionTitle}
+                eventTitle={eventTitle}
+                eventDescription={eventDescription}
                 onNavigateToTitle={onNavigateToTitle}
-                onViewReady={handleViewReady}
-                onViewDisposed={handleViewDisposed}
+                onViewReady={handleSessionViewReady}
+                onViewDisposed={handleSessionViewDisposed}
               />
             )}
             {renderedCurrentTab.type === "transcript" && (
-              <Transcript sessionId={sessionId} scrollRef={scrollRef} />
+              <Transcript
+                sessionId={sessionId}
+                scrollRef={scrollRef}
+                editMode={transcriptEditMode}
+              />
             )}
           </div>
         </div>

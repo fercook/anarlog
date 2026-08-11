@@ -15,8 +15,9 @@ export type FileHandlerConfig = {
     pos?: number,
     items?: DataTransferItemList,
   ) => FileDropResult;
-  onPaste?: (files: File[]) => boolean | void;
+  onPaste?: (files: File[], items?: DataTransferItemList) => FileDropResult;
   onFileUpload?: (file: File) => Promise<FileUploadResult>;
+  onFileUploadError?: (error: unknown, file: File) => void;
 };
 
 const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
@@ -97,6 +98,7 @@ export function fileHandlerPlugin(config: FileHandlerConfig) {
           }
         } catch (error) {
           console.error("Failed to upload file:", error);
+          config.onFileUploadError?.(error, file);
         }
       } else if (isImageFile(file)) {
         const reader = new FileReader();
@@ -142,9 +144,15 @@ export function fileHandlerPlugin(config: FileHandlerConfig) {
         if (files.length === 0) return false;
 
         if (config.onPaste) {
-          const result = config.onPaste(files);
+          const result = config.onPaste(files, event.clipboardData?.items);
           if (result === true) return true;
           if (result === false) return false;
+          if (isFileDropRemainder(result)) {
+            if (result.remainingFiles.length === 0) return true;
+
+            handleFiles(view, result.remainingFiles);
+            return true;
+          }
         }
 
         handleFiles(view, files);

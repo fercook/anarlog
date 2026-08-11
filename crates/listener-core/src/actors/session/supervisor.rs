@@ -1,6 +1,7 @@
 mod children;
 mod mode;
 
+use ractor::concurrency::Duration;
 use ractor::{Actor, ActorCell, ActorProcessingErr, ActorRef, SupervisionEvent};
 use tracing::Instrument;
 
@@ -8,20 +9,29 @@ use crate::DegradedError;
 use crate::actors::session::types::{
     SessionConfigUpdate, SessionContext, SessionParams, session_span, session_supervisor_name,
 };
-use crate::actors::{ListenerConfigUpdate, ListenerMsg};
+use crate::actors::{ListenerConfigUpdate, ListenerInitError, ListenerMsg};
 use owhisper_client::AdapterKind;
 
-use self::children::{ChildKind, RESTART_BUDGET};
+use self::children::ChildKind;
 use self::mode::SessionModeState;
+
+const LISTENER_RETRY_DELAYS: [Duration; 5] = [
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(20),
+    Duration::from_secs(30),
+];
 
 pub struct SessionState {
     ctx: SessionContext,
     source_cell: Option<ActorCell>,
     listener_cell: Option<ActorCell>,
     recorder_cell: Option<ActorCell>,
-    source_restarts: hypr_supervisor::RestartTracker,
-    recorder_restarts: hypr_supervisor::RestartTracker,
+    source_restarts: anlg_supervisor::RestartTracker,
+    recorder_restarts: anlg_supervisor::RestartTracker,
     mode: SessionModeState,
+    listener_retry_attempt: usize,
     shutting_down: bool,
 }
 
@@ -30,6 +40,7 @@ pub struct SessionActor;
 #[derive(Debug)]
 pub enum SessionMsg {
     Shutdown,
+    RetryListener,
     UpdateConfig(SessionConfigUpdate),
 }
 
@@ -71,9 +82,10 @@ impl Actor for SessionActor {
                 source_cell: Some(source_ref.get_cell()),
                 listener_cell: None,
                 recorder_cell,
-                source_restarts: hypr_supervisor::RestartTracker::new(),
-                recorder_restarts: hypr_supervisor::RestartTracker::new(),
+                source_restarts: anlg_supervisor::RestartTracker::new(),
+                recorder_restarts: anlg_supervisor::RestartTracker::new(),
                 mode,
+                listener_retry_attempt: 0,
                 shutting_down: false,
             })
         }
@@ -103,16 +115,7 @@ impl Actor for SessionActor {
                 }
                 Err(error) => {
                     tracing::warn!(?error, "listener_spawn_failed");
-                    let degraded = if should_stop_on_listener_failure(state) {
-                        DegradedError::StreamError {
-                            message: error.to_string(),
-                        }
-                    } else {
-                        DegradedError::UpstreamUnavailable {
-                            message: mode::classify_connection_failure(&state.ctx.params.base_url),
-                        }
-                    };
-
+                    let degraded = classify_listener_spawn_failure(state, &error);
                     handle_listener_failure(&myself, state, degraded).await;
                 }
             }
@@ -135,6 +138,9 @@ impl Actor for SessionActor {
                 children::shutdown_children(state, "session_stop").await;
                 myself.stop(None);
             }
+            SessionMsg::RetryListener => {
+                retry_listener(myself, state).await;
+            }
             SessionMsg::UpdateConfig(update) => {
                 update_config(myself, state, update).await;
             }
@@ -149,98 +155,104 @@ impl Actor for SessionActor {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         let span = session_span(&state.ctx.params.session_id);
-        let _guard = span.enter();
+        async {
+            state
+                .source_restarts
+                .maybe_reset(&children::SOURCE_RESTART_BUDGET);
+            state
+                .recorder_restarts
+                .maybe_reset(&children::RECORDER_RESTART_BUDGET);
 
-        state.source_restarts.maybe_reset(&RESTART_BUDGET);
-        state.recorder_restarts.maybe_reset(&RESTART_BUDGET);
+            if state.shutting_down {
+                return Ok(());
+            }
 
-        if state.shutting_down {
-            return Ok(());
-        }
+            match message {
+                SupervisionEvent::ActorStarted(_) | SupervisionEvent::ProcessGroupChanged(_) => {}
 
-        match message {
-            SupervisionEvent::ActorStarted(_) | SupervisionEvent::ProcessGroupChanged(_) => {}
-
-            SupervisionEvent::ActorTerminated(cell, _, reason) => {
-                match children::identify_child(state, &cell) {
-                    Some(ChildKind::Listener) => {
-                        tracing::info!(?reason, "listener_terminated");
-                        state.listener_cell = None;
-                        handle_listener_failure(
-                            &myself,
-                            state,
-                            mode::parse_degraded_reason(reason.as_ref()),
-                        )
-                        .await;
-                    }
-                    Some(ChildKind::Source) => {
-                        tracing::info!(?reason, "source_terminated_attempting_restart");
-                        state.source_cell = None;
-                        let is_device_change = reason.as_deref() == Some("device_change");
-                        if !children::try_restart_source(
-                            myself.get_cell(),
-                            state,
-                            !is_device_change,
-                        )
-                        .await
-                        {
-                            tracing::error!("source_restart_limit_exceeded_meltdown");
-                            meltdown(myself, state).await;
+                SupervisionEvent::ActorTerminated(cell, _, reason) => {
+                    match children::identify_child(state, &cell) {
+                        Some(ChildKind::Listener) => {
+                            tracing::info!(?reason, "listener_terminated");
+                            state.listener_cell = None;
+                            handle_listener_failure(
+                                &myself,
+                                state,
+                                mode::parse_degraded_reason(reason.as_ref()),
+                            )
+                            .await;
+                        }
+                        Some(ChildKind::Source) => {
+                            tracing::info!(?reason, "source_terminated_attempting_restart");
+                            state.source_cell = None;
+                            let is_device_change = reason.as_deref() == Some("device_change");
+                            if !children::try_restart_source(
+                                myself.get_cell(),
+                                state,
+                                !is_device_change,
+                            )
+                            .await
+                            {
+                                tracing::error!("source_restart_limit_exceeded_meltdown");
+                                meltdown(myself, state).await;
+                            }
+                        }
+                        Some(ChildKind::Recorder) => {
+                            tracing::info!(?reason, "recorder_terminated_attempting_restart");
+                            state.recorder_cell = None;
+                            children::sync_source_recorder(state).await;
+                            if !children::try_restart_recorder(myself.get_cell(), state).await {
+                                tracing::error!("recorder_restart_limit_exceeded_meltdown");
+                                meltdown(myself, state).await;
+                            }
+                        }
+                        None => {
+                            tracing::warn!("unknown_child_terminated");
                         }
                     }
-                    Some(ChildKind::Recorder) => {
-                        tracing::info!(?reason, "recorder_terminated_attempting_restart");
-                        state.recorder_cell = None;
-                        children::sync_source_recorder(state).await;
-                        if !children::try_restart_recorder(myself.get_cell(), state).await {
-                            tracing::error!("recorder_restart_limit_exceeded_meltdown");
-                            meltdown(myself, state).await;
+                }
+                SupervisionEvent::ActorFailed(cell, error) => {
+                    match children::identify_child(state, &cell) {
+                        Some(ChildKind::Listener) => {
+                            tracing::info!(?error, "listener_failed");
+                            state.listener_cell = None;
+                            handle_listener_failure(
+                                &myself,
+                                state,
+                                DegradedError::StreamError {
+                                    message: format!("{:?}", error),
+                                },
+                            )
+                            .await;
                         }
-                    }
-                    None => {
-                        tracing::warn!("unknown_child_terminated");
+                        Some(ChildKind::Source) => {
+                            tracing::warn!(?error, "source_failed_attempting_restart");
+                            state.source_cell = None;
+                            if !children::try_restart_source(myself.get_cell(), state, true).await {
+                                tracing::error!("source_restart_limit_exceeded_meltdown");
+                                meltdown(myself, state).await;
+                            }
+                        }
+                        Some(ChildKind::Recorder) => {
+                            tracing::warn!(?error, "recorder_failed_attempting_restart");
+                            state.recorder_cell = None;
+                            children::sync_source_recorder(state).await;
+                            if !children::try_restart_recorder(myself.get_cell(), state).await {
+                                tracing::error!("recorder_restart_limit_exceeded_meltdown");
+                                meltdown(myself, state).await;
+                            }
+                        }
+                        None => {
+                            tracing::warn!("unknown_child_failed");
+                        }
                     }
                 }
             }
 
-            SupervisionEvent::ActorFailed(cell, error) => {
-                match children::identify_child(state, &cell) {
-                    Some(ChildKind::Listener) => {
-                        tracing::info!(?error, "listener_failed");
-                        state.listener_cell = None;
-                        handle_listener_failure(
-                            &myself,
-                            state,
-                            DegradedError::StreamError {
-                                message: format!("{:?}", error),
-                            },
-                        )
-                        .await;
-                    }
-                    Some(ChildKind::Source) => {
-                        tracing::warn!(?error, "source_failed_attempting_restart");
-                        state.source_cell = None;
-                        if !children::try_restart_source(myself.get_cell(), state, true).await {
-                            tracing::error!("source_restart_limit_exceeded_meltdown");
-                            meltdown(myself, state).await;
-                        }
-                    }
-                    Some(ChildKind::Recorder) => {
-                        tracing::warn!(?error, "recorder_failed_attempting_restart");
-                        state.recorder_cell = None;
-                        children::sync_source_recorder(state).await;
-                        if !children::try_restart_recorder(myself.get_cell(), state).await {
-                            tracing::error!("recorder_restart_limit_exceeded_meltdown");
-                            meltdown(myself, state).await;
-                        }
-                    }
-                    None => {
-                        tracing::warn!("unknown_child_failed");
-                    }
-                }
-            }
+            Ok(())
         }
-        Ok(())
+        .instrument(span)
+        .await
     }
 }
 
@@ -317,15 +329,7 @@ async fn refresh_listener(myself: ActorRef<SessionMsg>, state: &mut SessionState
         }
         Err(error) => {
             tracing::warn!(?error, "listener_refresh_failed");
-            let degraded = if should_stop_on_listener_failure(state) {
-                DegradedError::StreamError {
-                    message: error.to_string(),
-                }
-            } else {
-                DegradedError::UpstreamUnavailable {
-                    message: mode::classify_connection_failure(&state.ctx.params.base_url),
-                }
-            };
+            let degraded = classify_listener_spawn_failure(state, &error);
             handle_listener_failure(&myself, state, degraded).await;
         }
     }
@@ -346,18 +350,7 @@ fn expected_speaker_count(
     participant_human_ids: &[String],
     self_human_id: Option<&str>,
 ) -> Option<u32> {
-    let mut participants = participant_human_ids.to_vec();
-
-    if let Some(self_human_id) = self_human_id
-        && !participants.iter().any(|id| id == self_human_id)
-    {
-        participants.push(self_human_id.to_string());
-    }
-
-    participants.sort();
-    participants.dedup();
-
-    (participants.len() > 1).then_some(participants.len() as u32)
+    crate::expected_speakers_per_channel(participant_human_ids, self_human_id)
 }
 
 async fn handle_listener_failure(
@@ -369,12 +362,90 @@ async fn handle_listener_failure(
         tracing::warn!("listener_failed_stopping_session");
         stop_after_listener_failure(myself, state, degraded).await;
     } else {
+        let should_retry = should_retry_listener_failure(&degraded);
         enter_batch_fallback(state, degraded).await;
+        if should_retry {
+            schedule_listener_retry(myself, state);
+        }
+    }
+}
+
+fn should_retry_listener_failure(degraded: &DegradedError) -> bool {
+    !matches!(
+        degraded,
+        DegradedError::AuthenticationFailed { .. } | DegradedError::ProviderConfiguration { .. }
+    )
+}
+
+fn classify_listener_spawn_failure(
+    state: &SessionState,
+    error: &ractor::SpawnErr,
+) -> DegradedError {
+    if let ractor::SpawnErr::StartupFailed(error) = error
+        && let Some(listener_error) = error.downcast_ref::<ListenerInitError>()
+        && let Some(degraded) = &listener_error.degraded
+    {
+        return degraded.clone();
+    }
+
+    if should_stop_on_listener_failure(state) {
+        DegradedError::StreamError {
+            message: error.to_string(),
+        }
+    } else {
+        DegradedError::UpstreamUnavailable {
+            message: mode::classify_connection_failure(&state.ctx.params.base_url),
+        }
+    }
+}
+
+fn schedule_listener_retry(myself: &ActorRef<SessionMsg>, state: &mut SessionState) {
+    let delay = listener_retry_delay(state.listener_retry_attempt);
+    state.listener_retry_attempt = state.listener_retry_attempt.saturating_add(1);
+    tracing::info!(
+        ?delay,
+        attempt = state.listener_retry_attempt,
+        "listener_retry_scheduled"
+    );
+    myself.send_after(delay, || SessionMsg::RetryListener);
+}
+
+fn listener_retry_delay(attempt: usize) -> Duration {
+    LISTENER_RETRY_DELAYS[attempt.min(LISTENER_RETRY_DELAYS.len() - 1)]
+}
+
+async fn retry_listener(myself: ActorRef<SessionMsg>, state: &mut SessionState) {
+    if state.shutting_down || state.listener_cell.is_some() || !state.mode.should_retry_listener() {
+        return;
+    }
+
+    let replay_duration_secs = children::prepare_listener_refresh(state).await;
+    let replay_offset_secs =
+        (state.ctx.started_at_instant.elapsed().as_secs_f64() - replay_duration_secs).max(0.0);
+
+    match children::spawn_listener(myself.get_cell(), &state.ctx, Some(replay_offset_secs)).await {
+        Ok(listener_cell) => {
+            tracing::info!(
+                attempts = state.listener_retry_attempt,
+                "listener_reconnected"
+            );
+            state.listener_cell = Some(listener_cell);
+            state.listener_retry_attempt = 0;
+            state.mode.on_listener_attached();
+            children::attach_listener_to_source(state).await;
+            emit_active_lifecycle_event(state, None).await;
+        }
+        Err(error) => {
+            tracing::warn!(?error, "listener_retry_failed");
+            let degraded = classify_listener_spawn_failure(state, &error);
+            handle_listener_failure(&myself, state, degraded).await;
+        }
     }
 }
 
 fn should_stop_on_listener_failure(state: &SessionState) -> bool {
     state.ctx.params.uses_local_soniqo_live_model()
+        || state.ctx.params.uses_local_apple_speech_live_model()
         || matches!(
             AdapterKind::from_url_and_languages(
                 &state.ctx.params.base_url,
@@ -409,8 +480,8 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Instant, SystemTime};
 
-    use hypr_audio::{AudioProvider, CaptureConfig, CaptureStream};
-    use hypr_supervisor::RestartTracker;
+    use anlg_audio::{AudioProvider, CaptureConfig, CaptureStream};
+    use anlg_supervisor::RestartTracker;
     use ractor::ActorStatus;
 
     use super::*;
@@ -421,12 +492,12 @@ mod tests {
 
     struct TestRuntime;
 
-    impl hypr_storage::StorageRuntime for TestRuntime {
-        fn global_base(&self) -> Result<PathBuf, hypr_storage::Error> {
+    impl anlg_storage::StorageRuntime for TestRuntime {
+        fn global_base(&self) -> Result<PathBuf, anlg_storage::Error> {
             Ok(std::env::temp_dir())
         }
 
-        fn vault_base(&self) -> Result<PathBuf, hypr_storage::Error> {
+        fn vault_base(&self) -> Result<PathBuf, anlg_storage::Error> {
             Ok(std::env::temp_dir())
         }
     }
@@ -442,14 +513,14 @@ mod tests {
     }
 
     impl AudioProvider for TestRuntime {
-        fn open_capture(&self, _config: CaptureConfig) -> Result<CaptureStream, hypr_audio::Error> {
+        fn open_capture(&self, _config: CaptureConfig) -> Result<CaptureStream, anlg_audio::Error> {
             unimplemented!()
         }
         fn open_speaker_capture(
             &self,
             _sample_rate: u32,
             _chunk_size: usize,
-        ) -> Result<CaptureStream, hypr_audio::Error> {
+        ) -> Result<CaptureStream, anlg_audio::Error> {
             unimplemented!()
         }
         fn open_mic_capture(
@@ -457,7 +528,7 @@ mod tests {
             _device: Option<String>,
             _sample_rate: u32,
             _chunk_size: usize,
-        ) -> Result<CaptureStream, hypr_audio::Error> {
+        ) -> Result<CaptureStream, anlg_audio::Error> {
             unimplemented!()
         }
         fn default_device_name(&self) -> String {
@@ -474,10 +545,10 @@ mod tests {
             let (tx, _rx) = std::sync::mpsc::channel();
             tx
         }
-        fn probe_mic(&self, _device: Option<String>) -> Result<(), hypr_audio::Error> {
+        fn probe_mic(&self, _device: Option<String>) -> Result<(), anlg_audio::Error> {
             Ok(())
         }
-        fn probe_speaker(&self) -> Result<(), hypr_audio::Error> {
+        fn probe_speaker(&self) -> Result<(), anlg_audio::Error> {
             Ok(())
         }
     }
@@ -532,12 +603,12 @@ mod tests {
         lifecycle_events: std::sync::Mutex<Vec<crate::SessionLifecycleEvent>>,
     }
 
-    impl hypr_storage::StorageRuntime for RecordingRuntime {
-        fn global_base(&self) -> Result<PathBuf, hypr_storage::Error> {
+    impl anlg_storage::StorageRuntime for RecordingRuntime {
+        fn global_base(&self) -> Result<PathBuf, anlg_storage::Error> {
             Ok(std::env::temp_dir())
         }
 
-        fn vault_base(&self) -> Result<PathBuf, hypr_storage::Error> {
+        fn vault_base(&self) -> Result<PathBuf, anlg_storage::Error> {
             Ok(std::env::temp_dir())
         }
     }
@@ -568,6 +639,7 @@ mod tests {
                 base_url: "http://localhost:1234".to_string(),
                 api_key: "test-key".to_string(),
                 keywords: vec![],
+                mic_device: None,
                 participant_human_ids: vec![],
                 self_human_id: None,
             },
@@ -586,12 +658,13 @@ mod tests {
             source_restarts: RestartTracker::new(),
             recorder_restarts: RestartTracker::new(),
             mode: SessionModeState::new(TranscriptionMode::Live, TranscriptionMode::Live),
+            listener_retry_attempt: 0,
             shutting_down: false,
         }
     }
 
     fn test_update(
-        languages: Vec<hypr_language::Language>,
+        languages: Vec<anlg_language::Language>,
         participant_human_ids: Vec<&str>,
         self_human_id: Option<&str>,
     ) -> SessionConfigUpdate {
@@ -609,12 +682,12 @@ mod tests {
     #[test]
     fn config_update_refreshes_when_languages_change() {
         let mut ctx = test_ctx();
-        ctx.params.languages = vec![hypr_language::ISO639::En.into()];
+        ctx.params.languages = vec![anlg_language::ISO639::En.into()];
         let state = test_state(ctx);
         let update = test_update(
             vec![
-                hypr_language::ISO639::En.into(),
-                hypr_language::ISO639::Ko.into(),
+                anlg_language::ISO639::En.into(),
+                anlg_language::ISO639::Ko.into(),
             ],
             vec![],
             None,
@@ -629,7 +702,7 @@ mod tests {
         ctx.params.participant_human_ids = vec!["self".to_string()];
         ctx.params.self_human_id = Some("self".to_string());
         let state = test_state(ctx);
-        let update = test_update(vec![], vec!["self", "remote"], Some("self"));
+        let update = test_update(vec![], vec!["self", "remote-a", "remote-b"], Some("self"));
 
         assert!(update_requires_listener_refresh(&state.ctx.params, &update));
     }
@@ -651,7 +724,7 @@ mod tests {
     #[test]
     fn local_soniqo_live_listener_failure_stops_session() {
         let mut ctx = test_ctx();
-        ctx.params.base_url = hypr_transcribe_soniqo::LOCAL_BASE_URL.to_string();
+        ctx.params.base_url = anlg_transcribe_soniqo::LOCAL_BASE_URL.to_string();
         ctx.params.model = "soniqo-parakeet-streaming".to_string();
         let state = test_state(ctx);
 
@@ -669,9 +742,9 @@ mod tests {
     }
 
     #[test]
-    fn hyprnote_proxy_soniox_listener_failure_enters_batch_fallback() {
+    fn anarlog_proxy_soniox_listener_failure_enters_batch_fallback() {
         let mut ctx = test_ctx();
-        ctx.params.base_url = "https://api.hyprnote.com/stt?provider=soniox".to_string();
+        ctx.params.base_url = "https://api.anarlog.so/stt?provider=soniox".to_string();
         ctx.params.model = "cloud".to_string();
         let state = test_state(ctx);
 
@@ -683,6 +756,43 @@ mod tests {
         let state = test_state(test_ctx());
 
         assert!(!should_stop_on_listener_failure(&state));
+    }
+
+    #[test]
+    fn transient_listener_failures_retry_with_capped_backoff() {
+        assert!(should_retry_listener_failure(
+            &DegradedError::ConnectionTimeout
+        ));
+        assert_eq!(listener_retry_delay(0), Duration::from_secs(2));
+        assert_eq!(listener_retry_delay(3), Duration::from_secs(20));
+        assert_eq!(listener_retry_delay(20), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn authentication_failures_do_not_retry() {
+        assert!(!should_retry_listener_failure(
+            &DegradedError::AuthenticationFailed {
+                provider: "test".to_string(),
+            }
+        ));
+    }
+
+    #[test]
+    fn provider_configuration_failures_do_not_retry() {
+        let degraded = DegradedError::ProviderConfiguration {
+            provider: "test".to_string(),
+            message: "invalid endpoint".to_string(),
+        };
+        assert!(!should_retry_listener_failure(&degraded));
+
+        let error = ractor::SpawnErr::StartupFailed(Box::new(ListenerInitError {
+            message: "listener failed".to_string(),
+            degraded: Some(degraded),
+        }));
+        assert!(matches!(
+            classify_listener_spawn_failure(&test_state(test_ctx()), &error),
+            DegradedError::ProviderConfiguration { .. }
+        ));
     }
 
     #[tokio::test]
@@ -704,21 +814,21 @@ mod tests {
         )
         .await;
 
-        let events = runtime.lifecycle_events.lock().unwrap();
-        let Some(crate::SessionLifecycleEvent::Active {
-            requested_transcription_mode,
-            current_transcription_mode,
-            error: Some(DegradedError::StreamError { message }),
-            ..
-        }) = events.first()
-        else {
-            panic!("expected degraded active event");
-        };
-        assert_eq!(*requested_transcription_mode, TranscriptionMode::Live);
-        assert_eq!(*current_transcription_mode, TranscriptionMode::Live);
-        assert_eq!(message, "listener failed");
-
-        drop(events);
+        {
+            let events = runtime.lifecycle_events.lock().unwrap();
+            let Some(crate::SessionLifecycleEvent::Active {
+                requested_transcription_mode,
+                current_transcription_mode,
+                error: Some(DegradedError::StreamError { message }),
+                ..
+            }) = events.first()
+            else {
+                panic!("expected degraded active event");
+            };
+            assert_eq!(*requested_transcription_mode, TranscriptionMode::Live);
+            assert_eq!(*current_transcription_mode, TranscriptionMode::Live);
+            assert_eq!(message, "listener failed");
+        }
         let _ = handle.await;
     }
 
@@ -764,6 +874,7 @@ mod tests {
             source_restarts: RestartTracker::new(),
             recorder_restarts: RestartTracker::new(),
             mode: SessionModeState::new(TranscriptionMode::Live, TranscriptionMode::Live),
+            listener_retry_attempt: 0,
             shutting_down: false,
         };
 

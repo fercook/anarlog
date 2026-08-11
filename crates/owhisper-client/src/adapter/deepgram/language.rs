@@ -13,7 +13,7 @@ const LANGUAGE_DETECTION_LANGS: &[&str] = &[
     "zh",
 ];
 
-pub fn can_use_multi(model: &str, languages: &[hypr_language::Language]) -> bool {
+pub fn can_use_multi(model: &str, languages: &[anlg_language::Language]) -> bool {
     if languages.len() < 2 {
         return false;
     }
@@ -57,10 +57,14 @@ impl LanguageQueryStrategy for DeepgramLanguageStrategy {
                 }
             }
             _ => {
-                if can_use_multi(model, &params.languages) {
-                    query_pairs.append_pair("language", "multi");
-                } else if mode == TranscriptionMode::Batch {
+                // Configured languages are the ones the user speaks, not the ones spoken in
+                // any single meeting. Most meetings are monolingual, so prefer detection over
+                // code-switching: `multi` decodes the whole file with a code-switching model
+                // and loses accuracy against the language-locked one.
+                if mode == TranscriptionMode::Batch {
                     append_detect_language_query(query_pairs, &params.languages);
+                } else if can_use_multi(model, &params.languages) {
+                    query_pairs.append_pair("language", "multi");
                 } else if let Some(language) = params.languages.first() {
                     let code = single_language_query_code(params, language);
                     query_pairs.append_pair("language", &code);
@@ -70,7 +74,7 @@ impl LanguageQueryStrategy for DeepgramLanguageStrategy {
     }
 }
 
-fn single_language_query_code(params: &ListenParams, language: &hypr_language::Language) -> String {
+fn single_language_query_code(params: &ListenParams, language: &anlg_language::Language) -> String {
     let Some(region) = language.region() else {
         return language.iso639().code().to_string();
     };
@@ -89,7 +93,7 @@ fn single_language_query_code(params: &ListenParams, language: &hypr_language::L
 
 fn append_detect_language_query<'a>(
     query_pairs: &mut Serializer<'a, UrlQuery>,
-    languages: &[hypr_language::Language],
+    languages: &[anlg_language::Language],
 ) {
     if languages.iter().all(supports_language_detection) {
         for language in languages {
@@ -100,7 +104,7 @@ fn append_detect_language_query<'a>(
     }
 }
 
-pub(super) fn supports_language_detection(language: &hypr_language::Language) -> bool {
+pub(super) fn supports_language_detection(language: &anlg_language::Language) -> bool {
     LANGUAGE_DETECTION_LANGS.contains(&language.iso639().code())
 }
 

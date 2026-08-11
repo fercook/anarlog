@@ -1,22 +1,89 @@
-import type { ReactNode } from "react";
+import type { MouseEvent } from "react";
 
-import { cn } from "@hypr/utils";
+import { sonnerToast } from "@anlg/ui/components/ui/toast";
 
-export function SettingsAlert({
-  children,
-  className,
+import { useMountEffect } from "~/shared/hooks/useMountEffect";
+
+export function SettingsAlertToast({
+  id,
+  description,
+  variant = "default",
+  lifecycle,
+  action,
 }: {
-  children: ReactNode;
-  className?: string;
+  id: string;
+  description?: string;
+  variant?: "default" | "error" | "warning";
+  lifecycle: "condition-bound" | "persistent";
+  action?: {
+    label: string;
+    onClick: () => void | Promise<void>;
+  };
 }) {
+  if (!description) {
+    return null;
+  }
+
   return (
-    <div
-      className={cn([
-        "bg-alert text-alert-foreground border-alert-border rounded-lg border px-4 py-3 text-sm",
-        className,
-      ])}
-    >
-      {children}
-    </div>
+    <SettingsAlertToastLifecycle
+      key={`${id}:${description}:${lifecycle}:${action?.label ?? ""}`}
+      id={id}
+      description={description}
+      variant={variant}
+      lifecycle={lifecycle}
+      action={action}
+    />
   );
+}
+
+function SettingsAlertToastLifecycle({
+  id,
+  description,
+  variant,
+  lifecycle,
+  action,
+}: {
+  id: string;
+  description: string;
+  variant: "default" | "error" | "warning";
+  lifecycle: "condition-bound" | "persistent";
+  action?: {
+    label: string;
+    onClick: () => void | Promise<void>;
+  };
+}) {
+  useMountEffect(() => {
+    const dismissible = lifecycle === "persistent";
+    const options = {
+      id,
+      duration: Infinity,
+      dismissible,
+      closeButton: dismissible,
+      ...(action
+        ? {
+            action: {
+              label: action.label,
+              onClick: (event: MouseEvent<HTMLButtonElement>) => {
+                event.preventDefault();
+                void action.onClick();
+              },
+            },
+          }
+        : {}),
+    };
+
+    if (variant === "error") {
+      sonnerToast.error(description, options);
+    } else if (variant === "warning") {
+      sonnerToast.warning(description, options);
+    } else {
+      sonnerToast.message(description, options);
+    }
+
+    return () => {
+      sonnerToast.dismiss(id);
+    };
+  });
+
+  return null;
 }

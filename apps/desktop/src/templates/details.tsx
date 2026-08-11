@@ -1,21 +1,23 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { HeartIcon, MoreHorizontalIcon, PlusIcon } from "lucide-react";
+import { DotsThree, Heart, Plus } from "@phosphor-icons/react";
 import { useState } from "react";
 
-import { Button } from "@hypr/ui/components/ui/button";
+import { Button } from "@anlg/ui/components/ui/button";
 import {
   AppFloatingPanel,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@hypr/ui/components/ui/dropdown-menu";
-import { cn } from "@hypr/utils";
+} from "@anlg/ui/components/ui/dropdown-menu";
+import { cn } from "@anlg/utils";
 
+import { AutoTemplateDetails } from "./auto-form";
 import { type WebTemplate } from "./codec";
 import { type UserTemplate, type UserTemplateDraft } from "./queries";
 import { SectionsList } from "./sections-editor";
 import { TemplateForm } from "./template-form";
+import { TemplateIconGlyph } from "./template-icon";
 import { getTemplateCreatorLabel } from "./utils";
 
 import {
@@ -24,6 +26,7 @@ import {
 } from "~/shared/ui/resource-list";
 
 export function TemplateDetailsColumn({
+  isAutoSelected,
   isWebMode,
   selectedMineTemplate,
   selectedWebTemplate,
@@ -34,6 +37,7 @@ export function TemplateDetailsColumn({
   handleFavoriteTemplate,
   handleSetDefaultTemplate,
 }: {
+  isAutoSelected: boolean;
   isWebMode: boolean;
   selectedMineTemplate: UserTemplate | null;
   selectedWebTemplate: WebTemplate | null;
@@ -45,6 +49,10 @@ export function TemplateDetailsColumn({
   handleSetDefaultTemplate: (template: UserTemplateDraft) => void;
 }) {
   const { t } = useLingui();
+  if (isAutoSelected) {
+    return <AutoTemplateDetails />;
+  }
+
   if (isWebMode) {
     if (!selectedWebTemplate) {
       return (
@@ -88,7 +96,7 @@ function TemplateDetailEmpty({ onCreate }: { onCreate: () => void }) {
         onClick={onCreate}
         className="gap-2"
       >
-        <PlusIcon className="size-4" />
+        <Plus className="size-4" />
         <Trans>Create template</Trans>
       </Button>
     </div>
@@ -111,6 +119,7 @@ function WebTemplatePreview({
     title: template.title ?? "",
     description: template.description ?? "",
     category: template.category,
+    icon: template.icon,
     targets: template.targets,
     sections: template.sections ?? [],
   };
@@ -119,12 +128,14 @@ function WebTemplatePreview({
   return (
     <div className="flex h-full flex-1 flex-col">
       <ResourcePreviewHeader
+        icon={
+          <TemplateIconGlyph icon={template.icon} className="size-4 text-sm" />
+        }
         title={template.title || t`Untitled`}
         description={template.description}
-        category={template.category}
         targets={template.targets}
         titleMeta={
-          <span className="text-muted-foreground shrink-0 text-sm font-normal whitespace-nowrap">
+          <span className="text-muted-foreground shrink-0 text-xs font-normal whitespace-nowrap">
             {getTemplateCreatorLabel({
               isUserTemplate: false,
               format: "short",
@@ -152,7 +163,7 @@ function WebTemplatePreview({
               title={t`Favorite template`}
               aria-label={t`Favorite template`}
             >
-              <HeartIcon className="size-4" />
+              <Heart className="size-4" />
             </Button>
             <DropdownMenu open={actionsOpen} onOpenChange={setActionsOpen}>
               <DropdownMenuTrigger asChild>
@@ -166,7 +177,7 @@ function WebTemplatePreview({
                   ])}
                   aria-label={t`Template actions`}
                 >
-                  <MoreHorizontalIcon className="size-4" />
+                  <DotsThree className="size-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent variant="app" align="end">

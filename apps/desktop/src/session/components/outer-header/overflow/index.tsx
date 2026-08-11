@@ -1,15 +1,17 @@
 import { Trans } from "@lingui/react/macro";
 import {
-  AudioLinesIcon,
-  FileDownIcon,
-  FileTextIcon,
-  MoreHorizontalIcon,
-  PictureInPicture2Icon,
-  SquareArrowOutUpRightIcon,
-} from "lucide-react";
+  AppWindow,
+  ArrowsClockwise,
+  DotsThree,
+  FileArrowDown,
+  FileText,
+  PictureInPicture,
+  Waveform,
+} from "@phosphor-icons/react";
+import { platform } from "@tauri-apps/plugin-os";
 import { useState } from "react";
 
-import { Button } from "@hypr/ui/components/ui/button";
+import { Button } from "@anlg/ui/components/ui/button";
 import {
   AppFloatingPanel,
   DropdownMenu,
@@ -17,23 +19,22 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@hypr/ui/components/ui/dropdown-menu";
+} from "@anlg/ui/components/ui/dropdown-menu";
 
 import { DeleteNote } from "./delete";
 import { ExportModal } from "./export-modal";
 import { Listening } from "./listening";
-import { ShowInFinder } from "./misc";
+import { ShowInFolder } from "./misc";
 
-import { useMeetingFloatMainStore } from "~/meeting-float/hooks";
+import { useAudioPlayer } from "~/audio-player";
 import { openFloatingMeetingPanel } from "~/meeting-float/host";
+import { useRegenerateTranscript } from "~/session/components/note-input/transcript/actions";
 import {
-  hasStoredNoteContent,
+  useCurrentNoteHasContent,
   useHasTranscript,
 } from "~/session/components/shared";
 import { openStandaloneNoteWindow } from "~/session/window";
 import { useConfigValue } from "~/shared/config";
-import * as main from "~/store/tinybase/store/main";
-import * as settingsStore from "~/store/tinybase/store/settings";
 import type { EditorView } from "~/store/zustand/tabs/schema";
 import { useListener } from "~/stt/contexts";
 import { useUploadFile } from "~/stt/useUploadFile";
@@ -51,29 +52,42 @@ export function OverflowButton({
 }) {
   const [open, setOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [hasOpenedExportModal, setHasOpenedExportModal] = useState(false);
   const hasTranscript = useHasTranscript(sessionId);
-  const currentNoteHasContent = useUploadCurrentViewHasContent(
+  const currentNoteHasContent = useCurrentNoteHasContent(
     sessionId,
     currentView,
-    hasTranscript,
   );
+  const { audioExists, audioExistsResolved } = useAudioPlayer();
   const { uploadAudio, uploadTranscript } = useUploadFile(sessionId);
+  const regenerateTranscript = useRegenerateTranscript(sessionId);
   const sessionMode = useListener((state) => state.getSessionMode(sessionId));
   const floatingBarEnabled = useConfigValue("floating_bar_enabled");
-  const main = useMeetingFloatMainStore();
-  const settings = settingsStore.UI.useStore(settingsStore.STORE_ID);
+  const floatingBarSupported = platform() === "macos";
   const isMeetingInProgress =
     sessionMode === "active" || sessionMode === "finalizing";
-  const showListeningAction =
-    allowListening && (!hasTranscript || isMeetingInProgress);
+  const showListeningAction = allowListening;
+  const showRetranscribeAction =
+    audioExistsResolved && sessionMode === "inactive" && audioExists;
   const showUploadActions =
-    !hasTranscript && !currentNoteHasContent && !isMeetingInProgress;
+    audioExistsResolved &&
+    !audioExists &&
+    !hasTranscript &&
+    !currentNoteHasContent &&
+    !isMeetingInProgress;
   const canOpenFloatingPanel =
-    allowListening && floatingBarEnabled && sessionMode === "active";
+    floatingBarSupported &&
+    allowListening &&
+    floatingBarEnabled &&
+    sessionMode === "active";
   const hasMeetingActions =
-    showListeningAction || showUploadActions || canOpenFloatingPanel;
+    showListeningAction ||
+    showRetranscribeAction ||
+    showUploadActions ||
+    canOpenFloatingPanel;
   const openExportModal = () => {
     setOpen(false);
+    setHasOpenedExportModal(true);
     requestAnimationFrame(() => setIsExportModalOpen(true));
   };
   const handleUploadAudio = () => {
@@ -84,13 +98,15 @@ export function OverflowButton({
     setOpen(false);
     uploadTranscript();
   };
+  const handleRetranscribe = () => {
+    setOpen(false);
+    void regenerateTranscript();
+  };
   const handleOpenFloatingPanel = () => {
     setOpen(false);
     void openFloatingMeetingPanel({
       sessionId,
       enabled: floatingBarEnabled,
-      main,
-      store: settings,
     });
   };
   const handleOpenStandaloneWindow = () => {
@@ -108,7 +124,7 @@ export function OverflowButton({
             data-tauri-drag-region="false"
             className="text-muted-foreground hover:bg-accent hover:text-foreground rounded-full"
           >
-            <MoreHorizontalIcon size={16} />
+            <DotsThree size={16} />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent variant="app" align="end" className="w-56">
@@ -117,14 +133,26 @@ export function OverflowButton({
               onClick={openExportModal}
               className="cursor-pointer"
             >
-              <FileDownIcon />
+              <FileArrowDown />
               <span>
                 <Trans>Export</Trans>
               </span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             {showListeningAction && (
-              <Listening sessionId={sessionId} hasTranscript={hasTranscript} />
+              <Listening
+                sessionId={sessionId}
+                resume={audioExists || hasTranscript}
+              />
+            )}
+            {showRetranscribeAction && (
+              <DropdownMenuItem
+                onClick={handleRetranscribe}
+                className="cursor-pointer"
+              >
+                <ArrowsClockwise />
+                <span>Re-transcribe</span>
+              </DropdownMenuItem>
             )}
             {showUploadActions && (
               <>
@@ -132,7 +160,7 @@ export function OverflowButton({
                   onClick={handleUploadAudio}
                   className="cursor-pointer"
                 >
-                  <AudioLinesIcon />
+                  <Waveform />
                   <span>
                     <Trans>Upload audio</Trans>
                   </span>
@@ -141,7 +169,7 @@ export function OverflowButton({
                   onClick={handleUploadTranscript}
                   className="cursor-pointer"
                 >
-                  <FileTextIcon />
+                  <FileText />
                   <span>
                     <Trans>Upload transcript</Trans>
                   </span>
@@ -153,7 +181,7 @@ export function OverflowButton({
                 onClick={handleOpenFloatingPanel}
                 className="cursor-pointer"
               >
-                <PictureInPicture2Icon />
+                <PictureInPicture />
                 <span>
                   <Trans>Open floating panel</Trans>
                 </span>
@@ -165,47 +193,25 @@ export function OverflowButton({
                 onClick={handleOpenStandaloneWindow}
                 className="cursor-pointer"
               >
-                <SquareArrowOutUpRightIcon />
+                <AppWindow />
                 <span>
                   <Trans>Open in New Window</Trans>
                 </span>
               </DropdownMenuItem>
             )}
-            <ShowInFinder sessionId={sessionId} />
+            <ShowInFolder sessionId={sessionId} />
             <DeleteNote sessionId={sessionId} />
           </AppFloatingPanel>
         </DropdownMenuContent>
       </DropdownMenu>
-      <ExportModal
-        sessionId={sessionId}
-        currentView={currentView}
-        open={isExportModalOpen}
-        onOpenChange={setIsExportModalOpen}
-      />
+      {hasOpenedExportModal && (
+        <ExportModal
+          sessionId={sessionId}
+          currentView={currentView}
+          open={isExportModalOpen}
+          onOpenChange={setIsExportModalOpen}
+        />
+      )}
     </>
   );
-}
-
-function useUploadCurrentViewHasContent(
-  sessionId: string,
-  currentView: EditorView,
-  hasTranscript: boolean,
-): boolean {
-  const rawMd = main.UI.useCell("sessions", sessionId, "raw_md", main.STORE_ID);
-  const enhancedContent = main.UI.useCell(
-    "enhanced_notes",
-    currentView.type === "enhanced" ? currentView.id : "",
-    "content",
-    main.STORE_ID,
-  );
-
-  if (currentView.type === "raw") {
-    return hasStoredNoteContent(rawMd);
-  }
-
-  if (currentView.type === "enhanced") {
-    return hasStoredNoteContent(enhancedContent);
-  }
-
-  return currentView.type === "transcript" ? hasTranscript : true;
 }

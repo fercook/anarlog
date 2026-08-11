@@ -22,22 +22,31 @@ vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => true,
 }));
 
-vi.mock("@hypr/plugin-windows", () => ({
+vi.mock("@anlg/plugin-windows", () => ({
   commands: {
     windowExpandWidth: mocks.windowExpandWidth,
     windowRestoreWidth: mocks.windowRestoreWidth,
   },
 }));
 
-vi.mock("@hypr/ui/components/ui/resizable", () => ({
+vi.mock("@anlg/ui/components/ui/resizable", () => ({
   ResizablePanelGroup: ({
+    autoSaveId,
     children,
+    "data-main-chat-panel-group": mainChatPanelGroup,
     direction,
   }: {
+    autoSaveId?: string;
     children: React.ReactNode;
+    "data-main-chat-panel-group"?: boolean;
     direction: string;
   }) => (
-    <div data-direction={direction} data-testid="panel-group">
+    <div
+      data-auto-save-id={autoSaveId}
+      data-direction={direction}
+      data-main-chat-panel-group={mainChatPanelGroup}
+      data-testid="panel-group"
+    >
       {children}
     </div>
   ),
@@ -169,6 +178,9 @@ describe("MainChatPanels", () => {
     expect(screen.getByTestId("panel-group").dataset.direction).toBe(
       "horizontal",
     );
+    expect(screen.getByTestId("panel-group").dataset.autoSaveId).toBe(
+      "main-chat",
+    );
     expect(screen.queryByTestId("resize-handle")).toBeNull();
     expect(screen.getAllByTestId("panel")).toHaveLength(1);
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -203,6 +215,35 @@ describe("MainChatPanels", () => {
     expect(rightPanel?.className).not.toContain("mr-1");
   });
 
+  it("keeps Automations chat docked without a floating chat host", () => {
+    mocks.chatMode = "FloatingOpen";
+    mocks.currentTab = { type: "automations" };
+
+    render(
+      <MainChatPanels>
+        <div data-testid="main-content" />
+      </MainChatPanels>,
+    );
+
+    expect(screen.getAllByTestId("panel")).toHaveLength(2);
+    expect(screen.getByTestId("chat-view").dataset.layout).toBe("right-panel");
+    expect(screen.queryByTestId("persistent-chat-panel")).toBeNull();
+    expect(mocks.persistentChatPanel).not.toHaveBeenCalled();
+  });
+
+  it("reserves enough main-body width for a 600px automations surface beside the sidebar", () => {
+    mocks.currentTab = { type: "automations" };
+    mocks.leftSidebarExpanded = true;
+
+    render(
+      <MainChatPanels>
+        <div data-testid="main-content" />
+      </MainChatPanels>,
+    );
+
+    expect(screen.getAllByTestId("panel")[0]?.dataset.minWidth).toBe("800");
+  });
+
   it("reserves enough main-body width for a 500px note surface beside the sidebar", () => {
     mocks.currentTab = { type: "sessions" };
     mocks.leftSidebarExpanded = true;
@@ -227,6 +268,56 @@ describe("MainChatPanels", () => {
     );
 
     expect(screen.getAllByTestId("panel")[0]?.dataset.minWidth).toBe("700");
+  });
+
+  it("uses the standalone note minimum without reserving a sidebar", () => {
+    mocks.currentTab = { type: "sessions" };
+    mocks.leftSidebarExpanded = true;
+
+    render(
+      <MainChatPanels
+        autoSaveId="standalone-note-chat"
+        leftSidebarAvailable={false}
+        noteSurfaceMinWidth={420}
+      >
+        <div data-testid="main-content" />
+      </MainChatPanels>,
+    );
+
+    expect(screen.getAllByTestId("panel")[0]?.dataset.minWidth).toBe("420");
+    expect(screen.getByTestId("panel-group").dataset.autoSaveId).toBe(
+      "standalone-note-chat",
+    );
+  });
+
+  it("expands a standalone note for docked chat without collapsing a sidebar", () => {
+    mocks.chatMode = "RightPanelOpen";
+    mocks.currentTab = { type: "sessions" };
+    mocks.leftSidebarExpanded = true;
+    mockPanelWidths({
+      bodyPanelWidth: 420,
+      leftSidebarWidth: 200,
+      panelGroupWidth: 720,
+      rightPanelWidth: 320,
+    });
+
+    render(
+      <MainChatPanels leftSidebarAvailable={false} noteSurfaceMinWidth={420}>
+        <div data-left-sidebar-chrome />
+        <div data-chat-floating-anchor>
+          <div data-session-surface />
+        </div>
+      </MainChatPanels>,
+    );
+
+    expect(mocks.setLeftSidebarExpanded).not.toHaveBeenCalled();
+    expect(mocks.windowExpandWidth).toHaveBeenCalledWith(
+      20,
+      null,
+      false,
+      false,
+      true,
+    );
   });
 
   it("expands left when opening the sidebar would make a note surface narrower than 500px", () => {
@@ -454,6 +545,7 @@ describe("MainChatPanels", () => {
 function mockPanelWidths(widths: {
   bodyPanelWidth: number;
   leftSidebarWidth: number;
+  panelGroupWidth?: number;
   rightPanelWidth?: number;
 }) {
   restorePanelWidths?.();
@@ -462,6 +554,10 @@ function mockPanelWidths(widths: {
     .mockImplementation(function getBoundingClientRectMock(this: HTMLElement) {
       if (this.hasAttribute("data-main-body-panel-container")) {
         return rectWithWidth(widths.bodyPanelWidth);
+      }
+
+      if (this.hasAttribute("data-main-chat-panel-group")) {
+        return rectWithWidth(widths.panelGroupWidth ?? 0);
       }
 
       if (this.hasAttribute("data-left-sidebar-chrome")) {

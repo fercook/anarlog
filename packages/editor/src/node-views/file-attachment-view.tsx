@@ -3,36 +3,39 @@ import {
   useEditorEventCallback,
 } from "@handlewithcare/react-prosemirror";
 import {
-  ExternalLinkIcon,
-  FileIcon,
-  FileSpreadsheetIcon,
-  FileTextIcon,
-  ImageIcon,
-  XIcon,
-} from "lucide-react";
+  ArrowSquareOut,
+  File,
+  FileText,
+  FileXls,
+  Image,
+  X,
+} from "@phosphor-icons/react";
 import type { NodeSpec } from "prosemirror-model";
 import { forwardRef } from "react";
 
-import { commands as openerCommands } from "@hypr/plugin-opener2";
-import { cn } from "@hypr/utils";
+import { commands as openerCommands } from "@anlg/plugin-opener2";
+import { cn } from "@anlg/utils";
 
+import {
+  useAttachmentEditingEnabled,
+  useAttachmentResolver,
+} from "./attachment-resolver";
 import { getSafeNodePos } from "./error-boundary";
 
-const MIME_ICON_MAP: Record<string, typeof FileIcon> = {
-  "application/pdf": FileTextIcon,
-  "text/plain": FileTextIcon,
-  "text/csv": FileSpreadsheetIcon,
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-    FileSpreadsheetIcon,
-  "application/vnd.ms-excel": FileSpreadsheetIcon,
+const MIME_ICON_MAP: Record<string, typeof File> = {
+  "application/pdf": FileText,
+  "text/plain": FileText,
+  "text/csv": FileXls,
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": FileXls,
+  "application/vnd.ms-excel": FileXls,
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-    FileTextIcon,
-  "application/msword": FileTextIcon,
+    FileText,
+  "application/msword": FileText,
 };
 
 function getFileIcon(mimeType: string) {
-  if (mimeType.startsWith("image/")) return ImageIcon;
-  return MIME_ICON_MAP[mimeType] ?? FileIcon;
+  if (mimeType.startsWith("image/")) return Image;
+  return MIME_ICON_MAP[mimeType] ?? File;
 }
 
 function formatFileSize(bytes: number | null): string {
@@ -49,6 +52,7 @@ export const fileAttachmentNodeSpec: NodeSpec = {
   selectable: true,
   attrs: {
     attachmentId: { default: null },
+    sharedAttachmentId: { default: null },
     name: { default: "" },
     mimeType: { default: "" },
     src: { default: null },
@@ -62,6 +66,7 @@ export const fileAttachmentNodeSpec: NodeSpec = {
         const el = dom as HTMLElement;
         return {
           attachmentId: el.getAttribute("data-attachment-id"),
+          sharedAttachmentId: el.getAttribute("data-shared-attachment-id"),
           name: el.getAttribute("data-name"),
           mimeType: el.getAttribute("data-mime-type"),
           src: el.getAttribute("data-src"),
@@ -79,6 +84,9 @@ export const fileAttachmentNodeSpec: NodeSpec = {
     if (node.attrs.attachmentId) {
       attrs["data-attachment-id"] = node.attrs.attachmentId;
     }
+    if (node.attrs.sharedAttachmentId) {
+      attrs["data-shared-attachment-id"] = node.attrs.sharedAttachmentId;
+    }
     if (node.attrs.name) attrs["data-name"] = node.attrs.name;
     if (node.attrs.mimeType) attrs["data-mime-type"] = node.attrs.mimeType;
     if (node.attrs.src) attrs["data-src"] = node.attrs.src;
@@ -92,7 +100,17 @@ export const FileAttachmentView = forwardRef<
   NodeViewComponentProps
 >(function FileAttachmentView({ nodeProps, ...htmlAttrs }, ref) {
   const { node, getPos } = nodeProps;
-  const { name, mimeType, src, path, size } = node.attrs;
+  const resolveAttachment = useAttachmentResolver();
+  const attachmentEditingEnabled = useAttachmentEditingEnabled();
+  const attachmentId =
+    typeof node.attrs.sharedAttachmentId === "string"
+      ? node.attrs.sharedAttachmentId
+      : node.attrs.attachmentId;
+  const resolvedAttachment =
+    typeof attachmentId === "string" ? resolveAttachment?.(attachmentId) : null;
+  const { name, mimeType, size } = node.attrs;
+  const src = resolvedAttachment?.src ?? node.attrs.src;
+  const path = resolvedAttachment?.path ?? node.attrs.path;
 
   const Icon = getFileIcon(mimeType ?? "");
   const sizeLabel = formatFileSize(size);
@@ -100,7 +118,7 @@ export const FileAttachmentView = forwardRef<
     name && name.length > 60 ? name.slice(0, 60) + "\u2026" : name || "file";
 
   const handleRemove = useEditorEventCallback((view) => {
-    if (!view) return;
+    if (!view || !attachmentEditingEnabled || !view.editable) return;
     const pos = getSafeNodePos(getPos);
     if (pos === null) return;
 
@@ -110,7 +128,11 @@ export const FileAttachmentView = forwardRef<
 
   const handleOpen = () => {
     if (path) {
-      openerCommands.openPath(path, null);
+      if (path.startsWith("https://")) {
+        openerCommands.openUrl(path, null);
+      } else {
+        openerCommands.openPath(path, null);
+      }
     }
   };
 
@@ -160,21 +182,23 @@ export const FileAttachmentView = forwardRef<
               className="hover:bg-accent rounded p-1"
               title="Open file"
             >
-              <ExternalLinkIcon size={14} className="text-muted-foreground" />
+              <ArrowSquareOut size={14} className="text-muted-foreground" />
             </button>
           )}
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              handleRemove();
-            }}
-            className="hover:bg-accent rounded p-1"
-            title="Remove attachment"
-          >
-            <XIcon size={14} className="text-muted-foreground" />
-          </button>
+          {attachmentEditingEnabled ? (
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handleRemove();
+              }}
+              className="hover:bg-accent rounded p-1"
+              title="Remove attachment"
+            >
+              <X size={14} className="text-muted-foreground" />
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

@@ -1,7 +1,7 @@
 import type { EditorView } from "prosemirror-view";
 import { forwardRef } from "react";
 
-import type { NoteEditorRef } from "@hypr/editor/note";
+import type { NoteEditorRef } from "@anlg/editor/note";
 
 import { ConfigError } from "./config-error";
 import { EnhancedEditor } from "./editor";
@@ -10,14 +10,16 @@ import { StreamingView } from "./streaming";
 
 import { useAITaskTask } from "~/ai/hooks";
 import { useLLMConnectionStatus } from "~/ai/hooks";
+import { hasStoredNoteContent } from "~/session/components/shared";
 import { shouldShowEmptySummaryConfigError } from "~/session/enhance-config";
-import * as main from "~/store/tinybase/store/main";
+import { useEnhancedNote } from "~/session/queries";
 import { createTaskId } from "~/store/zustand/ai-task/task-configs";
 
 export const Enhanced = forwardRef<
   NoteEditorRef,
   {
     sessionId: string;
+    sessionTitle: string;
     enhancedNoteId: string;
     onNavigateToTitle?: (pixelWidth?: number) => void;
     onViewReady?: (view: EditorView) => void;
@@ -27,6 +29,7 @@ export const Enhanced = forwardRef<
   (
     {
       sessionId,
+      sessionTitle,
       enhancedNoteId,
       onNavigateToTitle,
       onViewReady,
@@ -36,21 +39,14 @@ export const Enhanced = forwardRef<
   ) => {
     const taskId = createTaskId(enhancedNoteId, "enhance");
     const llmStatus = useLLMConnectionStatus();
-    const { status, error } = useAITaskTask(taskId, "enhance");
-    const content = main.UI.useCell(
-      "enhanced_notes",
-      enhancedNoteId,
-      "content",
-      main.STORE_ID,
-    );
+    const { status, error, streamedText } = useAITaskTask(taskId, "enhance");
+    const enhancedNote = useEnhancedNote(enhancedNoteId);
+    const content = enhancedNote?.content;
 
-    const hasContent = typeof content === "string" && content.trim().length > 0;
-
-    const isConfigError = shouldShowEmptySummaryConfigError(llmStatus);
-
-    if (status === "idle" && isConfigError && !hasContent) {
-      return <ConfigError status={llmStatus} />;
-    }
+    const hasContent = hasStoredNoteContent(content);
+    const isAwaitingPersistedContent =
+      status === "success" && streamedText.trim().length > 0 && !hasContent;
+    const showStreaming = status === "generating" || isAwaitingPersistedContent;
 
     if (status === "error") {
       return (
@@ -58,13 +54,37 @@ export const Enhanced = forwardRef<
           sessionId={sessionId}
           enhancedNoteId={enhancedNoteId}
           error={error}
+          isUnauthenticated={
+            llmStatus.status === "error" &&
+            llmStatus.reason === "unauthenticated"
+          }
         />
       );
     }
 
-    if (status === "generating") {
+    if (!enhancedNote) {
+      return showStreaming ? (
+        <StreamingView
+          sessionId={sessionId}
+          sessionTitle={sessionTitle}
+          enhancedNoteId={enhancedNoteId}
+        />
+      ) : null;
+    }
+
+    const isConfigError = shouldShowEmptySummaryConfigError(llmStatus);
+
+    if (status === "idle" && isConfigError && !hasContent) {
+      return <ConfigError />;
+    }
+
+    if (showStreaming) {
       return (
-        <StreamingView sessionId={sessionId} enhancedNoteId={enhancedNoteId} />
+        <StreamingView
+          sessionId={sessionId}
+          sessionTitle={sessionTitle}
+          enhancedNoteId={enhancedNoteId}
+        />
       );
     }
 
@@ -72,7 +92,9 @@ export const Enhanced = forwardRef<
       <EnhancedEditor
         ref={ref}
         sessionId={sessionId}
+        sessionTitle={sessionTitle}
         enhancedNoteId={enhancedNoteId}
+        content={enhancedNote.content}
         onNavigateToTitle={onNavigateToTitle}
         onViewReady={onViewReady}
         onViewDisposed={onViewDisposed}

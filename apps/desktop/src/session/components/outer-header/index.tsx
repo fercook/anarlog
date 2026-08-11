@@ -1,27 +1,33 @@
 import { useLingui } from "@lingui/react/macro";
-import {
-  ChevronDownIcon,
-  HeadsetIcon,
-  SquareIcon,
-  VideoIcon,
-} from "lucide-react";
-import { useCallback } from "react";
+import { CaretDown, Headset, Square, VideoCamera } from "@phosphor-icons/react";
+import { useCallback, useRef, useState } from "react";
 
-import { commands as openerCommands } from "@hypr/plugin-opener2";
-import { cn, safeParseDate } from "@hypr/utils";
+import { commands as deeplinkCommands } from "@anlg/plugin-deeplink2";
+import { commands as openerCommands } from "@anlg/plugin-opener2";
+import { cn, safeParseDate } from "@anlg/utils";
 
+import { TranscriptEditButton } from "../note-input/transcript";
 import { RecordingIcon, useHasTranscript } from "../shared";
 import { MetadataButton } from "./metadata";
 import { OverflowButton } from "./overflow";
 
+import { useAudioPlayer } from "~/audio-player";
 import { useNow } from "~/calendar/hooks";
 import { useShell } from "~/contexts/shell";
+import {
+  buildWelcomeNoteDemoUrl,
+  WELCOME_NOTE_TRACKING_ID,
+} from "~/onboarding/welcome-note.constants";
+import { SessionShareButton } from "~/session-sharing";
 import { useEventCountdown } from "~/session/hooks/useEventCountdown";
 import {
   getRemoteMeeting,
   type RemoteMeeting,
 } from "~/session/hooks/useRemoteMeeting";
-import { useSessionEvent } from "~/store/tinybase/hooks";
+import { useSessionEvent } from "~/session/hooks/useSessionEvent";
+import { useConfigValue } from "~/shared/config";
+import { useWindowControlsGutter } from "~/shared/hooks/useWindowControlsGutter";
+import { getScheme } from "~/shared/utils";
 import type { EditorView } from "~/store/zustand/tabs/schema";
 import { useListener } from "~/stt/contexts";
 import { useStartListening } from "~/stt/useStartListening";
@@ -36,15 +42,20 @@ export function OuterHeader({
   standaloneWindow = false,
   title,
   centerTitle = false,
+  transcriptEditMode = false,
+  onTranscriptEditModeChange,
 }: {
   sessionId: string;
   currentView: EditorView;
   standaloneWindow?: boolean;
   title?: React.ReactNode;
   centerTitle?: boolean;
+  transcriptEditMode?: boolean;
+  onTranscriptEditModeChange?: (editMode: boolean) => void;
 }) {
   const { leftsidebar } = useShell();
   const sessionMode = useListener((state) => state.getSessionMode(sessionId));
+  const showWindowControlsGutter = useWindowControlsGutter();
   const showSidebarTimelineHeaderGutter =
     !standaloneWindow && !leftsidebar.expanded;
   const showExpandedSidebarTimelineHeader = leftsidebar.expanded;
@@ -55,7 +66,8 @@ export function OuterHeader({
       className={cn([
         "relative flex w-full items-center",
         "h-12",
-        showSidebarTimelineHeaderGutter && "pl-[156px]",
+        showSidebarTimelineHeaderGutter &&
+          (showWindowControlsGutter ? "pl-[156px]" : "pl-[80px]"),
       ])}
     >
       {title ? (
@@ -64,11 +76,15 @@ export function OuterHeader({
           className={cn([
             "pointer-events-none absolute inset-y-0 flex items-center",
             centerTitle && "justify-center",
-            "right-[70px]",
+            "right-[140px]",
             standaloneWindow
-              ? "left-[76px]"
+              ? showWindowControlsGutter
+                ? "left-[76px]"
+                : "left-2"
               : showSidebarTimelineHeaderGutter
-                ? "left-[104px]"
+                ? showWindowControlsGutter
+                  ? "left-[104px]"
+                  : "left-[28px]"
                 : showExpandedSidebarTimelineHeader
                   ? "left-0"
                   : "left-[114px]",
@@ -86,7 +102,14 @@ export function OuterHeader({
         data-tauri-drag-region
         className="relative z-10 ml-auto flex shrink-0 items-center gap-0 pr-1"
       >
-        <HeaderMeetingControl sessionId={sessionId} sessionMode={sessionMode} />
+        <HeaderMeetingControl
+          sessionId={sessionId}
+          sessionMode={sessionMode}
+          currentView={currentView}
+          transcriptEditMode={transcriptEditMode}
+          onTranscriptEditModeChange={onTranscriptEditModeChange}
+        />
+        <SessionShareButton key={sessionId} sessionId={sessionId} />
         <OverflowButton
           standaloneWindow={standaloneWindow}
           sessionId={sessionId}
@@ -100,19 +123,87 @@ export function OuterHeader({
 function HeaderMeetingControl({
   sessionId,
   sessionMode,
+  currentView,
+  transcriptEditMode,
+  onTranscriptEditModeChange,
 }: {
   sessionId: string;
   sessionMode: string;
+  currentView: EditorView;
+  transcriptEditMode: boolean;
+  onTranscriptEditModeChange?: (editMode: boolean) => void;
 }) {
   const sessionEvent = useSessionEvent(sessionId);
+  const hasTranscript = useHasTranscript(sessionId);
+  const { audioExists } = useAudioPlayer();
   const now = useNow();
+  const endedAt = sessionEvent?.ended_at
+    ? safeParseDate(sessionEvent.ended_at)
+    : null;
+  const ended = !!endedAt && endedAt.getTime() <= now.getTime();
+  const canEditTranscript =
+    currentView.type === "transcript" &&
+    sessionMode === "inactive" &&
+    hasTranscript &&
+    (!sessionEvent || ended) &&
+    onTranscriptEditModeChange;
+
+  if (canEditTranscript) {
+    return (
+      <>
+        <TranscriptEditButton
+          editMode={transcriptEditMode}
+          onEditModeChange={onTranscriptEditModeChange}
+        />
+        <div className="mr-1 shrink-0">
+          <MetadataButton sessionId={sessionId} />
+        </div>
+      </>
+    );
+  }
+
+  const isRecording =
+    sessionMode === "active" || sessionMode === "running_batch";
+
+  if (!sessionEvent && !isRecording) {
+    if (hasTranscript || audioExists) {
+      return (
+        <div className="mr-1 shrink-0">
+          <MetadataButton sessionId={sessionId} />
+        </div>
+      );
+    }
+
+    if (sessionMode === "finalizing") {
+      return null;
+    }
+
+    return (
+      <HeaderMeetingActionPill
+        sessionId={sessionId}
+        event={null}
+        sessionMode={sessionMode}
+        hasTranscript={hasTranscript}
+        audioExists={audioExists}
+      />
+    );
+  }
+
+  if (ended && !isRecording) {
+    return (
+      <div className="mr-1 shrink-0">
+        <MetadataButton sessionId={sessionId} />
+      </div>
+    );
+  }
 
   return (
     <HeaderMeetingActionPill
       sessionId={sessionId}
       event={sessionEvent}
-      now={now}
       sessionMode={sessionMode}
+      hasTranscript={hasTranscript}
+      audioExists={audioExists}
     />
   );
 }
@@ -120,34 +211,109 @@ function HeaderMeetingControl({
 function HeaderMeetingActionPill({
   sessionId,
   event,
-  now,
   sessionMode,
+  hasTranscript,
+  audioExists,
 }: {
   sessionId: string;
-  event: { ended_at?: string; meeting_link?: string } | null;
-  now: Date;
+  event: {
+    meeting_link?: string;
+    tracking_id?: string;
+  } | null;
   sessionMode: string;
+  hasTranscript: boolean;
+  audioExists: boolean;
 }) {
   const startListening = useStartListening(sessionId);
-  const { stop, stopTranscription } = useListener((state) => ({
-    stop: state.stop,
-    stopTranscription: state.stopTranscription,
-  }));
+  const { canStartLiveSession, stop, stopTranscription } = useListener(
+    (state) => ({
+      canStartLiveSession: state.canStartLiveSession(sessionId),
+      stop: state.stop,
+      stopTranscription: state.stopTranscription,
+    }),
+  );
+  const autoJoinScheduledMeetings = useConfigValue(
+    "auto_join_scheduled_meetings",
+  );
+  const autoStartScheduledMeetings = useConfigValue(
+    "auto_start_scheduled_meetings",
+  );
   const remote = getRemoteMeeting(event?.meeting_link);
   const meetingLink = event?.meeting_link || null;
-  const endedAt = event?.ended_at ? safeParseDate(event.ended_at) : null;
-  const ended = !!endedAt && endedAt.getTime() <= now.getTime();
-  const hasTranscript = useHasTranscript(sessionId);
+  const canJoinFromHeader = Boolean(
+    meetingLink &&
+    (remote !== null || event?.tracking_id === WELCOME_NOTE_TRACKING_ID),
+  );
+  const canResume = audioExists || hasTranscript;
   const { t } = useLingui();
-  const countdown = useEventCountdown(sessionId);
-  const start = useCallback(() => {
+  const joiningMeetingRef = useRef(false);
+  const [joiningMeeting, setJoiningMeeting] = useState(false);
+  const start = useCallback(async () => {
     if (!isMainWebviewWindow()) {
-      void requestMainListenerControl("start", sessionId);
+      await requestMainListenerControl("start", sessionId);
       return;
     }
 
-    void startListening();
+    await startListening();
   }, [sessionId, startListening]);
+  const openMeeting = useCallback(async () => {
+    if (!meetingLink) {
+      return;
+    }
+
+    let url = meetingLink;
+    if (event?.tracking_id === WELCOME_NOTE_TRACKING_ID) {
+      try {
+        const scheme = await getScheme();
+        const result = await deeplinkCommands.startCallbackServer(scheme);
+        if (result.status === "ok") {
+          url = buildWelcomeNoteDemoUrl(meetingLink, result.data);
+        }
+      } catch (error) {
+        console.error(
+          "[onboarding] failed to prepare demo completion callback",
+          error,
+        );
+      }
+    }
+
+    void openerCommands.openUrl(url, null);
+  }, [event?.tracking_id, meetingLink]);
+  const joinMeeting = useCallback(async () => {
+    if (joiningMeetingRef.current) {
+      return;
+    }
+
+    joiningMeetingRef.current = true;
+    setJoiningMeeting(true);
+    try {
+      await Promise.all([openMeeting(), start()]);
+    } finally {
+      joiningMeetingRef.current = false;
+      setJoiningMeeting(false);
+    }
+  }, [openMeeting, start]);
+  const handleCountdownExpire = useCallback(() => {
+    if (!autoStartScheduledMeetings || !canStartLiveSession) {
+      return;
+    }
+
+    if (autoJoinScheduledMeetings && meetingLink) {
+      void joinMeeting();
+    } else {
+      void start();
+    }
+  }, [
+    autoJoinScheduledMeetings,
+    autoStartScheduledMeetings,
+    canStartLiveSession,
+    joinMeeting,
+    meetingLink,
+    start,
+  ]);
+  const countdown = useEventCountdown(sessionId, {
+    onExpire: handleCountdownExpire,
+  });
   const stopListening = useCallback(() => {
     if (!isMainWebviewWindow()) {
       void requestMainListenerControl("stop", sessionId);
@@ -161,7 +327,7 @@ function HeaderMeetingActionPill({
       return {
         label: t`Stop`,
         title: t`Stop listening`,
-        icon: <SquareIcon className="size-3 fill-current text-red-500" />,
+        icon: <Square className="size-3 text-red-500" weight="fill" />,
         onClick: stopListening,
       };
     }
@@ -170,42 +336,37 @@ function HeaderMeetingActionPill({
       return {
         label: t`Stop`,
         title: t`Stop transcription`,
-        icon: <SquareIcon className="size-3 fill-current text-red-500" />,
+        icon: <Square className="size-3 text-red-500" weight="fill" />,
         onClick: () => {
           void stopTranscription(sessionId);
         },
       };
     }
 
-    if (meetingLink && !ended) {
+    if (canJoinFromHeader) {
       return {
         label: t`Join & record`,
         title: t`Join meeting and record`,
-        icon: remote ? getMeetingDisplay(remote.type).icon : undefined,
+        icon:
+          event?.tracking_id === WELCOME_NOTE_TRACKING_ID ? (
+            <img src="/assets/anarlog-icon.png" alt="" className="size-4" />
+          ) : remote ? (
+            getMeetingDisplay(remote.type).icon
+          ) : undefined,
         onClick: () => {
-          void openerCommands.openUrl(meetingLink, null);
-          start();
+          void joinMeeting();
         },
       };
     }
 
-    if (ended) {
-      return {
-        label: t`Resume`,
-        title: t`Resume listening`,
-        icon: <RecordingIcon />,
-        onClick: start,
-      };
-    }
-
     return {
-      label: hasTranscript ? t`Resume` : t`Record`,
-      title: hasTranscript ? t`Resume listening` : t`Record`,
+      label: canResume ? t`Resume` : t`Record`,
+      title: canResume ? t`Resume listening` : t`Record`,
       icon: <RecordingIcon />,
       onClick: start,
     };
   })();
-  const disabled = sessionMode === "finalizing";
+  const disabled = sessionMode === "finalizing" || joiningMeeting;
   const showCountdown =
     Boolean(countdown.label) &&
     sessionMode !== "active" &&
@@ -213,15 +374,7 @@ function HeaderMeetingActionPill({
     sessionMode !== "finalizing";
 
   return (
-    <div className="mr-1 flex min-w-0 shrink-0 items-center gap-2">
-      {showCountdown ? (
-        <div
-          data-header-meeting-countdown
-          className="text-muted-foreground max-w-40 truncate font-mono text-xs whitespace-nowrap"
-        >
-          {countdown.label}
-        </div>
-      ) : null}
+    <div className="relative mr-1 flex min-w-0 shrink-0 items-center">
       <div className="border-border bg-card text-foreground flex h-7 max-w-56 shrink-0 items-center overflow-hidden rounded-full border">
         <button
           type="button"
@@ -231,7 +384,7 @@ function HeaderMeetingActionPill({
           disabled={disabled}
           onClick={action.onClick}
           className={cn([
-            "flex h-full min-w-0 items-center gap-1.5 py-0 pr-1.5 pl-2.5",
+            "flex h-full min-w-0 items-center gap-1.5 py-0 pr-1.5 pl-1.5",
             "text-sm font-medium",
             "hover:bg-accent transition-colors",
             disabled && "cursor-default opacity-60 hover:bg-transparent",
@@ -254,11 +407,24 @@ function HeaderMeetingActionPill({
                 open && "bg-accent text-foreground",
               ])}
             >
-              <ChevronDownIcon size={14} />
+              <CaretDown size={14} />
             </button>
           )}
         />
       </div>
+      {showCountdown ? (
+        <div
+          data-header-meeting-countdown
+          className="border-border bg-popover text-popover-foreground pointer-events-none absolute top-full left-1/2 z-20 mt-2 -translate-x-1/2 rounded-md border px-2.5 py-1 font-mono text-xs whitespace-nowrap tabular-nums shadow-sm"
+        >
+          <span
+            data-header-meeting-countdown-tail
+            aria-hidden="true"
+            className="border-border bg-popover absolute -top-1.5 left-1/2 size-3 -translate-x-1/2 rotate-45 border-t border-l"
+          />
+          <span className="relative">{countdown.label}</span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -288,12 +454,12 @@ function getMeetingDisplay(type: RemoteMeeting["type"]) {
     case "cal-com":
       return {
         name: "Cal.com",
-        icon: <VideoIcon size={18} />,
+        icon: <VideoCamera size={18} />,
       };
     default:
       return {
         name: "Meeting",
-        icon: <HeadsetIcon size={18} />,
+        icon: <Headset size={18} />,
       };
   }
 }

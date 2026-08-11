@@ -1,19 +1,22 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { Loader2Icon, SparklesIcon, X } from "lucide-react";
-import { useCallback } from "react";
+import { CircleNotch, Sparkle, X } from "@phosphor-icons/react";
+import { useCallback, useState } from "react";
 
-import { Badge } from "@hypr/ui/components/ui/badge";
-import { Button } from "@hypr/ui/components/ui/button";
+import { Badge } from "@anlg/ui/components/ui/badge";
+import { Button } from "@anlg/ui/components/ui/button";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from "@hypr/ui/components/ui/tooltip";
-import { cn } from "@hypr/utils";
+} from "@anlg/ui/components/ui/tooltip";
+import { cn } from "@anlg/utils";
 
-import * as main from "~/store/tinybase/store/main";
+import {
+  removeSessionParticipant,
+  useSessionParticipant,
+} from "~/session/queries";
 import { useTabs } from "~/store/zustand/tabs/index";
-import { parseTranscriptHints, updateTranscriptHints } from "~/stt/utils";
+import { removeHumanSpeakerAssignments } from "~/stt/queries";
 
 export function ParticipantChip({
   mappingId,
@@ -30,11 +33,10 @@ export function ParticipantChip({
   const sessionId = details?.sessionId;
   const source = details?.source;
 
-  const handleRemove = useRemoveParticipant({
+  const { remove: handleRemove, isRemoving } = useRemoveParticipant({
     mappingId,
     assignedHumanId,
     sessionId,
-    source,
   });
 
   const handleClick = useCallback(() => {
@@ -46,11 +48,17 @@ export function ParticipantChip({
     }
   }, [assignedHumanId]);
 
-  if (!details || source === "excluded") {
+  if (!details || source === "excluded" || isRemoving) {
     return null;
   }
 
-  const { humanName } = details;
+  const { humanName, humanEmail } = details;
+  const displayName = humanName.trim() || humanEmail?.trim();
+
+  if (!displayName) {
+    return null;
+  }
+
   const isEnhancing = enhancingHumanId === assignedHumanId;
   const canEnhance = Boolean(onEnhanceContact && assignedHumanId);
 
@@ -69,12 +77,12 @@ export function ParticipantChip({
           className="animate-shimmer pointer-events-none absolute inset-0 -translate-x-full bg-linear-to-r from-transparent via-white/60 to-transparent"
         />
       )}
-      <span className="relative z-10">{humanName || "Unknown"}</span>
+      <span className="relative z-10">{displayName}</span>
       {canEnhance && (
         <EnhanceContactButton
           isEnhancing={isEnhancing}
           isDisabled={Boolean(enhancingHumanId)}
-          label={humanName || "contact"}
+          label={displayName}
           onClick={() => {
             if (assignedHumanId) {
               onEnhanceContact?.(assignedHumanId);
@@ -126,9 +134,9 @@ function EnhanceContactButton({
           }}
         >
           {isEnhancing ? (
-            <Loader2Icon className="h-2.5 w-2.5 animate-spin" />
+            <CircleNotch className="h-2.5 w-2.5 animate-spin" />
           ) : (
-            <SparklesIcon className="h-2.5 w-2.5" />
+            <Sparkle className="h-2.5 w-2.5" />
           )}
         </Button>
       </TooltipTrigger>
@@ -140,104 +148,49 @@ function EnhanceContactButton({
 }
 
 function useParticipantDetails(mappingId: string) {
-  const result = main.UI.useResultRow(
-    main.QUERIES.sessionParticipantsWithDetails,
-    mappingId,
-    main.STORE_ID,
-  );
-  const source = main.UI.useCell(
-    "mapping_session_participant",
-    mappingId,
-    "source",
-    main.STORE_ID,
-  );
+  const participant = useSessionParticipant(mappingId);
 
-  if (!result) {
+  if (!participant) {
     return null;
   }
 
   return {
     mappingId,
-    humanId: result.human_id as string,
-    humanName: (result.human_name as string) || "",
-    humanEmail: (result.human_email as string | undefined) || undefined,
-    humanJobTitle: (result.human_job_title as string | undefined) || undefined,
-    humanLinkedinUsername:
-      (result.human_linkedin_username as string | undefined) || undefined,
-    orgId: (result.org_id as string | undefined) || undefined,
-    orgName: result.org_name as string | undefined,
-    sessionId: result.session_id as string,
-    source: source as string | undefined,
+    humanId: participant.humanId,
+    humanName: participant.name,
+    humanEmail: participant.email || undefined,
+    humanJobTitle: participant.jobTitle || undefined,
+    humanLinkedinUsername: participant.linkedinUsername || undefined,
+    orgId: participant.organizationId || undefined,
+    orgName: participant.organizationName || undefined,
+    sessionId: participant.sessionId,
+    source: participant.source,
   };
-}
-
-function parseHumanIdFromHintValue(value: unknown): string | undefined {
-  let data = value;
-  if (typeof value === "string") {
-    try {
-      data = JSON.parse(value);
-    } catch {
-      return undefined;
-    }
-  }
-
-  if (data && typeof data === "object" && "human_id" in data) {
-    const humanId = (data as Record<string, unknown>).human_id;
-    return typeof humanId === "string" ? humanId : undefined;
-  }
-
-  return undefined;
 }
 
 function useRemoveParticipant({
   mappingId,
   assignedHumanId,
   sessionId,
-  source,
 }: {
   mappingId: string;
   assignedHumanId: string | undefined;
   sessionId: string | undefined;
-  source: string | undefined;
 }) {
-  const store = main.UI.useStore(main.STORE_ID);
-  const indexes = main.UI.useIndexes(main.STORE_ID);
+  const [isRemoving, setIsRemoving] = useState(false);
 
-  return useCallback(() => {
-    if (!store) {
-      return;
-    }
-
-    if (assignedHumanId && sessionId && indexes) {
-      const transcriptIds = indexes.getSliceRowIds(
-        main.INDEXES.transcriptBySession,
-        sessionId,
-      );
-
-      for (const transcriptId of transcriptIds) {
-        const hints = parseTranscriptHints(store, transcriptId);
-        if (hints.length === 0) continue;
-
-        const filteredHints = hints.filter((hint) => {
-          if (hint.type !== "user_speaker_assignment") {
-            return true;
-          }
-          const hintHumanId = parseHumanIdFromHintValue(hint.value);
-          return hintHumanId !== assignedHumanId;
-        });
-
-        if (filteredHints.length !== hints.length) {
-          updateTranscriptHints(store, transcriptId, filteredHints);
-        }
+  const remove = useCallback(() => {
+    setIsRemoving(true);
+    void (async () => {
+      if (assignedHumanId && sessionId) {
+        await removeHumanSpeakerAssignments(sessionId, assignedHumanId);
       }
-    }
+      await removeSessionParticipant(mappingId);
+    })().catch((error) => {
+      setIsRemoving(false);
+      console.error("[participants] failed to remove participant", error);
+    });
+  }, [mappingId, assignedHumanId, sessionId]);
 
-    if (source === "auto") {
-      store.setPartialRow("mapping_session_participant", mappingId, {
-        source: "excluded",
-      });
-    } else {
-      store.delRow("mapping_session_participant", mappingId);
-    }
-  }, [store, indexes, mappingId, assignedHumanId, sessionId, source]);
+  return { remove, isRemoving };
 }

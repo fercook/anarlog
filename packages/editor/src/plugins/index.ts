@@ -1,7 +1,17 @@
-export { appLinkPastePlugin } from "./app-link-paste";
 export { autolinkPlugin } from "./autolink";
 export { clipboardPlugin, serializeClipboardText } from "./clipboard";
 export { clearMarksOnEnterPlugin } from "./clear-marks-on-enter";
+export {
+  type CommentAnchorInput,
+  type CommentAnchorsEvent,
+  commentAnchorsPlugin,
+  commentAnchorsPluginKey,
+  getCommentAnchorRanges,
+  getCommentAnchorScreenPositions,
+  getSelectionScreenRect,
+  setActiveCommentAnchor,
+  setCommentAnchors,
+} from "./comment-anchors";
 export { docChangeListenerPlugin } from "./doc-change-listener";
 export {
   clipNodeSpec,
@@ -25,6 +35,7 @@ export {
 } from "./link-open";
 export {
   type PlaceholderFunction,
+  type PersistentPlaceholderFunction,
   placeholderPlugin,
   placeholderPluginKey,
 } from "./placeholder";

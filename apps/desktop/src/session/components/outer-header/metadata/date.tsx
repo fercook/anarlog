@@ -1,25 +1,30 @@
 import { useLingui } from "@lingui/react/macro";
+import { Check, Pencil, X } from "@phosphor-icons/react";
 import { useForm } from "@tanstack/react-form";
-import { CheckIcon, PencilIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
-import { Button } from "@hypr/ui/components/ui/button";
-import { Input } from "@hypr/ui/components/ui/input";
-import { format, safeFormat, safeParseDate } from "@hypr/utils";
+import { Button } from "@anlg/ui/components/ui/button";
+import { Input } from "@anlg/ui/components/ui/input";
+import { sonnerToast } from "@anlg/ui/components/ui/toast";
+import { format, safeFormat, safeParseDate } from "@anlg/utils";
 
-import * as main from "~/store/tinybase/store/main";
+import { useSession, useUpdateSession } from "~/session/queries";
 
 export function DateEditor({ sessionId }: { sessionId: string }) {
   const { t } = useLingui();
   const [isEditing, setIsEditing] = useState(false);
-  const createdAt = main.UI.useCell(
-    "sessions",
-    sessionId,
-    "created_at",
-    main.STORE_ID,
-  );
+  // Shown between closing the editor and the live query re-emitting, so the
+  // read-only label never flashes the pre-save date. It masks the live value
+  // until that value catches up (or the write fails), not until the write
+  // resolves — the live query can lag the commit.
+  const [pendingCreatedAt, setPendingCreatedAt] = useState<string | null>(null);
+  const createdAt = useSession(sessionId)?.created_at;
+  const effectiveCreatedAt =
+    pendingCreatedAt !== null && createdAt !== pendingCreatedAt
+      ? pendingCreatedAt
+      : createdAt;
   const noteDate = safeFormat(
-    createdAt ?? new Date(),
+    effectiveCreatedAt ?? new Date(),
     "MMM d, yyyy h:mm a",
     t`Unknown date`,
   );
@@ -38,7 +43,7 @@ export function DateEditor({ sessionId }: { sessionId: string }) {
           onClick={() => setIsEditing(true)}
           aria-label={t`Edit date`}
         >
-          <PencilIcon size={16} />
+          <Pencil size={16} />
         </Button>
       </div>
     );
@@ -50,7 +55,15 @@ export function DateEditor({ sessionId }: { sessionId: string }) {
       sessionId={sessionId}
       createdAt={createdAt}
       onCancel={() => setIsEditing(false)}
-      onSaved={() => setIsEditing(false)}
+      onSaved={(nextCreatedAt, commit) => {
+        setIsEditing(false);
+        setPendingCreatedAt(nextCreatedAt);
+        void commit.catch((error) => {
+          console.error("[metadata] failed to update session date", error);
+          sonnerToast.error("Could not update the note date.");
+          setPendingCreatedAt(null);
+        });
+      }}
     />
   );
 }
@@ -64,17 +77,10 @@ function EditableDateForm({
   sessionId: string;
   createdAt: unknown;
   onCancel?: () => void;
-  onSaved?: () => void;
+  onSaved?: (nextCreatedAt: string, commit: Promise<unknown>) => void;
 }) {
   const { t } = useLingui();
-  const handleChangeCreatedAt = main.UI.useSetCellCallback(
-    "sessions",
-    sessionId,
-    "created_at",
-    (value: string) => value,
-    [],
-    main.STORE_ID,
-  );
+  const updateSession = useUpdateSession(sessionId);
 
   const form = useForm({
     defaultValues: {
@@ -107,8 +113,10 @@ function EditableDateForm({
         return;
       }
 
-      handleChangeCreatedAt(nextCreatedAt);
-      onSaved?.();
+      onSaved?.(
+        nextCreatedAt,
+        Promise.resolve(updateSession({ created_at: nextCreatedAt })),
+      );
     },
   });
 
@@ -145,7 +153,7 @@ function EditableDateForm({
                 onClick={onCancel}
                 aria-label={t`Cancel date edit`}
               >
-                <XIcon size={16} />
+                <X size={16} />
               </Button>
             )}
 
@@ -160,7 +168,7 @@ function EditableDateForm({
                   disabled={!canSubmit}
                   aria-label={t`Save date`}
                 >
-                  <CheckIcon size={16} />
+                  <Check size={16} />
                 </Button>
               )}
             </form.Subscribe>

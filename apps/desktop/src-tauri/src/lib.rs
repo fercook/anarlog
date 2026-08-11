@@ -2,22 +2,77 @@ mod agents;
 mod appearance;
 mod commands;
 mod db;
+mod embedded_cli;
 mod ext;
+mod search_index;
 mod store;
 mod supervisor;
 
-use db::open_desktop_db;
+use db::{cloudsync_runtime_config_from_env, open_desktop_db};
 use ext::*;
 use store::*;
 
-use tauri::Manager;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+use tauri::{Emitter, Manager};
 use tauri_plugin_permissions::{Permission, PermissionsPluginExt};
-use tauri_plugin_windows::{AppWindow, WindowsPluginExt};
+use tauri_plugin_windows::AppWindow;
 
 #[cfg(any(feature = "dev", feature = "devtools"))]
 const STAGING_BUNDLE_ID: &str = "com.hyprnote.staging";
 
-fn create_audio_provider(_bundle_id: &str) -> std::sync::Arc<dyn hypr_audio_actual::AudioProvider> {
+const APP_EXIT_REQUESTED_EVENT: &str = "app-exit-requested";
+static EXIT_FLUSH_COMPLETE: AtomicBool = AtomicBool::new(false);
+static EXIT_FLUSH_REQUESTED: AtomicBool = AtomicBool::new(false);
+const EXIT_FLUSH_FALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const EXIT_HARD_FALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+
+fn mark_exit_flush_complete() {
+    EXIT_FLUSH_COMPLETE.store(true, Ordering::SeqCst);
+}
+
+fn start_exit_hard_fallback() {
+    std::thread::spawn(|| {
+        std::thread::sleep(EXIT_HARD_FALLBACK_TIMEOUT);
+        std::process::exit(0);
+    });
+}
+
+fn should_force_quit() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        return anlg_intercept::should_force_quit();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+fn versions_indicate_update(previous: Option<&str>, current: Option<&str>) -> bool {
+    matches!(
+        (previous, current),
+        (Some(previous), Some(current)) if !previous.is_empty() && previous != current
+    )
+}
+
+fn should_recenter_after_update(app: &tauri::AppHandle<tauri::Wry>) -> bool {
+    use tauri_plugin_updater2::Updater2PluginExt;
+
+    let previous = match app.updater2().get_last_seen_version() {
+        Ok(previous) => previous,
+        Err(error) => {
+            tracing::warn!(%error, "failed to read the previous app version during startup");
+            return false;
+        }
+    };
+
+    versions_indicate_update(previous.as_deref(), app.config().version.as_deref())
+}
+
+fn create_audio_provider(_bundle_id: &str) -> std::sync::Arc<dyn anlg_audio_actual::AudioProvider> {
     #[cfg(any(feature = "dev", feature = "devtools"))]
     {
         let bundle_id = _bundle_id;
@@ -29,10 +84,10 @@ fn create_audio_provider(_bundle_id: &str) -> std::sync::Arc<dyn hypr_audio_actu
         let mock_audio_allowed = cfg!(feature = "dev") || bundle_id == STAGING_BUNDLE_ID;
 
         if mock_audio_allowed && selection > 0 {
-            return std::sync::Arc::new(hypr_audio_mock::MockAudio::new(selection));
+            return std::sync::Arc::new(anlg_audio_mock::MockAudio::new(selection));
         }
     }
-    std::sync::Arc::new(hypr_audio_actual::ActualAudio)
+    std::sync::Arc::new(anlg_audio_actual::ActualAudio)
 }
 
 #[tokio::main]
@@ -47,11 +102,15 @@ pub async fn main() {
         };
 
     let sentry_client = {
-        let dsn = option_env!("SENTRY_DSN");
+        let dsn = if std::env::var_os("ANARLOG_DISABLE_SENTRY").is_some() {
+            None
+        } else {
+            option_env!("SENTRY_DSN")
+        };
 
         if let Some(dsn) = dsn {
             let release =
-                option_env!("APP_VERSION").map(|v| format!("hyprnote-desktop@{}", v).into());
+                option_env!("APP_VERSION").map(|v| format!("anarlog-desktop@{}", v).into());
 
             let client = sentry::init((
                 dsn,
@@ -59,16 +118,19 @@ pub async fn main() {
                     release,
                     traces_sample_rate: 1.0,
                     auto_session_tracking: false,
+                    before_send: Some(Arc::new(
+                        tauri_plugin_tracing::redaction::sanitize_sentry_event,
+                    )),
                     ..Default::default()
                 },
             ));
 
             sentry::configure_scope(|scope| {
-                scope.set_tag("service.namespace", "hyprnote");
+                scope.set_tag("service.namespace", "anarlog");
                 scope.set_tag("service.name", "desktop");
-                scope.set_tag("enduser.pseudo.id", hypr_host::fingerprint());
+                scope.set_tag("enduser.pseudo.id", anlg_host::fingerprint());
                 scope.set_user(Some(sentry::User {
-                    id: Some(hypr_host::fingerprint()),
+                    id: Some(anlg_host::fingerprint()),
                     ..Default::default()
                 }));
             });
@@ -83,10 +145,20 @@ pub async fn main() {
         .as_ref()
         .map(|client| tauri_plugin_sentry::minidump::init(client));
 
-    let audio: std::sync::Arc<dyn hypr_audio_actual::AudioProvider> =
+    let audio: std::sync::Arc<dyn anlg_audio_actual::AudioProvider> =
         create_audio_provider(&context.config().identifier);
 
-    let db = open_desktop_db(&context.config().identifier).await;
+    let db = match open_desktop_db(&context.config().identifier).await {
+        Ok(db) => db,
+        Err(error) => exit_after_startup_failure(&error),
+    };
+    let cloudsync_config = match cloudsync_runtime_config_from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::warn!(%error, "invalid CloudSync environment configuration; CloudSync disabled");
+            None
+        }
+    };
 
     let mut builder = tauri_plugin_windows::extend_builder(tauri::Builder::default())
         .manage(audio)
@@ -102,7 +174,10 @@ pub async fn main() {
     // should always be the first plugin
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            app.windows().show(AppWindow::Main).unwrap();
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
         }));
     }
 
@@ -110,15 +185,21 @@ pub async fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_opener2::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_tracing::init())
         .plugin(tauri_plugin_analytics::init())
+        .plugin(tauri_plugin_attachment_sync::init())
         .plugin(tauri_plugin_agent::init())
-        .plugin(tauri_plugin_db::init(db.clone()))
-        .plugin(tauri_plugin_bedrock::init())
+        .plugin(tauri_plugin_db::init_with_cloudsync(
+            db.clone(),
+            cloudsync_config,
+        ))
+        .plugin(tauri_plugin_bedrock::init());
+
+    builder = builder
         .plugin(tauri_plugin_importer::init())
         .plugin(tauri_plugin_calendar::init())
         .plugin(tauri_plugin_todo::init())
         .plugin(tauri_plugin_auth::init())
-        .plugin(tauri_plugin_tracing::init())
         .plugin(tauri_plugin_hooks::init())
         .plugin(tauri_plugin_icon::init())
         .plugin(tauri_plugin_shell::init())
@@ -133,6 +214,7 @@ pub async fn main() {
         .plugin(tauri_plugin_path2::init())
         .plugin(tauri_plugin_export::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_local_api::init())
         .plugin(tauri_plugin_mcp::init())
         .plugin(tauri_plugin_messenger::init())
         .plugin(tauri_plugin_misc::init())
@@ -155,7 +237,11 @@ pub async fn main() {
         .plugin(tauri_plugin_windows::init())
         .plugin(tauri_plugin_js::init())
         .plugin(tauri_plugin_flag::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .skip_initial_state("main")
+                .build(),
+        )
         .plugin(tauri_plugin_transcription::init())
         .plugin(tauri_plugin_tantivy::init())
         .plugin(tauri_plugin_audio_priority::init())
@@ -187,11 +273,16 @@ pub async fn main() {
         builder = builder.plugin(plugin);
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.menu(tauri_plugin_tray::build_app_menu);
+    }
+
     let specta_builder = make_specta_builder::<tauri::Wry>();
 
     let root_supervisor_ctx_for_run = root_supervisor_ctx.clone();
 
-    let app = builder
+    let app_result = builder
         .invoke_handler(specta_builder.invoke_handler())
         .on_window_event(tauri_plugin_windows::on_window_event)
         .setup(move |app| {
@@ -202,8 +293,12 @@ pub async fn main() {
             #[cfg(any(windows, target_os = "linux"))]
             {
                 // https://v2.tauri.app/ko/plugin/deep-linking/#desktop-1
+                // Registration shells out to update-desktop-database/xdg-mime on Linux,
+                // which are missing on NixOS; failing setup here panics the app.
                 use tauri_plugin_deep_link::DeepLinkExt;
-                app.deep_link().register_all()?;
+                if let Err(error) = app.deep_link().register_all() {
+                    tracing::warn!(%error, "failed to register deep link handlers");
+                }
             }
 
             {
@@ -213,22 +308,27 @@ pub async fn main() {
                 let appearance_settings =
                     appearance::load_app_appearance_settings::<tauri::Wry, _>(&app_handle);
 
-                app_handle
+                if let Err(error) = app_handle
                     .windows()
                     .set_show_app_in_dock(appearance_settings.show_app_in_dock)
-                    .unwrap();
+                {
+                    tracing::warn!(%error, "failed to apply dock visibility during startup");
+                }
 
                 if appearance_settings.show_tray_icon {
-                    app_handle.tray().create_tray_menu().unwrap();
+                    if let Err(error) = app_handle.tray().create_tray_menu() {
+                        tracing::warn!(%error, "failed to create tray menu during startup");
+                    }
                 }
-                app_handle.tray().create_app_menu().unwrap();
             }
 
             {
-                use tauri_plugin_tray::HyprMenuItem;
+                use tauri_plugin_tray::AnlgMenuItem;
                 app_handle.on_menu_event(|app, event| {
-                    if let Ok(item) = HyprMenuItem::try_from(event.id().clone()) {
+                    if let Ok(item) = AnlgMenuItem::try_from(event.id().clone()) {
                         item.handle(app);
+                    } else {
+                        tauri_plugin_tray::handle_agenda_menu_event(app, event.id());
                     }
                 });
             }
@@ -253,14 +353,24 @@ pub async fn main() {
                 }
             }
 
+            search_index::spawn(app_handle, db.clone());
+
             Ok(())
         })
-        .build(context)
-        .unwrap();
+        .build(context);
+
+    let app = match app_result {
+        Ok(app) => app,
+        Err(error) => exit_after_startup_failure(&error),
+    };
 
     match get_onboarding_flag() {
         None => {}
-        Some(false) => app.set_onboarding_needed(false).unwrap(),
+        Some(false) => {
+            if let Err(error) = app.set_onboarding_needed(false) {
+                tracing::warn!(%error, "failed to persist onboarding state during startup");
+            }
+        }
         Some(true) => {
             use tauri_plugin_auth::AuthPluginExt;
             use tauri_plugin_settings::SettingsPluginExt;
@@ -286,53 +396,92 @@ pub async fn main() {
 
     {
         let app_handle = app.handle().clone();
-        AppWindow::Main.show(&app_handle).unwrap();
+        let recenter_after_update = should_recenter_after_update(&app_handle);
+        match AppWindow::Main.show(&app_handle) {
+            Ok(window) if recenter_after_update => {
+                if let Err(error) = AppWindow::Main.center_on_primary(&app_handle, &window) {
+                    tracing::warn!(%error, "failed to recenter the main window after an update");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => exit_after_startup_failure(&error),
+        }
     }
 
     #[cfg(target_os = "macos")]
-    hypr_intercept::setup_force_quit_handler();
+    anlg_intercept::setup_force_quit_handler();
 
     #[allow(unused_variables)]
     app.run(move |app, event| match event {
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => {
-            AppWindow::Main.show(app).unwrap();
+            if let Err(error) = AppWindow::Main.show(app) {
+                tracing::error!(%error, "failed to reopen main window");
+            }
         }
-        #[cfg(target_os = "macos")]
         tauri::RunEvent::ExitRequested { api, .. } => {
             if let Some(ref ctx) = root_supervisor_ctx_for_run {
                 ctx.mark_exiting();
             }
 
-            if hypr_intercept::should_force_quit() {
+            if EXIT_FLUSH_COMPLETE.load(Ordering::SeqCst) || should_force_quit() {
                 return;
             }
 
             api.prevent_exit();
-
-            for (_, window) in app.webview_windows() {
-                let _ = window.close();
+            let first_request = !EXIT_FLUSH_REQUESTED.swap(true, Ordering::SeqCst);
+            if first_request {
+                start_exit_hard_fallback();
             }
-
-            let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            if app.emit_to("main", APP_EXIT_REQUESTED_EVENT, ()).is_err() {
+                mark_exit_flush_complete();
+                app.exit(0);
+            } else if first_request {
+                let app_handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(EXIT_FLUSH_FALLBACK_TIMEOUT).await;
+                    if !EXIT_FLUSH_COMPLETE.swap(true, Ordering::SeqCst) {
+                        tracing::warn!(
+                            "forcing app exit after frontend flush acknowledgement timed out"
+                        );
+                        app_handle.exit(0);
+                    }
+                });
+            }
         }
         tauri::RunEvent::Exit => {
-            {
-                use tauri_plugin_store2::Store2PluginExt;
-                if let Ok(store) = app.store2().store() {
-                    let _ = store.save();
-                }
-            }
-
             if let Some(ref ctx) = root_supervisor_ctx_for_run {
                 ctx.mark_exiting();
                 ctx.stop();
             }
 
-            hypr_host::kill_processes_by_matcher(hypr_host::ProcessMatcher::Sidecar);
+            anlg_host::kill_processes_by_matcher(anlg_host::ProcessMatcher::Sidecar);
         }
         _ => {}
     });
+}
+
+fn startup_failure_message(error: &impl std::fmt::Display) -> String {
+    format!("Anarlog failed to start: {error}")
+}
+
+fn exit_after_startup_failure(error: &impl std::fmt::Display) -> ! {
+    let message = startup_failure_message(error);
+    eprintln!("{message}");
+    tracing::error!(error = %error, "desktop startup failed");
+    sentry::capture_message(&message, sentry::Level::Error);
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("/usr/bin/osascript")
+            .args([
+                "-e",
+                "display alert \"Anarlog could not start\" message \"Your existing data was left unchanged. Please restart the app. If the problem continues, contact support.\" as critical buttons {\"OK\"} default button \"OK\"",
+            ])
+            .spawn();
+    }
+
+    std::process::exit(1);
 }
 
 fn get_onboarding_flag() -> Option<bool> {
@@ -376,12 +525,14 @@ fn make_specta_builder<R: tauri::Runtime>() -> tauri_specta::Builder<R> {
             commands::set_dismissed_toasts::<tauri::Wry>,
             commands::get_env::<tauri::Wry>,
             commands::show_devtool::<tauri::Wry>,
+            commands::complete_app_exit::<tauri::Wry>,
             commands::get_tinybase_values::<tauri::Wry>,
-            commands::set_tinybase_values::<tauri::Wry>,
             commands::get_pinned_tabs::<tauri::Wry>,
             commands::set_pinned_tabs::<tauri::Wry>,
             commands::get_recently_opened_sessions::<tauri::Wry>,
             commands::set_recently_opened_sessions::<tauri::Wry>,
+            commands::check_embedded_cli::<tauri::Wry>,
+            commands::install_embedded_cli::<tauri::Wry>,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Result)
 }
@@ -389,6 +540,43 @@ fn make_specta_builder<R: tauri::Runtime>() -> tauri_specta::Builder<R> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn startup_failure_message_includes_the_original_error() {
+        let message = startup_failure_message(&"legacy import did not pass parity verification");
+
+        assert_eq!(
+            message,
+            "Anarlog failed to start: legacy import did not pass parity verification"
+        );
+    }
+
+    #[test]
+    fn recenters_after_the_app_version_changes() {
+        assert!(versions_indicate_update(Some("1.4.7"), Some("1.4.8")));
+        assert!(!versions_indicate_update(Some("1.4.8"), Some("1.4.8")));
+        assert!(!versions_indicate_update(None, Some("1.4.8")));
+        assert!(!versions_indicate_update(Some(""), Some("1.4.8")));
+        assert!(!versions_indicate_update(Some("1.4.7"), None));
+    }
+
+    #[test]
+    fn main_capability_allows_cloudsync_lifecycle_commands() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        let permissions = capability["permissions"].as_array().unwrap();
+
+        for expected in [
+            "db:allow-begin-cloudsync-activity",
+            "db:allow-end-cloudsync-activity",
+            "db:allow-sync-cloudsync-now",
+        ] {
+            assert!(
+                permissions.iter().any(|permission| permission == expected),
+                "missing permission: {expected}"
+            );
+        }
+    }
 
     #[test]
     fn export_types() {

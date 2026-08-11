@@ -6,13 +6,16 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     #[error(transparent)]
-    Audio(#[from] hypr_audio_utils::Error),
+    Audio(#[from] anlg_audio_utils::Error),
 
     #[error(transparent)]
-    Whisper(#[from] hypr_whisper_local::Error),
+    Wav(#[from] hound::Error),
 
     #[error(transparent)]
-    Chunking(#[from] hypr_audio_chunking::Error),
+    Whisper(#[from] anlg_whisper_local::Error),
+
+    #[error(transparent)]
+    Chunking(#[from] anlg_audio_chunking::Error),
 
     #[error(transparent)]
     Json(#[from] serde_json::Error),

@@ -1,3 +1,4 @@
+import { ArrowsClockwise, CaretLeft, CaretRight } from "@phosphor-icons/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   addDays,
@@ -12,21 +13,20 @@ import {
   startOfWeek,
   subMonths,
 } from "date-fns";
-import { ChevronLeftIcon, ChevronRightIcon, RefreshCwIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Button } from "@hypr/ui/components/ui/button";
+import { Button } from "@anlg/ui/components/ui/button";
 import {
   ButtonGroup,
   ButtonGroupSeparator,
-} from "@hypr/ui/components/ui/button-group";
-import { Spinner } from "@hypr/ui/components/ui/spinner";
+} from "@anlg/ui/components/ui/button-group";
+import { Spinner } from "@anlg/ui/components/ui/spinner";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from "@hypr/ui/components/ui/tooltip";
-import { cn } from "@hypr/utils";
+} from "@anlg/ui/components/ui/tooltip";
+import { cn } from "@anlg/utils";
 
 import { useSync } from "./context";
 import { DayCell } from "./day-cell";
@@ -245,7 +245,7 @@ export function CalendarView() {
             className="hover:bg-accent h-full w-10 rounded-none border-0 bg-transparent shadow-none"
             onClick={goToPrev}
           >
-            <ChevronLeftIcon className="h-4 w-4" />
+            <CaretLeft className="h-4 w-4" />
           </Button>
           <ButtonGroupSeparator className="bg-accent" />
           <Button
@@ -266,7 +266,7 @@ export function CalendarView() {
             className="hover:bg-accent h-full w-10 rounded-none border-0 bg-transparent shadow-none"
             onClick={goToNext}
           >
-            <ChevronRightIcon className="h-4 w-4" />
+            <CaretRight className="h-4 w-4" />
           </Button>
         </ButtonGroup>
       </div>
@@ -364,6 +364,7 @@ function useVisibleRangeSync(
   const from = range?.from.toISOString();
   const to = range?.to.toISOString();
 
+  // eslint-disable-next-line @tanstack/query/exhaustive-deps -- ISO bounds and the enabled-calendar key fully identify the range; syncRange only executes it.
   useQuery({
     queryKey: [VISIBLE_RANGE_SYNC_QUERY_KEY, from, to, enabledCalendarKey],
     queryFn: async ({ signal }) => {
@@ -438,7 +439,7 @@ function CalendarSyncHeaderControls() {
           data-tauri-drag-region="false"
           onClick={handleRefresh}
         >
-          <RefreshCwIcon className="size-3.5" />
+          <ArrowsClockwise className="size-3.5" />
         </Button>
       )}
     </div>

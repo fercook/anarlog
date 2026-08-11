@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::fmt::Write as _;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -6,6 +8,7 @@ use crate::error::AudioImportError;
 use crate::path::is_uuid;
 use crate::runtime::{AudioImportEvent, AudioImportRuntime};
 use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
 
 const AUDIO_FORMATS: [&str; 3] = ["audio.mp3", "audio.wav", "audio.ogg"];
 const AUDIO_ARTIFACTS: [&str; 7] = [
@@ -26,6 +29,15 @@ pub struct AudioSourceMetadata {
     pub duration_ms: Option<u64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioFileMetadata {
+    pub filename: String,
+    pub content_type: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+}
+
 pub fn exists(session_dir: &Path) -> std::io::Result<bool> {
     AUDIO_FORMATS
         .iter()
@@ -35,14 +47,8 @@ pub fn exists(session_dir: &Path) -> std::io::Result<bool> {
         })
 }
 
-pub fn delete(session_dir: &Path) -> std::io::Result<()> {
-    for artifact in AUDIO_ARTIFACTS {
-        let path = session_dir.join(artifact);
-        if std::fs::exists(&path).unwrap_or(false) {
-            std::fs::remove_file(&path)?;
-        }
-    }
-    Ok(())
+pub fn delete(session_dir: &Path) -> std::io::Result<bool> {
+    delete_with(session_dir, |path| std::fs::remove_file(path))
 }
 
 pub fn path(session_dir: &Path) -> Option<PathBuf> {
@@ -50,6 +56,76 @@ pub fn path(session_dir: &Path) -> Option<PathBuf> {
         .iter()
         .map(|format| session_dir.join(format))
         .find(|path| path.exists())
+}
+
+pub fn metadata(session_dir: &Path) -> std::io::Result<Option<AudioFileMetadata>> {
+    let Some(path) = path(session_dir) else {
+        return Ok(None);
+    };
+    let Some(filename) = path.file_name().and_then(|filename| filename.to_str()) else {
+        return Ok(None);
+    };
+
+    let content_type = match filename {
+        "audio.mp3" => "audio/mpeg",
+        "audio.wav" => "audio/wav",
+        "audio.ogg" => "audio/ogg",
+        _ => return Ok(None),
+    };
+
+    let mut file = std::fs::File::open(&path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut size_bytes = 0_u64;
+
+    loop {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+        size_bytes = size_bytes
+            .checked_add(bytes_read as u64)
+            .ok_or_else(|| std::io::Error::other("audio_file_too_large"))?;
+    }
+
+    let sha256 = hasher
+        .finalize()
+        .iter()
+        .fold(String::with_capacity(64), |mut output, byte| {
+            write!(&mut output, "{byte:02x}").unwrap();
+            output
+        });
+
+    Ok(Some(AudioFileMetadata {
+        filename: filename.to_string(),
+        content_type: content_type.to_string(),
+        size_bytes,
+        sha256,
+    }))
+}
+
+fn delete_with(
+    session_dir: &Path,
+    mut remove_file: impl FnMut(&Path) -> std::io::Result<()>,
+) -> std::io::Result<bool> {
+    let primary_path = path(session_dir);
+
+    for artifact in AUDIO_ARTIFACTS {
+        let artifact_path = session_dir.join(artifact);
+        if primary_path.as_ref() == Some(&artifact_path) {
+            continue;
+        }
+        if std::fs::exists(&artifact_path)? {
+            remove_file(&artifact_path)?;
+        }
+    }
+
+    let Some(primary_path) = primary_path else {
+        return Ok(false);
+    };
+    remove_file(&primary_path)?;
+    Ok(true)
 }
 
 pub fn delete_orphaned_expired(
@@ -77,12 +153,12 @@ pub fn delete_orphaned_expired(
 }
 
 pub fn source_metadata(source_path: &Path) -> std::io::Result<AudioSourceMetadata> {
-    use hypr_audio_utils::Source;
+    use anlg_audio_utils::Source;
 
     let metadata = std::fs::metadata(source_path)?;
     let created_at = metadata.created().ok().map(system_time_to_iso);
     let modified_at = metadata.modified().ok().map(system_time_to_iso);
-    let duration_ms = hypr_audio_utils::source_from_path(source_path)
+    let duration_ms = anlg_audio_utils::source_from_path(source_path)
         .ok()
         .and_then(|source| source.total_duration())
         .and_then(|duration| u64::try_from(duration.as_millis()).ok());
@@ -195,7 +271,7 @@ pub fn import_to_session(
         }
     };
 
-    let result = hypr_audio_norm::normalize_file(
+    let result = anlg_audio_norm::normalize_file(
         source_path,
         &tmp_path,
         &target_path,
@@ -228,8 +304,8 @@ pub fn import_audio(
     source_path: &Path,
     tmp_path: &Path,
     target_path: &Path,
-) -> Result<PathBuf, hypr_audio_norm::Error> {
-    hypr_audio_norm::normalize_file(source_path, tmp_path, target_path, None, None::<fn(f64)>)
+) -> Result<PathBuf, anlg_audio_norm::Error> {
+    anlg_audio_norm::normalize_file(source_path, tmp_path, target_path, None, None::<fn(f64)>)
 }
 
 fn system_time_to_iso(time: std::time::SystemTime) -> String {
@@ -239,8 +315,8 @@ fn system_time_to_iso(time: std::time::SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anlg_audio_utils::Source;
     use assert_fs::TempDir;
-    use hypr_audio_utils::Source;
     use std::time::SystemTime;
 
     const MIN_MP3_BYTES: u64 = 1024;
@@ -272,12 +348,95 @@ mod tests {
         let note_path = session_dir.join("note.md");
         std::fs::write(&note_path, b"keep").unwrap();
 
-        delete(session_dir).unwrap();
+        assert!(delete(session_dir).unwrap());
 
         for artifact in AUDIO_ARTIFACTS {
             assert!(!session_dir.join(artifact).exists());
         }
         assert!(note_path.exists());
+    }
+
+    #[test]
+    fn metadata_hashes_the_selected_final_audio_file() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.path().join("audio.mp3"), b"abc").unwrap();
+
+        let metadata = metadata(temp.path()).unwrap().unwrap();
+
+        assert_eq!(
+            metadata,
+            AudioFileMetadata {
+                filename: "audio.mp3".to_string(),
+                content_type: "audio/mpeg".to_string(),
+                size_bytes: 3,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                    .to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn metadata_falls_back_to_supported_final_audio_formats() {
+        let cases = [("audio.wav", "audio/wav"), ("audio.ogg", "audio/ogg")];
+
+        for (filename, content_type) in cases {
+            let temp = TempDir::new().unwrap();
+            std::fs::write(temp.path().join(filename), b"audio").unwrap();
+
+            let metadata = metadata(temp.path()).unwrap().unwrap();
+
+            assert_eq!(metadata.filename, filename);
+            assert_eq!(metadata.content_type, content_type);
+        }
+    }
+
+    #[test]
+    fn metadata_ignores_audio_artifacts() {
+        let temp = TempDir::new().unwrap();
+        for artifact in [
+            "audio.mp3.tmp",
+            "audio.wav.tmp",
+            "audio_mic.wav",
+            "audio_spk.wav",
+        ] {
+            write_audio(&temp.path().join(artifact));
+        }
+
+        assert_eq!(metadata(temp.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn delete_without_final_audio_returns_false() {
+        let temp = TempDir::new().unwrap();
+        write_audio(&temp.path().join("audio.mp3.tmp"));
+
+        assert!(!delete(temp.path()).unwrap());
+        assert!(!temp.path().join("audio.mp3.tmp").exists());
+    }
+
+    #[test]
+    fn delete_preserves_primary_audio_when_auxiliary_deletion_fails() {
+        let temp = TempDir::new().unwrap();
+        let primary_path = temp.path().join("audio.mp3");
+        let auxiliary_path = temp.path().join("audio.mp3.tmp");
+        write_audio(&primary_path);
+        write_audio(&auxiliary_path);
+
+        let result = delete_with(temp.path(), |path| {
+            if path == auxiliary_path {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "blocked auxiliary deletion",
+                ));
+            }
+            std::fs::remove_file(path)
+        });
+
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert!(primary_path.exists());
     }
 
     #[test]
@@ -346,20 +505,20 @@ mod tests {
     }
 
     test_import_audio! {
-        test_import_wav: hypr_data::english_1::AUDIO_PATH,
-        test_import_mp3: hypr_data::english_1::AUDIO_MP3_PATH,
-        test_import_mp4: hypr_data::english_1::AUDIO_MP4_PATH,
-        test_import_m4a: hypr_data::english_1::AUDIO_M4A_PATH,
-        test_import_ogg: hypr_data::english_1::AUDIO_OGG_PATH,
-        test_import_flac: hypr_data::english_1::AUDIO_FLAC_PATH,
-        test_import_aac: hypr_data::english_1::AUDIO_AAC_PATH,
-        test_import_aiff: hypr_data::english_1::AUDIO_AIFF_PATH,
-        test_import_caf: hypr_data::english_1::AUDIO_CAF_PATH,
+        test_import_wav: anlg_data::english_1::AUDIO_PATH,
+        test_import_mp3: anlg_data::english_1::AUDIO_MP3_PATH,
+        test_import_mp4: anlg_data::english_1::AUDIO_MP4_PATH,
+        test_import_m4a: anlg_data::english_1::AUDIO_M4A_PATH,
+        test_import_ogg: anlg_data::english_1::AUDIO_OGG_PATH,
+        test_import_flac: anlg_data::english_1::AUDIO_FLAC_PATH,
+        test_import_aac: anlg_data::english_1::AUDIO_AAC_PATH,
+        test_import_aiff: anlg_data::english_1::AUDIO_AIFF_PATH,
+        test_import_caf: anlg_data::english_1::AUDIO_CAF_PATH,
     }
 
     #[test]
     fn test_import_stereo_mp3() {
-        let source_path = std::path::Path::new(hypr_data::english_10::AUDIO_MP3_PATH);
+        let source_path = std::path::Path::new(anlg_data::english_10::AUDIO_MP3_PATH);
         let temp = TempDir::new().unwrap();
         let tmp_path = temp.path().join("tmp.mp3");
         let target_path = temp.path().join("target.mp3");
@@ -374,7 +533,7 @@ mod tests {
             "Output too small ({size} bytes), likely empty audio"
         );
 
-        let decoder = hypr_audio_utils::source_from_path(&target_path).unwrap();
+        let decoder = anlg_audio_utils::source_from_path(&target_path).unwrap();
         let channels: u16 = decoder.channels().into();
         assert_eq!(channels, 2, "stereo input should produce stereo output");
     }

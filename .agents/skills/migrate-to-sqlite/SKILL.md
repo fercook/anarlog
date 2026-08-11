@@ -1,6 +1,8 @@
 ---
 name: migrate-to-sqlite
 description: Migrate a TinyBase table to SQLite. Use when asked to move a data domain (e.g. templates, vocabs) from the TinyBase store to the app SQLite database.
+metadata:
+  internal: true
 ---
 
 ## Status
@@ -13,14 +15,14 @@ TinyBase `settings` store is out of scope unless the plan is explicitly
 expanded to include it.
 
 - [x] `templates` — already Drizzle, no Phase 0 needed
-- [ ] `calendars`
+- [x] `calendars`
   - [x] Phase 0 reads (PR 2: `useCalendar`, `useEnabledCalendars`)
-  - [ ] Phase 0 writes — `services/calendar/ctx.ts` has a cross-domain
+  - [x] Phase 0 writes — `services/calendar/ctx.ts` has a cross-domain
         calendars+events transaction; lands with events PR
-  - [ ] Phase 1 — Rust migration + ops exist
-- [ ] `events`
-  - [ ] Phase 0
-  - [ ] Phase 1 — Rust migration + ops exist
+  - [x] Phase 1 — Rust migration + ops exist
+- [x] `events`
+  - [x] Phase 0
+  - [x] Phase 1 — Rust migration + ops exist
 - [ ] `sessions`
 - [ ] `transcripts`
 - [ ] `humans`
@@ -31,10 +33,13 @@ expanded to include it.
   - [ ] Phase 1
 - [ ] `mapping_session_participant`
 - [ ] `mapping_tag_session`
-- [ ] `mapping_mention`
+- [x] `mapping_mention`
 - [ ] `tags`
-- [ ] `chat_groups`
-- [ ] `chat_messages`
+- [x] `chat_groups`
+- [x] `chat_messages`
+- [ ] `session_key_facts`
+- [x] `tasks`
+- [x] `daily_notes`
   - [x] Phase 0 writes (partial) — `chat/store/*`
   - [ ] Phase 0 reads
   - [ ] Phase 1
@@ -65,7 +70,7 @@ out of scope for this migration.
 Why: one storage-swap PR per domain touches 1 file (the hook module),
 not 20–50 consumer files.
 
-Enforced by `hypr/no-raw-tinybase` in `eslint-plugin-hypr.mjs`.
+Enforced by `anlg/no-raw-tinybase` in `eslint-plugin-anlg.mjs`.
 `.oxlintrc.json` keeps a `TINYBASE_MIGRATION_PENDING` override that
 shrinks as each domain is cleaned. CI gates this via
 `.github/workflows/lint.yaml`.
@@ -90,7 +95,7 @@ indexes/queries into or out of the domain, and <10 consumer sites).
 
 - **Schema source of truth:** Rust migration in `crates/db-app/migrations/`
 - **Drizzle mirror:** `packages/db/src/schema.ts` (typed TS query interface, not schema management)
-- **Reads (reactive):** `useDrizzleLiveQuery` — calls `.toSQL()` on a Drizzle query, feeds `{sql, params}` to the underlying `useLiveQuery` which uses `subscribe()` from `@hypr/plugin-db`
+- **Reads (reactive):** `useDrizzleLiveQuery` — calls `.toSQL()` on a Drizzle query, feeds `{sql, params}` to the underlying `useLiveQuery` which uses `subscribe()` from `@anlg/plugin-db`
 - **Reads (imperative):** `db.select()...` through the Drizzle sqlite-proxy driver
 - **Writes:** `db.insert()`, `db.update()`, `db.delete()` through the Drizzle sqlite-proxy driver, wrapped in `useMutation` from tanstack-query
 - **Reactivity loop:** write via `execute` → SQLite change → Rust `db-live-query` notifies subscribers → `useLiveQuery` fires `onData` → React re-renders. No manual invalidation needed.
@@ -99,10 +104,10 @@ indexes/queries into or out of the domain, and <10 consumer sites).
 
 The DB stack uses a factory/DI pattern across four packages:
 
-1. `@hypr/db-runtime` (`packages/db-runtime/`) — type contracts only: `LiveQueryClient`, `DrizzleProxyClient`, shared row/query types.
-2. `@hypr/db` (`packages/db/`) — Drizzle schema (`schema.ts`) + `createDb(client)` factory using `drizzle-orm/sqlite-proxy`. Re-exports Drizzle operators (`eq`, `and`, `sql`, etc.).
-3. `@hypr/db-tauri` (`packages/db-tauri/`) — Tauri-specific client that binds `execute`/`executeProxy`/`subscribe` from `@hypr/plugin-db` to the `db-runtime` types.
-4. `@hypr/db-react` (`packages/db-react/`) — `createUseLiveQuery(client)` and `createUseDrizzleLiveQuery(client)` factories.
+1. `@anlg/db-runtime` (`packages/db-runtime/`) — type contracts only: `LiveQueryClient`, `DrizzleProxyClient`, shared row/query types.
+2. `@anlg/db` (`packages/db/`) — Drizzle schema (`schema.ts`) + `createDb(client)` factory using `drizzle-orm/sqlite-proxy`. Re-exports Drizzle operators (`eq`, `and`, `sql`, etc.).
+3. `@anlg/db-tauri` (`packages/db-tauri/`) — Tauri-specific client that binds `execute`/`executeProxy`/`subscribe` from `@anlg/plugin-db` to the `db-runtime` types.
+4. `@anlg/db-react` (`packages/db-react/`) — `createUseLiveQuery(client)` and `createUseDrizzleLiveQuery(client)` factories.
 
 These are wired together in `apps/desktop/src/db/index.ts`, which exports `db`, `useLiveQuery`, and `useDrizzleLiveQuery`. **Consumer code imports from `~/db`, not directly from the packages.**
 
@@ -138,7 +143,7 @@ stay the same, so consumer code doesn't change.
 - `db.select()...` for imperative reads (returns parsed objects via proxy driver)
 - `db.insert()`, `db.update()`, `db.delete()` for writes, wrapped in `useMutation`
 
-Import `db` and `useDrizzleLiveQuery` from `~/db`, and schema tables/operators from `@hypr/db`.
+Import `db` and `useDrizzleLiveQuery` from `~/db`, and schema tables/operators from `@anlg/db`.
 
 Live query results come from Rust `subscribe` as raw objects (not through the Drizzle driver), so `mapRows` must handle two things:
 
@@ -165,7 +170,7 @@ swapped.
 ### 8. Verify
 
 - `cargo check` and `cargo test -p db-app -p tauri-plugin-db`
-- `pnpm -F @hypr/desktop typecheck`
-- `pnpm -F @hypr/desktop test`
-- `npx oxlint --quiet apps/desktop/src/` (the `hypr/no-raw-tinybase` CI gate)
+- `pnpm -F @anlg/desktop typecheck`
+- `pnpm -F @anlg/desktop test`
+- `npx oxlint --quiet apps/desktop/src/` (the `anlg/no-raw-tinybase` CI gate)
 - `pnpm exec dprint fmt`

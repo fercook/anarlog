@@ -1,6 +1,6 @@
 import { type ReactNode, useCallback } from "react";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
 import { ChatBody } from "./body";
 import { ChatContent } from "./content";
@@ -13,7 +13,10 @@ import { useChatAppearance } from "~/chat/hooks/use-chat-appearance";
 import { useChatActions } from "~/chat/store/use-chat-actions";
 import { chatFloatingPanelClassNames } from "~/chat/surface";
 import { useShell } from "~/contexts/shell";
-import * as main from "~/store/tinybase/store/main";
+import { useSessionHasTranscript } from "~/session/queries";
+import { useOwnerUserId } from "~/shared/owner-user";
+import { isBatchTranscriptionPending } from "~/store/zustand/listener/general-shared";
+import { useListener } from "~/stt/contexts";
 
 export function ChatView({
   layout = "floating",
@@ -46,9 +49,24 @@ export function ChatSessionHost({
   const { chat } = useShell();
   const { groupId, sessionId } = chat;
   const { currentSessionId } = useSessionTab();
-  const { user_id } = main.UI.useValues(main.STORE_ID);
+  const contextSessionId =
+    chat.scope === "automations" ? undefined : currentSessionId;
+  const ownerUserId = useOwnerUserId();
+  const hasAvailableTranscript = useSessionHasTranscript(
+    contextSessionId ?? "",
+  );
+  const batchTranscriptionPending = useListener((state) => {
+    if (!contextSessionId) {
+      return false;
+    }
+    return isBatchTranscriptionPending(
+      state.getSessionMode(contextSessionId),
+      state.live,
+      state.live.batchTranscriptionPendingBySession[contextSessionId],
+    );
+  });
 
-  if (!user_id) {
+  if (!ownerUserId) {
     return <>{children(null)}</>;
   }
 
@@ -56,7 +74,9 @@ export function ChatSessionHost({
     <ChatSession
       sessionId={sessionId}
       chatGroupId={groupId}
-      currentSessionId={currentSessionId}
+      currentSessionId={contextSessionId}
+      hasAvailableTranscript={hasAvailableTranscript}
+      isBatchTranscriptionPending={batchTranscriptionPending}
       unstyled
     >
       {children}
@@ -78,7 +98,7 @@ export function ChatPanelFrame({
   sessionProps: ChatSessionRenderProps | null;
 }) {
   const { chat } = useShell();
-  const { groupId, setGroupId } = chat;
+  const { groupId, setGroupId, rollbackFailedGroup } = chat;
   const { panelClassName, toolbarSurface } = useChatAppearance();
   const isFloating = layout === "floating";
   const model = useLanguageModel("chat");
@@ -90,9 +110,18 @@ export function ChatPanelFrame({
     [setGroupId],
   );
 
+  const handleGroupCreateFailed = useCallback(
+    (failedGroupId: string) => {
+      rollbackFailedGroup(failedGroupId);
+    },
+    [rollbackFailedGroup],
+  );
+
   const { handleSendMessage } = useChatActions({
+    chatScope: chat.scope,
     groupId,
     onGroupCreated: handleGroupCreated,
+    onGroupCreateFailed: handleGroupCreateFailed,
   });
 
   return (
@@ -103,23 +132,26 @@ export function ChatPanelFrame({
         isFloating ? chatFloatingPanelClassNames() : panelClassName,
       ])}
     >
-      <div
-        className={cn([
-          "flex shrink-0 items-center pr-0 pl-0",
-          isFloating ? "h-11" : "h-12",
-        ])}
-      >
-        <ChatToolbarControls
-          currentChatGroupId={groupId}
-          layout={layout}
-          onClose={() => chat.sendEvent({ type: "CLOSE" })}
-          onNewChat={chat.startNewChat}
-          onOpenFloating={onOpenFloating}
-          onOpenRightPanel={onOpenRightPanel}
-          onSelectChat={chat.selectChat}
-          surface={toolbarSurface}
-        />
-      </div>
+      {chat.scope === "automations" ? null : (
+        <div
+          className={cn([
+            "flex shrink-0 pr-0 pl-0",
+            isFloating ? "h-11 items-center" : "h-9 items-start pt-[9px]",
+          ])}
+        >
+          <ChatToolbarControls
+            chatScope={chat.scope}
+            currentChatGroupId={groupId}
+            layout={layout}
+            onClose={() => chat.sendEvent({ type: "CLOSE" })}
+            onNewChat={chat.startNewChat}
+            onOpenFloating={onOpenFloating}
+            onOpenRightPanel={onOpenRightPanel}
+            onSelectChat={chat.selectChat}
+            surface={toolbarSurface}
+          />
+        </div>
+      )}
       {sessionProps && (
         <ChatContent
           {...sessionProps}

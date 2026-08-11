@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the capture_meeting_chat_messages command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-capture-meeting-chat-messages",
+          "markdownDescription": "Enables the capture_meeting_chat_messages command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the capture_meeting_chat_messages command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-capture-meeting-chat-messages",
+          "markdownDescription": "Denies the capture_meeting_chat_messages command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_current_locale_identifier command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-current-locale-identifier",
@@ -307,6 +319,18 @@
           "markdownDescription": "Denies the get_current_locale_identifier command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_installed_application_icons command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-installed-application-icons",
+          "markdownDescription": "Enables the get_installed_application_icons command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_installed_application_icons command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-installed-application-icons",
+          "markdownDescription": "Denies the get_installed_application_icons command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_preferred_languages command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-preferred-languages",
@@ -317,6 +341,18 @@
           "type": "string",
           "const": "deny-get-preferred-languages",
           "markdownDescription": "Denies the get_preferred_languages command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the inspect_meeting_accessibility command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-inspect-meeting-accessibility",
+          "markdownDescription": "Enables the inspect_meeting_accessibility command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the inspect_meeting_accessibility command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-inspect-meeting-accessibility",
+          "markdownDescription": "Denies the inspect_meeting_accessibility command without any pre-configured scope."
         },
         {
           "description": "Enables the list_default_ignored_bundle_ids command without any pre-configured scope.",
@@ -367,6 +403,30 @@
           "markdownDescription": "Denies the reset_quit_handler command without any pre-configured scope."
         },
         {
+          "description": "Enables the send_meeting_chat_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-send-meeting-chat-message",
+          "markdownDescription": "Enables the send_meeting_chat_message command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the send_meeting_chat_message command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-send-meeting-chat-message",
+          "markdownDescription": "Denies the send_meeting_chat_message command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_competing_application_termination_paused command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-competing-application-termination-paused",
+          "markdownDescription": "Enables the set_competing_application_termination_paused command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_competing_application_termination_paused command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-competing-application-termination-paused",
+          "markdownDescription": "Denies the set_competing_application_termination_paused command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_ignored_bundle_ids command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-ignored-bundle-ids",
@@ -415,10 +475,22 @@
           "markdownDescription": "Denies the set_respect_do_not_disturb command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-list-installed-applications`\n- `allow-list-mic-using-applications`\n- `allow-set-respect-do-not-disturb`\n- `allow-set-ignored-bundle-ids`\n- `allow-list-default-ignored-bundle-ids`\n- `allow-get-preferred-languages`\n- `allow-get-current-locale-identifier`\n- `allow-set-mic-active-threshold`",
+          "description": "Enables the terminate_competing_applications command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-terminate-competing-applications",
+          "markdownDescription": "Enables the terminate_competing_applications command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the terminate_competing_applications command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-terminate-competing-applications",
+          "markdownDescription": "Denies the terminate_competing_applications command without any pre-configured scope."
+        },
+        {
+          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-list-installed-applications`\n- `allow-get-installed-application-icons`\n- `allow-terminate-competing-applications`\n- `allow-set-competing-application-termination-paused`\n- `allow-list-mic-using-applications`\n- `allow-inspect-meeting-accessibility`\n- `allow-send-meeting-chat-message`\n- `allow-capture-meeting-chat-messages`\n- `allow-set-respect-do-not-disturb`\n- `allow-set-ignored-bundle-ids`\n- `allow-list-default-ignored-bundle-ids`\n- `allow-get-preferred-languages`\n- `allow-get-current-locale-identifier`\n- `allow-set-mic-active-threshold`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-list-installed-applications`\n- `allow-list-mic-using-applications`\n- `allow-set-respect-do-not-disturb`\n- `allow-set-ignored-bundle-ids`\n- `allow-list-default-ignored-bundle-ids`\n- `allow-get-preferred-languages`\n- `allow-get-current-locale-identifier`\n- `allow-set-mic-active-threshold`"
+          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-list-installed-applications`\n- `allow-get-installed-application-icons`\n- `allow-terminate-competing-applications`\n- `allow-set-competing-application-termination-paused`\n- `allow-list-mic-using-applications`\n- `allow-inspect-meeting-accessibility`\n- `allow-send-meeting-chat-message`\n- `allow-capture-meeting-chat-messages`\n- `allow-set-respect-do-not-disturb`\n- `allow-set-ignored-bundle-ids`\n- `allow-list-default-ignored-bundle-ids`\n- `allow-get-preferred-languages`\n- `allow-get-current-locale-identifier`\n- `allow-set-mic-active-threshold`"
         }
       ]
     }

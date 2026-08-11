@@ -1,7 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 
-import { flowSearchSchema } from "@/functions/desktop-flow";
+import {
+  DEFAULT_DESKTOP_SCHEME,
+  flowSearchSchema,
+} from "@/functions/desktop-flow";
 import { useBilling } from "@/hooks/use-billing";
 
 import { IntegrationPageLayout } from "./-integration-ui";
@@ -24,8 +27,16 @@ export const INTEGRATION_DISPLAY: Record<
 > = {
   "google-calendar": {
     name: "Google Calendar",
-    description: "Connect your Google Calendar to sync your meetings",
-    connectingHint: "Follow the prompts to connect your Google account",
+    description:
+      "Review how Anarlog uses Google Calendar data, then continue to Google",
+    connectingHint: "Finish authorization with Google, then return to Anarlog",
+  },
+  outlook: {
+    name: "Outlook Calendar",
+    description:
+      "Review how Anarlog uses Outlook Calendar data, then continue to Microsoft",
+    connectingHint:
+      "Finish authorization with Microsoft, then return to Anarlog",
   },
   linear: {
     name: "Linear",
@@ -36,6 +47,16 @@ export const INTEGRATION_DISPLAY: Record<
     name: "GitHub",
     description: "Connect GitHub to sync your issues and pull requests",
     connectingHint: "Follow the prompts to connect your GitHub account",
+  },
+  slack: {
+    name: "Slack",
+    description: "Connect Slack to send meeting recaps to your channels",
+    connectingHint: "Finish authorization with Slack, then return to Anarlog",
+  },
+  notion: {
+    name: "Notion",
+    description: "Connect Notion to add meeting updates to your pages",
+    connectingHint: "Pick the Notion pages to share, then return to Anarlog",
   },
 };
 
@@ -78,7 +99,7 @@ function Component() {
       <UpgradePrompt
         integrationId={search.integration_id}
         flow={search.flow}
-        scheme={search.scheme ?? "hyprnote"}
+        scheme={search.scheme ?? DEFAULT_DESKTOP_SCHEME}
       />
     );
   }

@@ -1,4 +1,4 @@
-import type { LiveTranscriptDelta } from "@hypr/plugin-transcription";
+import type { LiveTranscriptDelta } from "@anlg/plugin-transcription";
 
 import type { SpeakerHintWithId, WordWithId } from "./types";
 
@@ -134,35 +134,47 @@ export class TranscriptAccumulator {
     }));
     const newWordIds = new Set(newWords.map((word) => word.id));
 
-    this.words = this.words
-      .filter((word) => {
-        const wordId = word.id ?? "";
-        return !replacedIds.has(wordId) && !newWordIds.has(wordId);
-      })
-      .concat(newWords)
-      .sort((a, b) => (a.start_ms ?? 0) - (b.start_ms ?? 0));
+    const nextWords = this.words.filter((word) => {
+      const wordId = word.id ?? "";
+      return !replacedIds.has(wordId) && !newWordIds.has(wordId);
+    });
+    for (const word of newWords) {
+      nextWords.push(word);
+    }
+    nextWords.sort((a, b) => (a.start_ms ?? 0) - (b.start_ms ?? 0));
+    this.words = nextWords;
 
-    this.hints = this.hints
-      .flatMap((hint) =>
-        reconcileSegmentSpeakerAssignmentHint({
-          hint,
-          replacedIds,
-          previousWords,
-          nextWords: this.words,
-          hints: this.hints,
-          newFinalWords: delta.new_words,
-        }),
-      )
-      .filter((hint) => {
-        if (isSegmentSpeakerAssignmentHint(hint)) {
-          return true;
+    const nextHints: SpeakerHintWithId[] = [];
+    for (const hint of this.hints) {
+      const reconciledHints = reconcileSegmentSpeakerAssignmentHint({
+        hint,
+        replacedIds,
+        previousWords,
+        nextWords: this.words,
+        hints: this.hints,
+        newFinalWords: delta.new_words,
+      });
+
+      for (const reconciledHint of reconciledHints) {
+        if (isSegmentSpeakerAssignmentHint(reconciledHint)) {
+          nextHints.push(reconciledHint);
+          continue;
         }
 
-        const wordId = hint.word_id ?? "";
-        return !replacedIds.has(wordId) && !newWordIds.has(wordId);
-      })
-      .concat(delta.new_words.flatMap(toStorageSpeakerHints))
-      .sort((a, b) => (a.word_id ?? "").localeCompare(b.word_id ?? ""));
+        const wordId = reconciledHint.word_id ?? "";
+        if (!replacedIds.has(wordId) && !newWordIds.has(wordId)) {
+          nextHints.push(reconciledHint);
+        }
+      }
+    }
+
+    for (const word of delta.new_words) {
+      for (const hint of toStorageSpeakerHints(word)) {
+        nextHints.push(hint);
+      }
+    }
+    nextHints.sort((a, b) => (a.word_id ?? "").localeCompare(b.word_id ?? ""));
+    this.hints = nextHints;
 
     this.flush();
   }
@@ -173,14 +185,17 @@ export class TranscriptAccumulator {
     options?: { mode?: "append" | "replace" },
   ): void {
     if (options?.mode === "replace") {
-      this.words = [];
-      this.hints = [];
+      this.words = [...words];
+      this.hints = [...hints];
     } else {
       this.refreshIfDirty();
+      for (const word of words) {
+        this.words.push(word);
+      }
+      for (const hint of hints) {
+        this.hints.push(hint);
+      }
     }
-
-    this.words = this.words.concat(words);
-    this.hints = this.hints.concat(hints);
     this.flush();
   }
 
@@ -276,12 +291,20 @@ export function upsertSpeakerAssignment(
     value: JSON.stringify(
       mode === "segment"
         ? { human_id: humanId, scope: "segment", word_ids: assignmentWordIds }
-        : { human_id: humanId },
+        : {
+            human_id: humanId,
+            scope: "speaker",
+            channel,
+            speaker_index: segmentKey.speaker_index ?? null,
+          },
     ),
   };
 
   const nextHints = hints.filter((hint) => {
-    if (hint.type !== "user_speaker_assignment") {
+    if (
+      hint.type !== "automatic_speaker_assignment" &&
+      hint.type !== "user_speaker_assignment"
+    ) {
       return true;
     }
 
@@ -329,6 +352,30 @@ function getSpeakerAssignmentScopeForHint(
   hint: SpeakerHintWithId,
 ): SpeakerAssignmentScope | null {
   const value = parseHintValue(hint.value);
+  const explicitScope =
+    value && typeof value === "object"
+      ? (value as {
+          scope?: unknown;
+          channel?: unknown;
+          speaker_index?: unknown;
+        })
+      : null;
+  if (
+    explicitScope?.scope === "speaker" &&
+    (explicitScope.channel === 0 ||
+      explicitScope.channel === 1 ||
+      explicitScope.channel === 2)
+  ) {
+    const speakerIndex = explicitScope.speaker_index;
+    if (speakerIndex === null || typeof speakerIndex === "number") {
+      return {
+        kind: "all",
+        channel: explicitScope.channel,
+        speakerIndex,
+      };
+    }
+  }
+
   if (
     value &&
     typeof value === "object" &&

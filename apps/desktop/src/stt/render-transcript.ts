@@ -1,20 +1,15 @@
-import type {
-  SessionContentData,
-  TranscriptSpeakerHint,
-} from "@hypr/plugin-fs-sync";
-import { commands as listenerCommands } from "@hypr/plugin-transcription";
+import type { TranscriptSpeakerHint } from "@anlg/plugin-fs-sync";
+import { commands as listenerCommands } from "@anlg/plugin-transcription";
 import type {
   IdentityAssignment,
   RenderTranscriptHuman,
   RenderTranscriptInput,
   RenderTranscriptRequest,
   RenderedTranscriptSegment,
-} from "@hypr/plugin-transcription";
+} from "@anlg/plugin-transcription";
 
-import type * as main from "~/store/tinybase/store/main";
 import type { SegmentWord } from "~/stt/live-segment";
 import type { TranscriptWordMetadata } from "~/stt/timing";
-import { parseTranscriptHints, parseTranscriptWords } from "~/stt/utils";
 
 export type RenderedTranscriptSegmentWithWordMetadata = Omit<
   RenderedTranscriptSegment,
@@ -144,26 +139,6 @@ export function getRenderTranscriptRequestKey(
   ].join(":");
 }
 
-export function buildRenderTranscriptRequestFromStore(
-  store: NonNullable<ReturnType<typeof main.UI.useStore>>,
-  transcriptIds: string[],
-): RenderTranscriptRequest | null {
-  const sessionId = getSessionIdForTranscripts(store, transcriptIds);
-  const transcripts = transcriptIds.map((transcriptId) => ({
-    started_at: asNumber(
-      store.getCell("transcripts", transcriptId, "started_at"),
-    ),
-    words: parseTranscriptWords(store, transcriptId),
-    speaker_hints: parseTranscriptHints(store, transcriptId),
-  }));
-
-  return buildRenderTranscriptRequest(
-    transcripts,
-    collectRenderHumans(store),
-    collectSessionParticipantHumanIds(store, sessionId),
-  );
-}
-
 export function buildRenderTranscriptRequestFromRows(
   transcripts: TranscriptRow[],
   humans?: RenderTranscriptRequestHumans,
@@ -179,7 +154,10 @@ export function collectAssignedHumanIdsFromTranscriptRows(
 
   for (const transcript of transcripts) {
     for (const hint of transcript.speaker_hints ?? []) {
-      if (hint.type !== "user_speaker_assignment") {
+      if (
+        hint.type !== "automatic_speaker_assignment" &&
+        hint.type !== "user_speaker_assignment"
+      ) {
         continue;
       }
 
@@ -196,18 +174,6 @@ export function collectAssignedHumanIdsFromTranscriptRows(
   }
 
   return [...humanIds];
-}
-
-export function buildRenderTranscriptRequestFromFsTranscript(
-  transcriptData: SessionContentData["transcript"],
-  store?: ReturnType<typeof main.UI.useStore>,
-  sessionId?: string,
-): RenderTranscriptRequest | null {
-  return buildRenderTranscriptRequest(
-    transcriptData?.transcripts ?? [],
-    store ? collectRenderHumans(store) : undefined,
-    store ? collectSessionParticipantHumanIds(store, sessionId) : undefined,
-  );
 }
 
 function buildRenderTranscriptRequest(
@@ -261,13 +227,20 @@ function buildRenderTranscriptRequest(
     }
 
     for (const hint of transcript.speaker_hints ?? []) {
-      if (hint.type === "provider_speaker_index") {
-        continue;
+      if (hint.type === "automatic_speaker_assignment") {
+        const normalized = normalizeSpeakerHint(hint, words, wordIndexById);
+        if (normalized) {
+          assignments.push(normalized);
+        }
       }
+    }
 
-      const normalized = normalizeSpeakerHint(hint, words, wordIndexById);
-      if (normalized) {
-        assignments.push(normalized);
+    for (const hint of transcript.speaker_hints ?? []) {
+      if (hint.type === "user_speaker_assignment") {
+        const normalized = normalizeSpeakerHint(hint, words, wordIndexById);
+        if (normalized) {
+          assignments.push(normalized);
+        }
       }
     }
 
@@ -335,10 +308,18 @@ function normalizeSpeakerHint(
   }
 
   if (
-    hint.type === "user_speaker_assignment" &&
+    (hint.type === "automatic_speaker_assignment" ||
+      hint.type === "user_speaker_assignment") &&
     typeof (value as { human_id?: unknown }).human_id === "string"
   ) {
     const humanId = (value as { human_id: string }).human_id;
+    const explicitSpeakerScope = getExplicitSpeakerScope(value);
+    if (explicitSpeakerScope) {
+      return {
+        human_id: humanId,
+        scope: explicitSpeakerScope,
+      };
+    }
     if (
       (value as { scope?: unknown }).scope === "segment" &&
       Array.isArray((value as { word_ids?: unknown }).word_ids)
@@ -389,6 +370,37 @@ function normalizeSpeakerHint(
   return null;
 }
 
+function getExplicitSpeakerScope(
+  value: object,
+): IdentityAssignment["scope"] | null {
+  if ((value as { scope?: unknown }).scope !== "speaker") {
+    return null;
+  }
+
+  const channel = (value as { channel?: unknown }).channel;
+  if (channel !== 0 && channel !== 1 && channel !== 2) {
+    return null;
+  }
+
+  const channelProfile =
+    channel === 0
+      ? "DirectMic"
+      : channel === 1
+        ? "RemoteParty"
+        : "MixedCapture";
+  const speakerIndex = (value as { speaker_index?: unknown }).speaker_index;
+
+  return typeof speakerIndex === "number"
+    ? {
+        kind: "channel_speaker",
+        channel: channelProfile,
+        speaker_index: speakerIndex,
+      }
+    : speakerIndex === null
+      ? { kind: "channel", channel: channelProfile }
+      : null;
+}
+
 function parseHintValue(value: unknown): unknown {
   if (typeof value === "string") {
     try {
@@ -399,81 +411,6 @@ function parseHintValue(value: unknown): unknown {
   }
 
   return value;
-}
-
-function collectRenderHumans(
-  store: Pick<main.Store, "forEachRow" | "getValue" | "getRow">,
-): RenderTranscriptRequestHumans {
-  const humans: RenderTranscriptHuman[] = [];
-
-  store.forEachRow("humans", (humanId, _forEachCell) => {
-    const row = store.getRow("humans", humanId);
-    if (typeof row.name !== "string" || !row.name) {
-      return;
-    }
-
-    humans.push({
-      human_id: humanId,
-      name: row.name,
-    });
-  });
-
-  const selfHumanId = store.getValue("user_id");
-
-  return {
-    selfHumanId: typeof selfHumanId === "string" ? selfHumanId : undefined,
-    humans,
-  };
-}
-
-function getSessionIdForTranscripts(
-  store: Pick<main.Store, "getCell">,
-  transcriptIds: string[],
-): string | undefined {
-  for (const transcriptId of transcriptIds) {
-    const sessionId = store.getCell("transcripts", transcriptId, "session_id");
-    if (typeof sessionId === "string" && sessionId) {
-      return sessionId;
-    }
-  }
-
-  return undefined;
-}
-
-function collectSessionParticipantHumanIds(
-  store: Pick<main.Store, "forEachRow" | "getCell">,
-  sessionId?: string,
-): string[] {
-  if (!sessionId) {
-    return [];
-  }
-
-  const participantHumanIds: string[] = [];
-  store.forEachRow("mapping_session_participant", (mappingId, _forEachCell) => {
-    const mappingSessionId = store.getCell(
-      "mapping_session_participant",
-      mappingId,
-      "session_id",
-    );
-    if (mappingSessionId !== sessionId) {
-      return;
-    }
-
-    const humanId = store.getCell(
-      "mapping_session_participant",
-      mappingId,
-      "human_id",
-    );
-    if (typeof humanId === "string" && humanId) {
-      participantHumanIds.push(humanId);
-    }
-  });
-
-  return participantHumanIds;
-}
-
-function asNumber(value: unknown): number | null {
-  return typeof value === "number" ? value : null;
 }
 
 function normalizeRenderTranscriptRequest(

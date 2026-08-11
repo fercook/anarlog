@@ -4,8 +4,8 @@ import { useCallback, useMemo } from "react";
 import { useStrictModeUnmount } from "./hooks";
 
 import { usePendingEditStore } from "~/chat/tools/pending-edit-store";
+import { useEnhancedNote, useSessionSummary } from "~/session/queries";
 import { StandardContentWrapper } from "~/shared/main";
-import * as main from "~/store/tinybase/store/main";
 import { type Tab, useTabs } from "~/store/zustand/tabs";
 
 type EditTab = Extract<Tab, { type: "edit" }>;
@@ -14,17 +14,10 @@ export function TabContentEdit({ tab }: { tab: EditTab }) {
   const edit = usePendingEditStore((s) => s.edits.get(tab.requestId));
   const resolveEdit = usePendingEditStore((s) => s.resolveEdit);
 
-  const store = main.UI.useStore(main.STORE_ID);
-  const sessionTitle = useMemo(() => {
-    if (!store || !edit) return null;
-    const title = store.getCell("sessions", edit.sessionId, "title");
-    return typeof title === "string" && title.trim() ? title : null;
-  }, [store, edit]);
-  const summaryTitle = useMemo(() => {
-    if (!store || !edit) return null;
-    const title = store.getCell("enhanced_notes", edit.enhancedNoteId, "title");
-    return typeof title === "string" && title.trim() ? title : null;
-  }, [store, edit]);
+  const session = useSessionSummary(edit?.sessionId ?? "");
+  const summary = useEnhancedNote(edit?.enhancedNoteId ?? "");
+  const sessionTitle = session?.title.trim() || null;
+  const summaryTitle = summary?.title.trim() || null;
 
   const declineOnUnmount = useCallback(() => {
     const still = usePendingEditStore.getState().edits.get(tab.requestId);
@@ -75,7 +68,7 @@ export function TabContentEdit({ tab }: { tab: EditTab }) {
                 useTabs.getState().close(tab);
               }}
             >
-              Decline
+              Cancel
             </button>
             <button
               className="bg-primary text-primary-foreground hover:bg-primary/90 rounded-md px-4 py-1.5 text-[13px] transition-colors"
@@ -85,7 +78,7 @@ export function TabContentEdit({ tab }: { tab: EditTab }) {
               }}
               autoFocus
             >
-              Approve
+              Apply to summary
             </button>
           </div>
         </div>

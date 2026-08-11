@@ -1,17 +1,37 @@
-import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
-import { jwtDecode } from "jwt-decode";
-import { CheckIcon, CopyIcon } from "lucide-react";
-import { motion } from "motion/react";
-import { useEffect, useRef, useState } from "react";
+import { Check, Copy } from "@phosphor-icons/react";
+import { createFileRoute, redirect } from "@tanstack/react-router";
+import { useState } from "react";
 import { z } from "zod";
 
-import { deriveBillingInfo, type SupabaseJwtPayload } from "@hypr/supabase";
-import { cn } from "@hypr/utils";
-
-import { AnarlogLogo } from "@/components/anarlog-logo";
-import { exchangeOAuthCode, exchangeOtpToken } from "@/functions/auth";
-import { desktopSchemeSchema } from "@/functions/desktop-flow";
-import { useAnalytics } from "@/hooks/use-posthog";
+import {
+  AuthShell,
+  authNoticeClassName,
+  authPrimaryButtonClassName,
+  authSecondaryButtonClassName,
+} from "@/components/auth-shell";
+import { exchangeOAuthCode } from "@/functions/auth";
+import {
+  DEFAULT_DESKTOP_SCHEME,
+  desktopSchemeSchema,
+} from "@/functions/desktop-flow";
+import { useMountEffect } from "@/hooks/useMountEffect";
+import {
+  resolveAuthFlowContext,
+  toAuthFlowSearch,
+} from "@/lib/auth-flow-context";
+import {
+  buildPostAuthDestination,
+  sanitizeInternalReturnPath,
+} from "@/lib/auth-redirect";
+import {
+  consumeDesktopAuthHandoff,
+  prepareAuthRoutePrivacy,
+} from "@/lib/auth-route-privacy";
+import {
+  buildDesktopAuthDeeplink,
+  getDesktopAppOpenLinkProps,
+  useDesktopAppAutoOpen,
+} from "@/lib/desktop-auth-handoff";
 
 const validateSearch = z.object({
   code: z.string().optional(),
@@ -26,11 +46,13 @@ const validateSearch = z.object({
       "email_change",
     ])
     .optional(),
-  flow: z.enum(["desktop", "web"]).default("desktop"),
-  scheme: desktopSchemeSchema.catch("hyprnote"),
+  flow: z.enum(["desktop", "web"]).default("web"),
+  scheme: desktopSchemeSchema.catch(DEFAULT_DESKTOP_SCHEME),
   redirect: z.string().optional(),
   access_token: z.string().optional(),
   refresh_token: z.string().optional(),
+  handoff: z.literal("stored").optional(),
+  auto_open: z.literal("oauth").optional(),
   error: z.string().optional(),
   error_code: z.string().optional(),
   error_description: z.string().optional(),
@@ -43,316 +65,222 @@ export const Route = createFileRoute("/_view/callback/auth")({
     meta: [{ name: "robots", content: "noindex, nofollow" }],
   }),
   beforeLoad: async ({ search }) => {
-    if (search.flow === "web" && search.code) {
+    const context = resolveAuthFlowContext(search);
+
+    if (search.code) {
       const result = await exchangeOAuthCode({
-        data: { code: search.code, flow: "web" },
+        data: { code: search.code, flow: search.flow },
       });
 
-      if (result.success) {
-        if (search.type === "recovery") {
-          throw redirect({ to: "/update-password/", search: {} });
-        }
-        throw redirect({
-          to: search.redirect || "/app/account/",
-          search: {},
-        });
-      } else {
-        console.error(result.error);
+      if (!result.success) {
+        throw redirectToExchangeError(search, result.error);
       }
-    }
 
-    if (search.flow === "desktop" && search.code) {
-      const result = await exchangeOAuthCode({
-        data: { code: search.code, flow: "desktop" },
+      if (search.type === "recovery") {
+        throw redirect({
+          to: "/update-password/",
+          search: toAuthFlowSearch(context),
+        });
+      }
+
+      if (search.flow === "web") {
+        throw redirect({
+          href: buildPostAuthDestination({
+            newAccount: result.newAccount,
+            returnTo: search.redirect,
+          }),
+        } as any);
+      }
+
+      throw redirect({
+        to: "/callback/auth/",
+        search: {
+          flow: "desktop",
+          scheme: search.scheme,
+          access_token: result.access_token,
+          refresh_token: result.refresh_token,
+          auto_open: "oauth",
+        },
       });
-
-      if (result.success) {
-        throw redirect({
-          to: "/callback/auth/",
-          search: {
-            flow: "desktop",
-            scheme: search.scheme,
-            access_token: result.access_token,
-            refresh_token: result.refresh_token,
-          },
-        });
-      } else {
-        console.error(result.error);
-      }
     }
 
     if (search.token_hash && search.type) {
-      if (search.type === "recovery") {
-        const result = await exchangeOtpToken({
-          data: {
-            token_hash: search.token_hash,
-            type: search.type,
-            flow: search.flow,
-          },
-        });
+      throw redirect({
+        to: "/confirm-auth/",
+        search: {
+          token_hash: search.token_hash,
+          type: search.type,
+          flow: search.flow,
+          scheme: search.scheme,
+          redirect: search.redirect,
+        },
+      });
+    }
 
-        if (result.success) {
-          throw redirect({ to: "/update-password/", search: {} });
-        } else {
-          console.error(result.error);
-        }
-      } else {
-        const result = await exchangeOtpToken({
-          data: {
-            token_hash: search.token_hash,
-            type: search.type,
-            flow: search.flow,
-          },
-        });
-
-        if (result.success) {
-          if (search.flow === "web") {
-            throw redirect({
-              to: search.redirect || "/app/account/",
-              search: {},
-            });
-          }
-
-          if (search.flow === "desktop") {
-            throw redirect({
-              to: "/callback/auth/",
-              search: {
-                flow: "desktop",
-                scheme: search.scheme,
-                access_token: result.access_token,
-                refresh_token: result.refresh_token,
-              },
-            });
-          }
-        } else {
-          console.error(result.error);
-        }
-      }
+    if (search.flow === "web" && !search.error) {
+      throw redirect({
+        href: sanitizeInternalReturnPath(search.redirect),
+      } as any);
     }
   },
 });
 
-function Container({ children }: { children: React.ReactNode }) {
-  const contentRef = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState<number | "auto">("auto");
-
-  useEffect(() => {
-    const el = contentRef.current;
-    if (!el) return;
-    const observer = new ResizeObserver(([entry]) => {
-      setHeight(entry.contentRect.height);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  return (
-    <div
-      className={cn([
-        "flex min-h-screen items-center justify-center",
-        "bg-page",
-        "bg-dotted-dark",
-      ])}
-    >
-      <div className="border-color-brand surface mx-auto w-md min-w-[320px] overflow-hidden rounded-xl border shadow-md">
-        <motion.div
-          animate={{ height }}
-          transition={{ duration: 0.3, ease: "easeInOut" }}
-        >
-          <div ref={contentRef}>{children}</div>
-        </motion.div>
-      </div>
-    </div>
-  );
-}
-
-function Header({ title }: { title: string }) {
-  return (
-    <div className="mb-8 text-center">
-      <div
-        className={cn([
-          "mx-auto mb-8 p-8",
-          "flex items-center justify-between",
-          "border-color-brand border-b",
-        ])}
-      >
-        <AnarlogLogo compact className="text-fg h-10 w-auto" />
-        <h1 className="text-fg py-4 font-mono text-xl">{title}</h1>
-      </div>
-    </div>
-  );
-}
-
 function Component() {
   const search = Route.useSearch();
-  const navigate = useNavigate();
-  const { identify: identifyPosthog } = useAnalytics();
-  const [copied, setCopied] = useState(false);
+  const [storedHandoff, setStoredHandoff] =
+    useState<ReturnType<typeof consumeDesktopAuthHandoff>>(null);
 
-  useEffect(() => {
-    if (!search.access_token) return;
+  const accessToken = search.access_token ?? storedHandoff?.accessToken;
+  const refreshToken = search.refresh_token ?? storedHandoff?.refreshToken;
+  const deeplink = buildDesktopAuthDeeplink(
+    search.scheme,
+    accessToken,
+    refreshToken,
+  );
 
-    try {
-      const payload = jwtDecode<SupabaseJwtPayload>(search.access_token);
-      const email = payload.email;
-      const userId = payload.sub;
-
-      if (userId) {
-        const billing = deriveBillingInfo(payload);
-        identifyPosthog(userId, {
-          ...(email ? { email } : {}),
-          plan: billing.plan,
-          trial_end_date: billing.trialEnd?.toISOString() ?? null,
-        });
+  useMountEffect(() => {
+    prepareAuthRoutePrivacy();
+    if (
+      search.handoff === "stored" ||
+      (search.access_token && search.refresh_token)
+    ) {
+      const handoff = consumeDesktopAuthHandoff();
+      if (handoff) {
+        setStoredHandoff(handoff);
       }
-    } catch (e) {
-      console.error("Failed to decode JWT for identify:", e);
     }
-  }, [search.access_token, identifyPosthog]);
-
-  const getDeeplink = () => {
-    if (search.access_token && search.refresh_token) {
-      const params = new URLSearchParams();
-      params.set("access_token", search.access_token);
-      params.set("refresh_token", search.refresh_token);
-      return `${search.scheme}://auth/callback?${params.toString()}`;
-    }
-    return null;
-  };
-
-  // Browsers require a user gesture (click) to open custom URL schemes.
-  // Auto-triggering via setTimeout fails for email magic links because
-  // the page is opened from an external context (email client) without
-  // "transient user activation". OAuth redirects work because they maintain
-  // activation through the redirect chain.
-  const handleDeeplink = () => {
-    const deeplink = getDeeplink();
-    if (search.flow === "desktop" && deeplink) {
-      window.location.href = deeplink;
-    }
-  };
-
-  const handleCopy = async () => {
-    const deeplink = getDeeplink();
-    if (deeplink) {
-      await navigator.clipboard.writeText(deeplink);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
-  };
-
-  useEffect(() => {
-    if (search.flow === "web" && !search.error) {
-      navigate({
-        to: search.redirect || "/app/account/",
-        search: {},
-        replace: true,
-      });
-    }
-  }, [search, navigate]);
+  });
 
   if (search.error) {
+    const retrySearch = toAuthFlowSearch(resolveAuthFlowContext(search));
+    const retryParams = new URLSearchParams({ flow: retrySearch.flow });
+    if (retrySearch.scheme) retryParams.set("scheme", retrySearch.scheme);
+    if (retrySearch.redirect) retryParams.set("redirect", retrySearch.redirect);
+
     return (
-      <Container>
-        <Header title="Sign-in failed" />
-        <div className="flex flex-col gap-4 px-8 pb-8">
-          <p className="text-fg-muted text-center">
+      <AuthShell
+        title="Sign-in didn’t work"
+        description="Your notes are safe. Try the sign-in flow again."
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-center text-sm leading-6 text-[#756b5d]">
             {search.error_description
               ? search.error_description.replaceAll("+", " ")
               : "Something went wrong during sign-in"}
           </p>
 
           <a
-            href={`/auth?flow=${search.flow}&scheme=${search.scheme}`}
-            className={cn([
-              "w-full cursor-pointer px-4 py-2",
-              "bg-fg hover:bg-fg/80 rounded-full font-sans text-white",
-              "focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 focus:outline-hidden",
-              "transition-colors",
-              "flex items-center justify-center",
-            ])}
+            href={`/auth?${retryParams.toString()}`}
+            className={authPrimaryButtonClassName}
           >
             Try again
           </a>
         </div>
-      </Container>
+      </AuthShell>
     );
   }
 
   if (search.flow === "desktop") {
-    const hasTokens = search.access_token && search.refresh_token;
+    const hasTokens = accessToken && refreshToken;
 
     return (
-      <Container>
-        <Header title={hasTokens ? "Sign-in successful" : "Signing in..."} />
-        <div className="flex flex-col gap-4 px-8 pb-8">
-          <p className="text-fg-muted text-center">
-            {hasTokens
-              ? "Click the button below to return to the app"
-              : "Please wait while we complete the sign-in"}
-          </p>
+      <AuthShell
+        title={hasTokens ? "You’re signed in" : "Finishing sign-in"}
+        description={
+          hasTokens
+            ? "Return to the desktop app to keep going."
+            : "Please wait while we complete the secure handoff."
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {deeplink && <DesktopAuthHandoffActions deeplink={deeplink} />}
 
-          {hasTokens && (
-            <div className="flex flex-col gap-3">
-              <button
-                onClick={handleDeeplink}
-                className={cn([
-                  "w-full cursor-pointer px-4 py-2",
-                  "bg-fg hover:bg-fg/80 rounded-full font-sans text-white",
-                  "focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 focus:outline-hidden",
-                  "transition-colors",
-                  "flex items-center justify-center",
-                ])}
-              >
-                Open Anarlog
-              </button>
-
-              <button
-                onClick={handleCopy}
-                className={cn([
-                  "flex w-full cursor-pointer flex-col items-center gap-3 p-4 text-left",
-                  "border-color-brand rounded-lg border",
-                  "hover:bg-brand-dark/10 transition-colors",
-                ])}
-              >
-                <p className="text-fg-muted text-sm">
-                  Button not working? Copy the link instead
-                </p>
-                <span
-                  className={cn([
-                    "flex w-full items-center justify-center gap-2 px-4 py-2 font-sans text-sm",
-                    "border-color-brand text-fg rounded-full border",
-                    "hover:bg-brand-dark/10 transition-colors",
-                  ])}
-                >
-                  {copied ? (
-                    <>
-                      <CheckIcon className="size-4" />
-                      Copied!
-                    </>
-                  ) : (
-                    <>
-                      <CopyIcon className="size-4" />
-                      Copy URL
-                    </>
-                  )}
-                </span>
-              </button>
+          {!hasTokens && (
+            <div className={authNoticeClassName}>
+              <p className="text-sm font-medium text-[#4f4940]">
+                Connecting your account...
+              </p>
             </div>
           )}
         </div>
-      </Container>
+      </AuthShell>
     );
   }
 
   if (search.flow === "web") {
     return (
-      <Container>
-        <Header title="Redirecting..." />
-        <div className="px-8 pb-8 text-center">
-          <p className="text-fg-muted">Taking you to your account...</p>
+      <AuthShell
+        title="Taking you back"
+        description="Your sign-in is complete."
+      >
+        <div className={authNoticeClassName}>
+          <p className="text-sm font-medium text-[#4f4940]">
+            Opening your account...
+          </p>
         </div>
-      </Container>
+      </AuthShell>
     );
   }
+}
+
+function DesktopAuthHandoffActions({ deeplink }: { deeplink: string }) {
+  const [copied, setCopied] = useState(false);
+
+  useDesktopAppAutoOpen(deeplink);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(deeplink);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <a
+        {...getDesktopAppOpenLinkProps(deeplink)}
+        className={authPrimaryButtonClassName}
+      >
+        Open Anarlog
+      </a>
+
+      <div className="rounded-xl border border-[#e5ddcf] bg-[#fbfaf7] p-4 text-center">
+        <p className="mb-3 text-sm leading-6 text-[#756b5d]">
+          Button not working? Copy the link instead
+        </p>
+        <button onClick={handleCopy} className={authSecondaryButtonClassName}>
+          {copied ? (
+            <>
+              <Check className="size-4" />
+              Copied!
+            </>
+          ) : (
+            <>
+              <Copy className="size-4" />
+              Copy URL
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function redirectToExchangeError(
+  search: {
+    flow: "desktop" | "web";
+    scheme: z.infer<typeof desktopSchemeSchema>;
+    redirect?: string;
+  },
+  error: string,
+) {
+  return redirect({
+    to: "/callback/auth/",
+    search: {
+      flow: search.flow,
+      scheme: search.scheme,
+      redirect: search.redirect,
+      error: "exchange_failed",
+      error_description: error,
+    },
+  });
 }

@@ -1,12 +1,13 @@
 import {
   createClient,
   processLock,
+  type Session,
   type SupabaseClient,
   type SupportedStorage,
 } from "@supabase/supabase-js";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
-import { commands as authCommands } from "@hypr/plugin-auth";
+import { commands as authCommands } from "@anlg/plugin-auth";
 
 import { env } from "~/env";
 
@@ -32,6 +33,18 @@ export const tauriStorage: SupportedStorage = {
   },
 };
 
+const authStorageKey = env.VITE_SUPABASE_URL
+  ? `sb-${new URL(env.VITE_SUPABASE_URL).hostname.split(".")[0]}-auth-token`
+  : null;
+
+export async function persistAuthSession(session: Session): Promise<void> {
+  if (!authStorageKey) {
+    return;
+  }
+
+  await tauriStorage.setItem(authStorageKey, JSON.stringify(session));
+}
+
 export const supabase: SupabaseClient | null =
   env.VITE_SUPABASE_URL && env.VITE_SUPABASE_ANON_KEY
     ? createClient(env.VITE_SUPABASE_URL, env.VITE_SUPABASE_ANON_KEY, {
@@ -40,6 +53,7 @@ export const supabase: SupabaseClient | null =
         },
         auth: {
           storage: tauriStorage,
+          storageKey: authStorageKey ?? undefined,
           autoRefreshToken: true,
           persistSession: true,
           detectSessionInUrl: false,

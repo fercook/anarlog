@@ -6,8 +6,9 @@ import {
   type SearchableSelectOption,
 } from "./searchable-select";
 
+import { useSetSettingValue } from "~/settings/queries";
+import { SettingRow } from "~/settings/setting-row";
 import { useConfigValue } from "~/shared/config";
-import * as settings from "~/store/tinybase/store/settings";
 
 const COMMON_TIMEZONES = [
   { value: "Pacific/Honolulu", label: "Hawaii", detail: "UTC-10" },
@@ -37,12 +38,7 @@ const COMMON_TIMEZONES = [
 export function TimezoneSelector() {
   const { t } = useLingui();
   const value = useConfigValue("timezone");
-  const setTimezone = settings.UI.useSetValueCallback(
-    "timezone",
-    (val: string) => val,
-    [],
-    settings.STORE_ID,
-  );
+  const setTimezone = useSetSettingValue("timezone");
 
   const systemTimezone = useMemo(() => {
     return Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -57,24 +53,22 @@ export function TimezoneSelector() {
   };
 
   return (
-    <div className="flex flex-row items-center justify-between">
-      <div>
-        <h3 className="mb-1 text-sm font-medium">
-          <Trans>Timezone</Trans>
-        </h3>
-        <p className="text-muted-foreground text-xs">
-          <Trans>Override the timezone used for the sidebar timeline</Trans>
-        </p>
-      </div>
-      <SearchableSelect
-        value={displayValue}
-        onChange={handleChange}
-        options={options}
-        placeholder={t`Select timezone`}
-        searchPlaceholder={t`Search timezone...`}
-        className="w-48"
-        dropdownClassName="w-72"
-      />
-    </div>
+    <SettingRow
+      title={<Trans>Timezone</Trans>}
+      description={<Trans>Show the timeline in your preferred timezone.</Trans>}
+    >
+      {(labelProps) => (
+        <SearchableSelect
+          {...labelProps}
+          value={displayValue}
+          onChange={handleChange}
+          options={options}
+          placeholder={t`Select timezone`}
+          searchPlaceholder={t`Search timezone...`}
+          className="w-full"
+          dropdownClassName="w-72"
+        />
+      )}
+    </SettingRow>
   );
 }

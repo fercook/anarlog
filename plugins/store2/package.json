@@ -1,9 +1,9 @@
 {
-  "name": "@hypr/plugin-store2",
+  "name": "@anlg/plugin-store2",
   "private": true,
   "main": "./js/index.ts",
   "scripts": {
-    "codegen": "cargo test -p tauri-plugin-template",
+    "codegen": "cargo test -p tauri-plugin-store2",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

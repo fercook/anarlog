@@ -1,5 +1,5 @@
-use hypr_transcription_core::{listener, listener2};
-use owhisper_client::AdapterKind;
+use anlg_transcription_core::{listener, listener2};
+use owhisper_client::{AdapterKind, Provider};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -17,17 +17,23 @@ pub struct CaptureSnapshot {
     pub finalizing_session_ids: Vec<String>,
     pub requested_live_transcription: Option<bool>,
     pub live_transcription_active: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_segments_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_segments: Option<Vec<listener::LiveTranscriptSegment>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct CaptureParams {
     pub session_id: String,
-    pub languages: Vec<hypr_language::Language>,
+    pub languages: Vec<anlg_language::Language>,
     pub onboarding: bool,
     pub model: String,
     pub base_url: String,
     pub api_key: String,
     pub keywords: Vec<String>,
+    #[serde(default)]
+    pub mic_device: Option<String>,
     #[serde(default)]
     pub transcription_mode: Option<listener::TranscriptionMode>,
     #[serde(default)]
@@ -39,7 +45,7 @@ pub struct CaptureParams {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct CaptureConfigUpdate {
     pub session_id: String,
-    pub languages: Vec<hypr_language::Language>,
+    pub languages: Vec<anlg_language::Language>,
     #[serde(default)]
     pub participant_human_ids: Vec<String>,
     #[serde(default)]
@@ -53,7 +59,7 @@ impl CaptureParams {
         }
 
         if let Some(model) =
-            hypr_transcribe_soniqo::local_model_from_request(&self.base_url, &self.model)
+            anlg_transcribe_soniqo::local_model_from_request(&self.base_url, &self.model)
         {
             return if model.supports_live_on_current_platform()
                 && model.supports_languages(&self.languages)
@@ -64,12 +70,34 @@ impl CaptureParams {
             };
         }
 
-        if hypr_transcribe_soniqo::is_local_base_url(&self.base_url) {
+        if anlg_transcribe_soniqo::is_local_base_url(&self.base_url) {
+            return listener::TranscriptionMode::Batch;
+        }
+
+        if let Some(model) =
+            anlg_transcribe_speechanalyzer::local_model_from_request(&self.base_url, &self.model)
+        {
+            return if model.supports_live_on_current_platform()
+                && model.supports_languages(&self.languages)
+            {
+                listener::TranscriptionMode::Live
+            } else {
+                listener::TranscriptionMode::Batch
+            };
+        }
+
+        if anlg_transcribe_speechanalyzer::is_local_base_url(&self.base_url) {
             return listener::TranscriptionMode::Batch;
         }
 
         let adapter_kind =
             AdapterKind::from_url_and_languages(&self.base_url, &self.languages, Some(&self.model));
+
+        if adapter_kind == AdapterKind::OpenAI
+            && self.model != Provider::OpenAI.default_live_model()
+        {
+            return listener::TranscriptionMode::Batch;
+        }
 
         if !adapter_kind.has_live_mode() {
             return listener::TranscriptionMode::Batch;
@@ -168,7 +196,7 @@ pub struct TranscriptionParams {
     pub base_url: String,
     pub api_key: String,
     #[serde(default)]
-    pub languages: Vec<hypr_language::Language>,
+    pub languages: Vec<anlg_language::Language>,
     #[serde(default)]
     pub keywords: Vec<String>,
     #[serde(default)]
@@ -225,6 +253,7 @@ impl From<CaptureParams> for listener::actors::SessionParams {
             base_url: value.base_url,
             api_key: value.api_key,
             keywords: value.keywords,
+            mic_device: value.mic_device,
             participant_human_ids: value.participant_human_ids,
             self_human_id: value.self_human_id,
         }
@@ -260,6 +289,8 @@ impl From<listener::Snapshot> for CaptureSnapshot {
             finalizing_session_ids: value.finalizing_session_ids,
             requested_live_transcription: None,
             live_transcription_active: None,
+            live_segments_session_id: None,
+            live_segments: None,
         }
     }
 }
@@ -354,8 +385,8 @@ impl From<TranscriptionParams> for listener2::BatchParams {
 #[cfg(test)]
 mod tests {
     use super::CaptureParams;
-    use hypr_language::ISO639;
-    use hypr_transcription_core::listener::TranscriptionMode;
+    use anlg_language::ISO639;
+    use anlg_transcription_core::listener::TranscriptionMode;
 
     fn capture_params(base_url: &str, model: &str) -> CaptureParams {
         capture_params_with_languages(base_url, model, vec![])
@@ -364,7 +395,7 @@ mod tests {
     fn capture_params_with_languages(
         base_url: &str,
         model: &str,
-        languages: Vec<hypr_language::Language>,
+        languages: Vec<anlg_language::Language>,
     ) -> CaptureParams {
         CaptureParams {
             session_id: "session-1".to_string(),
@@ -374,6 +405,7 @@ mod tests {
             base_url: base_url.to_string(),
             api_key: "test-key".to_string(),
             keywords: vec![],
+            mic_device: None,
             transcription_mode: None,
             participant_human_ids: vec![],
             self_human_id: None,
@@ -385,6 +417,16 @@ mod tests {
         let params = capture_params("https://api.deepgram.com/v1", "nova-3-general");
 
         assert_eq!(params.default_transcription_mode(), TranscriptionMode::Live);
+    }
+
+    #[test]
+    fn preserves_selected_microphone_for_listener_session() {
+        let mut params = capture_params("https://api.deepgram.com/v1", "nova-3-general");
+        params.mic_device = Some("External Microphone".to_string());
+
+        let session: anlg_transcription_core::listener::actors::SessionParams = params.into();
+
+        assert_eq!(session.mic_device.as_deref(), Some("External Microphone"));
     }
 
     #[test]
@@ -452,6 +494,13 @@ mod tests {
             params.default_transcription_mode(),
             TranscriptionMode::Batch
         );
+    }
+
+    #[test]
+    fn defaults_openai_live_capture_to_live_mode() {
+        let params = capture_params("https://api.openai.com/v1", "gpt-live-transcribe");
+
+        assert_eq!(params.default_transcription_mode(), TranscriptionMode::Live);
     }
 
     #[test]

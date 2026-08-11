@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo } from "react";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
 import { useSearch } from "../../search/context";
 import { useRenderedTranscriptData, useTranscriptOffset } from "./data-hooks";
@@ -14,18 +14,18 @@ import {
   segmentsShallowEqual,
   useStableSegments,
 } from "./segment-hooks";
-import { useSpeakerLabelContextVersion } from "./speaker-label-context";
 
-import * as main from "~/store/tinybase/store/main";
 import {
+  applyRenderRequestIdentitiesToSegments,
+  getMaxSpeakerNumberForParticipants,
   mergeRenderedAndLiveSegments,
+  SegmentKeyUtils,
+  type RenderLabelContext,
   type Segment,
   type SegmentWord,
 } from "~/stt/live-segment";
-import {
-  defaultRenderLabelContext,
-  SpeakerLabelManager,
-} from "~/stt/segment/shared";
+import { useTranscript, useTranscriptLabelContext } from "~/stt/queries";
+import { SpeakerLabelManager } from "~/stt/segment/shared";
 import { isTranscriptWordSeekable } from "~/stt/timing";
 
 export function RenderTranscript({
@@ -33,30 +33,129 @@ export function RenderTranscript({
   isLastTranscript,
   shouldScrollToEnd,
   transcriptId,
+  currentActive,
+  captureGeneration = 0,
   liveSegments,
   currentMs,
   seek,
   startPlayback,
   audioExists,
+  editMode = false,
 }: {
   scrollElement: HTMLDivElement | null;
   isLastTranscript: boolean;
   shouldScrollToEnd: boolean;
   transcriptId: string;
+  currentActive: boolean;
+  captureGeneration?: number;
   liveSegments: Segment[];
   currentMs: number;
   seek: (sec: number) => void;
   startPlayback: () => void;
   audioExists: boolean;
+  editMode?: boolean;
 }) {
-  const { maxSpeakerNumber, segments: storedSegments } =
-    useRenderedTranscriptData(transcriptId);
-  const mergedSegments = useMemo(
-    () => mergeRenderedAndLiveSegments(storedSegments, liveSegments),
-    [liveSegments, storedSegments],
+  return (
+    <PersistedTranscript
+      scrollElement={scrollElement}
+      transcriptId={transcriptId}
+      currentActive={currentActive}
+      captureGeneration={captureGeneration}
+      liveSegments={liveSegments}
+      shouldScrollToEnd={isLastTranscript && shouldScrollToEnd}
+      currentMs={currentMs}
+      seek={seek}
+      startPlayback={startPlayback}
+      audioExists={audioExists}
+      editMode={editMode}
+    />
   );
-  const segments = useStableSegments(mergedSegments);
+}
+
+function PersistedTranscript({
+  scrollElement,
+  transcriptId,
+  currentActive,
+  captureGeneration,
+  liveSegments,
+  shouldScrollToEnd,
+  currentMs,
+  seek,
+  startPlayback,
+  audioExists,
+  editMode,
+}: {
+  scrollElement: HTMLDivElement | null;
+  transcriptId: string;
+  currentActive: boolean;
+  captureGeneration: number;
+  liveSegments: Segment[];
+  shouldScrollToEnd: boolean;
+  currentMs: number;
+  seek: (sec: number) => void;
+  startPlayback: () => void;
+  audioExists: boolean;
+  editMode: boolean;
+}) {
+  const {
+    maxSpeakerNumber,
+    request,
+    segments: storedSegments,
+  } = useRenderedTranscriptData(transcriptId, currentActive, captureGeneration);
+  const mergedSegments = useMemo(() => {
+    const merged = mergeRenderedAndLiveSegments(
+      storedSegments,
+      liveSegments,
+      currentActive ? request : null,
+    );
+    return currentActive
+      ? applyRenderRequestIdentitiesToSegments(merged, request)
+      : merged;
+  }, [currentActive, liveSegments, request, storedSegments]);
+
+  return (
+    <TranscriptSegments
+      segments={mergedSegments}
+      scrollElement={scrollElement}
+      transcriptId={transcriptId}
+      shouldScrollToEnd={shouldScrollToEnd}
+      currentMs={currentMs}
+      seek={seek}
+      startPlayback={startPlayback}
+      audioExists={audioExists}
+      maxSpeakerNumber={maxSpeakerNumber}
+      editMode={editMode}
+    />
+  );
+}
+
+function TranscriptSegments({
+  segments: rawSegments,
+  scrollElement,
+  transcriptId,
+  shouldScrollToEnd,
+  currentMs,
+  seek,
+  startPlayback,
+  audioExists,
+  maxSpeakerNumber,
+  editMode,
+}: {
+  segments: Segment[];
+  scrollElement: HTMLDivElement | null;
+  transcriptId: string;
+  shouldScrollToEnd: boolean;
+  currentMs: number;
+  seek: (sec: number) => void;
+  startPlayback: () => void;
+  audioExists: boolean;
+  maxSpeakerNumber?: number;
+  editMode: boolean;
+}) {
+  const segments = useStableSegments(rawSegments);
   const offsetMs = useTranscriptOffset(transcriptId);
+  const transcript = useTranscript(transcriptId);
+  const labelContext = useTranscriptLabelContext(transcriptId);
 
   if (segments.length === 0) {
     return null;
@@ -67,13 +166,16 @@ export function RenderTranscript({
       segments={segments}
       scrollElement={scrollElement}
       transcriptId={transcriptId}
+      sessionId={transcript?.sessionId}
+      labelContext={labelContext}
       offsetMs={offsetMs}
-      shouldScrollToEnd={isLastTranscript && shouldScrollToEnd}
+      shouldScrollToEnd={shouldScrollToEnd}
       currentMs={currentMs}
       seek={seek}
       startPlayback={startPlayback}
       audioExists={audioExists}
       maxSpeakerNumber={maxSpeakerNumber}
+      editMode={editMode}
     />
   );
 }
@@ -83,6 +185,8 @@ const SegmentsList = memo(
     segments,
     scrollElement,
     transcriptId,
+    sessionId,
+    labelContext,
     offsetMs,
     shouldScrollToEnd,
     currentMs,
@@ -90,10 +194,13 @@ const SegmentsList = memo(
     startPlayback,
     audioExists,
     maxSpeakerNumber,
+    editMode,
   }: {
     segments: Segment[];
     scrollElement: HTMLDivElement | null;
     transcriptId: string;
+    sessionId?: string;
+    labelContext?: RenderLabelContext;
     offsetMs: number;
     shouldScrollToEnd: boolean;
     currentMs: number;
@@ -101,23 +208,40 @@ const SegmentsList = memo(
     startPlayback: () => void;
     audioExists: boolean;
     maxSpeakerNumber?: number;
+    editMode: boolean;
   }) => {
-    const store = main.UI.useStore(main.STORE_ID);
-    const sessionId = store?.getCell("transcripts", transcriptId, "session_id");
-    const contextVersion = useSpeakerLabelContextVersion(
-      typeof sessionId === "string" ? sessionId : null,
-    );
     const search = useSearch();
+    const inferredMaxSpeakerNumber = labelContext
+      ? getMaxSpeakerNumberForParticipants(
+          labelContext.getParticipantHumanIds?.() ?? [],
+          labelContext.getSelfHumanId(),
+        )
+      : undefined;
+    const resolvedMaxSpeakerNumber =
+      maxSpeakerNumber ?? inferredMaxSpeakerNumber;
     const speakerLabelManager = useMemo(() => {
-      if (!store) {
-        return new SpeakerLabelManager();
+      return labelContext
+        ? SpeakerLabelManager.fromSegments(
+            segments,
+            labelContext,
+            resolvedMaxSpeakerNumber,
+          )
+        : new SpeakerLabelManager(resolvedMaxSpeakerNumber);
+    }, [labelContext, resolvedMaxSpeakerNumber, segments]);
+    const speakerLabels = useMemo(() => {
+      const labels = new Map<Segment, string>();
+      for (const segment of segments) {
+        labels.set(
+          segment,
+          SegmentKeyUtils.renderLabel(
+            segment.key,
+            labelContext,
+            speakerLabelManager,
+          ),
+        );
       }
-      const ctx = defaultRenderLabelContext(
-        store,
-        typeof sessionId === "string" ? sessionId : null,
-      );
-      return SpeakerLabelManager.fromSegments(segments, ctx, maxSpeakerNumber);
-    }, [contextVersion, maxSpeakerNumber, segments, sessionId, store]);
+      return labels;
+    }, [labelContext, segments, speakerLabelManager]);
     const transcriptSearch = useMemo<TranscriptSearchRenderState>(() => {
       const query = search?.query.trim() ?? "";
       if (!search?.isVisible || !query) {
@@ -172,11 +296,16 @@ const SegmentsList = memo(
               segment={segment}
               offsetMs={offsetMs}
               transcriptId={transcriptId}
-              speakerLabelManager={speakerLabelManager}
+              sessionId={sessionId}
+              speakerLabel={
+                speakerLabels.get(segment) ??
+                SegmentKeyUtils.renderLabel(segment.key)
+              }
               currentMs={currentMs}
               seekAndPlay={seekAndPlay}
               audioExists={audioExists}
               search={transcriptSearch}
+              editMode={editMode}
             />
           </div>
         ))}
@@ -186,12 +315,15 @@ const SegmentsList = memo(
   (prevProps, nextProps) => {
     return (
       prevProps.transcriptId === nextProps.transcriptId &&
+      prevProps.sessionId === nextProps.sessionId &&
+      prevProps.labelContext === nextProps.labelContext &&
       prevProps.scrollElement === nextProps.scrollElement &&
       prevProps.offsetMs === nextProps.offsetMs &&
       prevProps.shouldScrollToEnd === nextProps.shouldScrollToEnd &&
       prevProps.currentMs === nextProps.currentMs &&
       prevProps.audioExists === nextProps.audioExists &&
       prevProps.maxSpeakerNumber === nextProps.maxSpeakerNumber &&
+      prevProps.editMode === nextProps.editMode &&
       prevProps.seek === nextProps.seek &&
       prevProps.startPlayback === nextProps.startPlayback &&
       segmentsShallowEqual(prevProps.segments, nextProps.segments)

@@ -2,21 +2,21 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
-use hypr_audio::AudioProvider;
+use anlg_audio::AudioProvider;
 
 use crate::{ListenerRuntime, TranscriptionMode};
 
 pub const SESSION_SUPERVISOR_PREFIX: &str = "session_supervisor_";
 
 pub fn session_span(session_id: &str) -> tracing::Span {
-    tracing::info_span!("session", hyprnote.session.id = %session_id)
+    tracing::info_span!("session", anarlog.session.id = %session_id)
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct SessionParams {
     pub session_id: String,
-    pub languages: Vec<hypr_language::Language>,
+    pub languages: Vec<anlg_language::Language>,
     pub onboarding: bool,
     #[serde(default)]
     pub transcription_mode: TranscriptionMode,
@@ -24,6 +24,8 @@ pub struct SessionParams {
     pub base_url: String,
     pub api_key: String,
     pub keywords: Vec<String>,
+    #[serde(default)]
+    pub mic_device: Option<String>,
     #[serde(default)]
     pub participant_human_ids: Vec<String>,
     #[serde(default)]
@@ -34,7 +36,7 @@ pub struct SessionParams {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct SessionConfigUpdate {
     pub session_id: String,
-    pub languages: Vec<hypr_language::Language>,
+    pub languages: Vec<anlg_language::Language>,
     #[serde(default)]
     pub participant_human_ids: Vec<String>,
     #[serde(default)]
@@ -48,7 +50,7 @@ impl SessionParams {
         }
 
         if let Some(model) =
-            hypr_transcribe_soniqo::local_model_from_request(&self.base_url, &self.model)
+            anlg_transcribe_soniqo::local_model_from_request(&self.base_url, &self.model)
         {
             return if model.supports_live_on_current_platform()
                 && model.supports_languages(&self.languages)
@@ -59,7 +61,23 @@ impl SessionParams {
             };
         }
 
-        if hypr_transcribe_soniqo::is_local_base_url(&self.base_url) {
+        if anlg_transcribe_soniqo::is_local_base_url(&self.base_url) {
+            return TranscriptionMode::Batch;
+        }
+
+        if let Some(model) =
+            anlg_transcribe_speechanalyzer::local_model_from_request(&self.base_url, &self.model)
+        {
+            return if model.supports_live_on_current_platform()
+                && model.supports_languages(&self.languages)
+            {
+                TranscriptionMode::Live
+            } else {
+                TranscriptionMode::Batch
+            };
+        }
+
+        if anlg_transcribe_speechanalyzer::is_local_base_url(&self.base_url) {
             return TranscriptionMode::Batch;
         }
 
@@ -67,7 +85,12 @@ impl SessionParams {
     }
 
     pub fn uses_local_soniqo_live_model(&self) -> bool {
-        hypr_transcribe_soniqo::local_model_from_request(&self.base_url, &self.model)
+        anlg_transcribe_soniqo::local_model_from_request(&self.base_url, &self.model)
+            .is_some_and(|model| model.supports_live())
+    }
+
+    pub fn uses_local_apple_speech_live_model(&self) -> bool {
+        anlg_transcribe_speechanalyzer::local_model_from_request(&self.base_url, &self.model)
             .is_some_and(|model| model.supports_live())
     }
 }
@@ -101,6 +124,7 @@ mod tests {
             base_url: base_url.to_string(),
             api_key: String::new(),
             keywords: vec![],
+            mic_device: None,
             participant_human_ids: vec![],
             self_human_id: None,
         }
@@ -109,7 +133,7 @@ mod tests {
     #[test]
     fn effective_mode_keeps_explicit_batch() {
         let params = session_params(
-            hypr_transcribe_soniqo::LOCAL_BASE_URL,
+            anlg_transcribe_soniqo::LOCAL_BASE_URL,
             "soniqo-parakeet-streaming",
             TranscriptionMode::Batch,
         );
@@ -123,7 +147,7 @@ mod tests {
     #[test]
     fn effective_mode_forces_soniqo_batch_models_to_batch() {
         let params = session_params(
-            hypr_transcribe_soniqo::LOCAL_BASE_URL,
+            anlg_transcribe_soniqo::LOCAL_BASE_URL,
             "soniqo-parakeet-batch",
             TranscriptionMode::Live,
         );
@@ -153,11 +177,11 @@ mod tests {
     #[test]
     fn effective_mode_rejects_soniqo_live_for_unsupported_language() {
         let mut params = session_params(
-            hypr_transcribe_soniqo::LOCAL_BASE_URL,
+            anlg_transcribe_soniqo::LOCAL_BASE_URL,
             "soniqo-parakeet-streaming",
             TranscriptionMode::Live,
         );
-        params.languages = vec![hypr_language::ISO639::Ko.into()];
+        params.languages = vec![anlg_language::ISO639::Ko.into()];
 
         assert_eq!(
             params.effective_transcription_mode(),
@@ -168,7 +192,7 @@ mod tests {
     #[test]
     fn detects_local_soniqo_live_model() {
         let params = session_params(
-            hypr_transcribe_soniqo::LOCAL_BASE_URL,
+            anlg_transcribe_soniqo::LOCAL_BASE_URL,
             "soniqo-parakeet-streaming",
             TranscriptionMode::Live,
         );
@@ -179,7 +203,7 @@ mod tests {
     #[test]
     fn rejects_soniqo_batch_model_as_live_model() {
         let params = session_params(
-            hypr_transcribe_soniqo::LOCAL_BASE_URL,
+            anlg_transcribe_soniqo::LOCAL_BASE_URL,
             "soniqo-parakeet-batch",
             TranscriptionMode::Live,
         );
@@ -190,7 +214,7 @@ mod tests {
     #[test]
     fn effective_mode_defaults_invalid_soniqo_model_to_batch() {
         let params = session_params(
-            hypr_transcribe_soniqo::LOCAL_BASE_URL,
+            anlg_transcribe_soniqo::LOCAL_BASE_URL,
             "missing-model",
             TranscriptionMode::Live,
         );

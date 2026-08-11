@@ -1,19 +1,35 @@
-import { Icon } from "@iconify-icon/react";
 import {
   Anthropic,
+  Apple,
+  Aws,
   Azure,
   AzureAI,
+  Cerebras,
+  Cloudflare,
+  Cohere,
+  Fireworks,
+  Gemini,
+  GoogleCloud,
+  Groq,
   LmStudio,
   Mistral,
   Ollama,
   OpenAI,
   OpenRouter,
+  Together,
+  XAI,
 } from "@lobehub/icons";
+import { Shuffle } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 
 import { env } from "~/env";
 import { AnarlogProviderIcon } from "~/settings/ai/shared";
 import { type ProviderRequirement } from "~/settings/ai/shared/eligibility";
+import { checkAppleFoundationModelAvailability } from "~/settings/ai/shared/list-apple-foundation";
+import {
+  checkLMStudioAvailability,
+  checkOllamaAvailability,
+} from "~/settings/ai/shared/local-provider-availability";
 import { sortProviders } from "~/settings/ai/shared/sort-providers";
 
 export type Provider = {
@@ -23,6 +39,8 @@ export type Provider = {
   icon: ReactNode;
   baseUrl?: string;
   requirements: ProviderRequirement[];
+  checkAvailability?: (baseUrl: string, apiKey: string) => Promise<boolean>;
+  hideAdvanced?: boolean;
   links?: {
     download?: { label: string; url: string };
     models?: { label: string; url: string };
@@ -32,7 +50,7 @@ export type Provider = {
 
 const _PROVIDERS = [
   {
-    id: "hyprnote",
+    id: "anarlog",
     displayName: "Anarlog",
     badge: "Recommended",
     icon: <AnarlogProviderIcon />,
@@ -43,12 +61,23 @@ const _PROVIDERS = [
     ],
   },
   {
+    id: "apple_foundation",
+    displayName: "Apple Intelligence",
+    badge: "Experimental",
+    icon: <Apple />,
+    baseUrl: undefined,
+    requirements: [],
+    checkAvailability: checkAppleFoundationModelAvailability,
+    hideAdvanced: true,
+  },
+  {
     id: "lmstudio",
     displayName: "LM Studio",
     badge: null,
-    icon: <LmStudio size={16} />,
+    icon: <LmStudio />,
     baseUrl: "http://127.0.0.1:1234/v1",
     requirements: [],
+    checkAvailability: checkLMStudioAvailability,
     links: {
       download: {
         label: "Download LM Studio",
@@ -57,7 +86,7 @@ const _PROVIDERS = [
       models: { label: "Available models", url: "https://lmstudio.ai/models" },
       setup: {
         label: "Setup guide",
-        url: "https://char.com/docs/faq/local-llm-setup/#lm-studio-setup",
+        url: "https://docs.anarlog.so/ai-setup#lm-studio",
       },
     },
   },
@@ -65,9 +94,10 @@ const _PROVIDERS = [
     id: "ollama",
     displayName: "Ollama",
     badge: null,
-    icon: <Ollama size={16} />,
+    icon: <Ollama />,
     baseUrl: "http://127.0.0.1:11434/v1",
     requirements: [],
+    checkAvailability: checkOllamaAvailability,
     links: {
       download: {
         label: "Download Ollama",
@@ -76,7 +106,7 @@ const _PROVIDERS = [
       models: { label: "Available models", url: "https://ollama.com/library" },
       setup: {
         label: "Setup guide",
-        url: "https://char.com/docs/faq/local-llm-setup/#ollama-setup",
+        url: "https://docs.anarlog.so/ai-setup#ollama",
       },
     },
   },
@@ -84,7 +114,7 @@ const _PROVIDERS = [
     id: "openrouter",
     displayName: "OpenRouter",
     badge: null,
-    icon: <OpenRouter size={16} />,
+    icon: <OpenRouter />,
     baseUrl: "https://openrouter.ai/api/v1",
     requirements: [{ kind: "requires_config", fields: ["api_key"] }],
   },
@@ -92,15 +122,163 @@ const _PROVIDERS = [
     id: "openai",
     displayName: "OpenAI",
     badge: null,
-    icon: <OpenAI size={16} />,
+    icon: <OpenAI />,
     baseUrl: "https://api.openai.com/v1",
     requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+  },
+  {
+    id: "cohere",
+    displayName: "Cohere",
+    badge: null,
+    icon: <Cohere />,
+    baseUrl: "https://api.cohere.ai/compatibility/v1",
+    requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+    links: {
+      models: {
+        label: "Available models",
+        url: "https://docs.cohere.com/docs/models",
+      },
+      setup: {
+        label: "OpenAI compatibility",
+        url: "https://docs.cohere.com/docs/compatibility-api",
+      },
+    },
+  },
+  {
+    id: "groq",
+    displayName: "Groq",
+    badge: null,
+    icon: <Groq />,
+    baseUrl: "https://api.groq.com/openai/v1",
+    requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+    links: {
+      models: {
+        label: "Available models",
+        url: "https://console.groq.com/docs/models",
+      },
+      setup: {
+        label: "API keys",
+        url: "https://console.groq.com/keys",
+      },
+    },
+  },
+  {
+    id: "xai",
+    displayName: "xAI",
+    badge: null,
+    icon: <XAI />,
+    baseUrl: "https://api.x.ai/v1",
+    requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+    links: {
+      models: {
+        label: "Available models",
+        url: "https://docs.x.ai/developers/models",
+      },
+      setup: {
+        label: "API keys",
+        url: "https://console.x.ai/",
+      },
+    },
+  },
+  {
+    id: "together",
+    displayName: "Together AI",
+    badge: null,
+    icon: <Together />,
+    baseUrl: "https://api.together.xyz/v1",
+    requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+    links: {
+      models: {
+        label: "Available models",
+        url: "https://docs.together.ai/docs/serverless-models",
+      },
+      setup: {
+        label: "API keys",
+        url: "https://api.together.ai/settings/api-keys",
+      },
+    },
+  },
+  {
+    id: "fireworks",
+    displayName: "Fireworks AI",
+    badge: null,
+    icon: <Fireworks />,
+    baseUrl: "https://api.fireworks.ai/inference/v1",
+    requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+    links: {
+      models: {
+        label: "Available models",
+        url: "https://fireworks.ai/models",
+      },
+      setup: {
+        label: "API keys",
+        url: "https://fireworks.ai/account/api-keys",
+      },
+    },
+  },
+  {
+    id: "cerebras",
+    displayName: "Cerebras",
+    badge: null,
+    icon: <Cerebras />,
+    baseUrl: "https://api.cerebras.ai/v1",
+    requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+    links: {
+      models: {
+        label: "Available models",
+        url: "https://inference-docs.cerebras.ai/models/overview",
+      },
+      setup: {
+        label: "API keys",
+        url: "https://cloud.cerebras.ai/",
+      },
+    },
+  },
+  {
+    id: "amazon_bedrock",
+    displayName: "Amazon Bedrock",
+    badge: "Beta",
+    icon: <Aws />,
+    baseUrl: undefined,
+    requirements: [
+      { kind: "requires_config", fields: ["base_url", "api_key"] },
+    ],
+    links: {
+      models: {
+        label: "Supported models",
+        url: "https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html",
+      },
+      setup: {
+        label: "OpenAI-compatible APIs",
+        url: "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-mantle.html",
+      },
+    },
+  },
+  {
+    id: "google_vertex_ai",
+    displayName: "Google Vertex AI",
+    badge: "Beta",
+    icon: <GoogleCloud />,
+    baseUrl: undefined,
+    requirements: [
+      { kind: "requires_config", fields: ["base_url", "api_key"] },
+    ],
+    links: {
+      models: {
+        label: "Available models",
+        url: "https://cloud.google.com/vertex-ai/generative-ai/docs/learn/models",
+      },
+      setup: {
+        label: "OpenAI compatibility",
+        url: "https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/call-vertex-using-openai-library",
+      },
+    },
   },
   {
     id: "cloudflare_workers_ai",
     displayName: "Cloudflare Workers AI",
     badge: null,
-    icon: <Icon icon="simple-icons:cloudflare" width={16} />,
+    icon: <Cloudflare />,
     baseUrl: undefined,
     requirements: [
       { kind: "requires_config", fields: ["base_url", "api_key"] },
@@ -120,7 +298,7 @@ const _PROVIDERS = [
     id: "anthropic",
     displayName: "Anthropic",
     badge: null,
-    icon: <Anthropic size={16} />,
+    icon: <Anthropic />,
     baseUrl: "https://api.anthropic.com/v1",
     requirements: [{ kind: "requires_config", fields: ["api_key"] }],
   },
@@ -128,7 +306,7 @@ const _PROVIDERS = [
     id: "mistral",
     displayName: "Mistral",
     badge: null,
-    icon: <Mistral size={16} />,
+    icon: <Mistral />,
     baseUrl: "https://api.mistral.ai/v1",
     requirements: [{ kind: "requires_config", fields: ["api_key"] }],
   },
@@ -136,7 +314,7 @@ const _PROVIDERS = [
     id: "azure_openai",
     displayName: "Azure OpenAI",
     badge: "Beta",
-    icon: <Azure size={14} style={{ height: 14, width: 14 }} />,
+    icon: <Azure />,
     baseUrl: undefined,
     requirements: [
       { kind: "requires_config", fields: ["base_url", "api_key"] },
@@ -146,7 +324,7 @@ const _PROVIDERS = [
     id: "azure_ai",
     displayName: "Azure AI Foundry",
     badge: "Beta",
-    icon: <AzureAI size={14} style={{ height: 14, width: 14 }} />,
+    icon: <AzureAI />,
     baseUrl: undefined,
     requirements: [
       { kind: "requires_config", fields: ["base_url", "api_key"] },
@@ -156,7 +334,7 @@ const _PROVIDERS = [
     id: "google_generative_ai",
     displayName: "Google Gemini",
     badge: null,
-    icon: <Icon icon="simple-icons:googlegemini" width={16} />,
+    icon: <Gemini />,
     baseUrl: "https://generativelanguage.googleapis.com/v1beta",
     requirements: [{ kind: "requires_config", fields: ["api_key"] }],
   },
@@ -164,7 +342,7 @@ const _PROVIDERS = [
     id: "custom",
     displayName: "Custom",
     badge: null,
-    icon: <Icon icon="mingcute:random-fill" />,
+    icon: <Shuffle weight="fill" />,
     baseUrl: undefined,
     requirements: [
       { kind: "requires_config", fields: ["base_url", "api_key"] },
@@ -172,5 +350,27 @@ const _PROVIDERS = [
   },
 ] as const satisfies readonly Provider[];
 
-export const PROVIDERS = sortProviders(_PROVIDERS);
+const PROVIDER_ORDER = [
+  "openai",
+  "anthropic",
+  "google_generative_ai",
+  "openrouter",
+  "amazon_bedrock",
+  "azure_openai",
+  "google_vertex_ai",
+  "azure_ai",
+  "groq",
+  "ollama",
+  "xai",
+  "mistral",
+  "together",
+  "cohere",
+  "fireworks",
+  "cloudflare_workers_ai",
+  "cerebras",
+  "lmstudio",
+  "apple_foundation",
+] as const;
+
+export const PROVIDERS = sortProviders(_PROVIDERS, PROVIDER_ORDER);
 export type ProviderId = (typeof _PROVIDERS)[number]["id"];

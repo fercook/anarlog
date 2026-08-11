@@ -2,7 +2,11 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@hypr/ui/components/ui/button", () => ({
+const mocks = vi.hoisted(() => ({
+  useRecentChatGroups: vi.fn(() => []),
+}));
+
+vi.mock("@anlg/ui/components/ui/button", () => ({
   Button: ({
     children,
     className,
@@ -14,7 +18,7 @@ vi.mock("@hypr/ui/components/ui/button", () => ({
   ),
 }));
 
-vi.mock("@hypr/ui/components/ui/dropdown-menu", () => ({
+vi.mock("@anlg/ui/components/ui/dropdown-menu", () => ({
   AppFloatingPanel: ({
     children,
     className,
@@ -33,18 +37,21 @@ vi.mock("@hypr/ui/components/ui/dropdown-menu", () => ({
     avoidCollisions,
     children,
     className,
+    collisionPadding,
     side,
     sideOffset,
   }: {
     avoidCollisions?: boolean;
     children: ReactNode;
     className?: string;
+    collisionPadding?: number;
     side?: string;
     sideOffset?: number;
   }) => (
     <div
       className={className}
       data-avoid-collisions={String(avoidCollisions)}
+      data-collision-padding={collisionPadding}
       data-side={side}
       data-side-offset={sideOffset}
       data-testid="chat-history-menu"
@@ -57,13 +64,8 @@ vi.mock("@hypr/ui/components/ui/dropdown-menu", () => ({
   ),
 }));
 
-vi.mock("~/store/tinybase/store/main", () => ({
-  STORE_ID: "main",
-  UI: {
-    useCell: () => undefined,
-    useRow: () => undefined,
-    useSortedRowIds: () => [],
-  },
+vi.mock("~/chat/store/queries", () => ({
+  useRecentChatGroups: mocks.useRecentChatGroups,
 }));
 
 import { ChatToolbarControls } from "./toolbar-controls";
@@ -71,11 +73,13 @@ import { ChatToolbarControls } from "./toolbar-controls";
 describe("ChatToolbarControls", () => {
   beforeEach(() => {
     cleanup();
+    mocks.useRecentChatGroups.mockClear();
   });
 
   it("renders the dark chat history trigger as a pill button", () => {
     render(
       <ChatToolbarControls
+        chatScope="general"
         currentChatGroupId={undefined}
         onNewChat={vi.fn()}
         onOpenRightPanel={vi.fn()}
@@ -96,6 +100,7 @@ describe("ChatToolbarControls", () => {
   it("renders the light chat history trigger without title text", () => {
     const { container } = render(
       <ChatToolbarControls
+        chatScope="general"
         currentChatGroupId={undefined}
         onNewChat={vi.fn()}
         onOpenRightPanel={vi.fn()}
@@ -118,10 +123,12 @@ describe("ChatToolbarControls", () => {
     expect(screen.queryByText("Ask Anarlog AI anything")).toBeNull();
   });
 
-  it("keeps the history menu below the trigger and scrolls inside the panel", () => {
+  it("opens floating chat history to the right and adapts to viewport collisions", () => {
     render(
       <ChatToolbarControls
+        chatScope="general"
         currentChatGroupId={undefined}
+        layout="floating"
         onNewChat={vi.fn()}
         onOpenRightPanel={vi.fn()}
         onSelectChat={vi.fn()}
@@ -132,18 +139,41 @@ describe("ChatToolbarControls", () => {
     const menu = screen.getByTestId("chat-history-menu");
     const panel = screen.getByTestId("chat-history-panel");
 
-    expect(menu.dataset.side).toBe("bottom");
+    expect(menu.dataset.side).toBe("right");
     expect(menu.dataset.sideOffset).toBe("4");
-    expect(menu.dataset.avoidCollisions).toBe("false");
+    expect(menu.dataset.avoidCollisions).toBe("true");
+    expect(menu.dataset.collisionPadding).toBe("8");
     expect(menu.className).toContain("w-72");
-    expect(menu.className).toContain("max-w-[calc(100vw-2rem)]");
-    expect(panel.className).toContain("max-h-80");
-    expect(panel.className).toContain("overflow-y-auto");
+    expect(menu.className).toContain(
+      "max-w-[var(--radix-dropdown-menu-content-available-width)]",
+    );
+    expect(menu.className).toContain(
+      "max-h-[min(20rem,var(--radix-dropdown-menu-content-available-height))]",
+    );
+    expect(menu.className).toContain("overflow-y-auto");
+    expect(panel.className).not.toContain("overflow-y-auto");
+  });
+
+  it("keeps right-panel chat history below the trigger", () => {
+    render(
+      <ChatToolbarControls
+        chatScope="general"
+        currentChatGroupId={undefined}
+        layout="right-panel"
+        onNewChat={vi.fn()}
+        onOpenFloating={vi.fn()}
+        onSelectChat={vi.fn()}
+        surface="light"
+      />,
+    );
+
+    expect(screen.getByTestId("chat-history-menu").dataset.side).toBe("bottom");
   });
 
   it("renders dark toolbar action buttons as circles without tooltips", () => {
     render(
       <ChatToolbarControls
+        chatScope="general"
         currentChatGroupId={undefined}
         onClose={vi.fn()}
         onNewChat={vi.fn()}
@@ -177,6 +207,7 @@ describe("ChatToolbarControls", () => {
 
     const { container } = render(
       <ChatToolbarControls
+        chatScope="general"
         currentChatGroupId={undefined}
         layout="floating"
         onClose={onClose}
@@ -202,11 +233,12 @@ describe("ChatToolbarControls", () => {
     expect(screen.queryByRole("button", { name: "Close chat" })).toBeNull();
   });
 
-  it("uses the shared toolbar padding in the right panel", () => {
+  it("uses sidebar-matched toolbar metrics in the right panel", () => {
     const onClose = vi.fn();
     const onOpenFloating = vi.fn();
     const { container } = render(
       <ChatToolbarControls
+        chatScope="general"
         currentChatGroupId={undefined}
         layout="right-panel"
         onClose={onClose}
@@ -219,16 +251,16 @@ describe("ChatToolbarControls", () => {
 
     const historyButton = screen.getByRole("button", { name: "Chat history" });
 
-    expect(container.firstElementChild?.className).toContain("px-3");
+    expect(container.firstElementChild?.className).toContain("pl-3");
+    expect(container.firstElementChild?.className).toContain("pr-1");
     expect(container.firstElementChild?.className).not.toContain("px-5");
-    expect(container.firstElementChild?.className).not.toContain("px-2");
+    expect(container.firstElementChild?.className).not.toContain("px-3");
     expect(container.firstElementChild?.className).not.toContain("pr-0");
-    expect(container.firstElementChild?.className).not.toContain("pr-1");
     const actions = container.querySelector("[data-chat-toolbar-actions]");
     expect(actions?.className).toContain("gap-0");
     expect(actions?.className).not.toContain("gap-1");
     expect(historyButton.className).toContain("-ml-2");
-    expect(historyButton.className).toContain("h-8");
+    expect(historyButton.className).toContain("h-7");
     expect(historyButton.className).toContain("w-auto");
     expect(screen.queryByText("Ask Anarlog AI anything")).toBeNull();
     const floatButton = screen.getByRole("button", { name: "Float chat" });
@@ -246,5 +278,19 @@ describe("ChatToolbarControls", () => {
 
     expect(onOpenFloating).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("loads history for the active chat scope", () => {
+    render(
+      <ChatToolbarControls
+        chatScope="automations"
+        currentChatGroupId={undefined}
+        onNewChat={vi.fn()}
+        onOpenRightPanel={vi.fn()}
+        onSelectChat={vi.fn()}
+      />,
+    );
+
+    expect(mocks.useRecentChatGroups).toHaveBeenCalledWith("automations", 5);
   });
 });

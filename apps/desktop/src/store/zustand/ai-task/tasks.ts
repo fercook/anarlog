@@ -10,8 +10,7 @@ import {
   type TaskType,
 } from "./task-configs";
 
-import type { Store as MainStore } from "~/store/tinybase/store/main";
-import type { Store as SettingsStore } from "~/store/tinybase/store/settings";
+import { getStoredSettingValues } from "~/settings/queries";
 
 export type TasksState = {
   tasks: Record<string, TaskState>;
@@ -37,14 +36,14 @@ export type TasksActions = {
   getState: <T extends TaskType>(taskId: TaskId<T>) => TaskState<T> | undefined;
 };
 
-export type TaskStepInfo<T extends TaskType = TaskType> = T extends "enhance"
-  ?
-      | { type: "analyzing" }
-      | { type: "generating" }
-      | { type: "retrying"; attempt: number; reason: string }
-  : T extends "title"
-    ? { type: "generating" }
-    : { type: "generating" };
+export type TaskStepInfo<T extends TaskType = TaskType> =
+  | { type: "generating" }
+  | { type: "reasoning" }
+  | (T extends "enhance"
+      ?
+          | { type: "analyzing" }
+          | { type: "retrying"; attempt: number; reason: string }
+      : never);
 
 export type TaskStatus = "idle" | "generating" | "success" | "error";
 
@@ -80,10 +79,136 @@ const initialState: TasksState = {
   tasks: {},
 };
 
+export const TASK_STREAM_IDLE_TIMEOUT_MS = 15_000;
+export const TASK_STREAM_START_TIMEOUT_MS = 60_000;
+// On-device models can spend minutes loading weights and prefilling a long
+// transcript before the first token; the remote-grade start timeout would
+// kill them mid-warmup.
+export const TASK_STREAM_LOCAL_START_TIMEOUT_MS = 5 * 60_000;
+
+const LOCAL_MODEL_PROVIDERS = new Set([
+  "apple_foundation",
+  "lmstudio",
+  "ollama",
+]);
+
+export function isLocalModelProviderId(providerId: string) {
+  return LOCAL_MODEL_PROVIDERS.has(providerId);
+}
+
+export function getTaskStreamStartTimeoutMs(model: LanguageModel) {
+  const provider =
+    typeof model !== "string" && typeof model.provider === "string"
+      ? model.provider
+      : "";
+  const providerId = provider.split(".", 1)[0];
+
+  return isLocalModelProviderId(providerId)
+    ? TASK_STREAM_LOCAL_START_TIMEOUT_MS
+    : TASK_STREAM_START_TIMEOUT_MS;
+}
+export const MAX_RETAINED_AI_TASKS = 256;
+export const MAX_AI_TASK_STREAM_CHARACTERS = 256 * 1024;
+
+const DATABASE_LOCK_RETRY_DELAYS_MS = [
+  250, 500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000,
+];
+const STREAM_TIMEOUT = Symbol("stream-timeout");
+
+function createAbortError() {
+  const error = new Error("Aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal: AbortSignal) {
+  if (signal.aborted) {
+    throw createAbortError();
+  }
+}
+
+function isDatabaseLockError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("database is locked") ||
+    normalized.includes("database table is locked") ||
+    normalized.includes("(code: 5)") ||
+    normalized.includes("(code: 6)")
+  );
+}
+
+async function waitForDatabaseRetry(delayMs: number, signal: AbortSignal) {
+  throwIfAborted(signal);
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const handleAbort = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", handleAbort);
+      reject(createAbortError());
+    };
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener("abort", handleAbort);
+      resolve();
+    }, delayMs);
+    signal.addEventListener("abort", handleAbort, { once: true });
+    if (signal.aborted) {
+      handleAbort();
+    }
+  });
+}
+
+async function withDatabaseLockRetry<T>(
+  run: () => Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    throwIfAborted(signal);
+    try {
+      return await run();
+    } catch (error) {
+      if (
+        !isDatabaseLockError(error) ||
+        attempt >= DATABASE_LOCK_RETRY_DELAYS_MS.length
+      ) {
+        throw error;
+      }
+      await waitForDatabaseRetry(
+        DATABASE_LOCK_RETRY_DELAYS_MS[attempt],
+        signal,
+      );
+    }
+  }
+}
+
+async function readStreamChunkWithTimeout<T>(
+  iterator: AsyncIterator<T>,
+  timeoutMs: number,
+): Promise<IteratorResult<T> | typeof STREAM_TIMEOUT> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof STREAM_TIMEOUT>((resolve) => {
+    timeoutId = setTimeout(() => resolve(STREAM_TIMEOUT), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([iterator.next(), timeout]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 export const createTasksSlice = <T extends TasksState & TasksActions>(
   set: StoreApi<T>["setState"],
   get: StoreApi<T>["getState"],
-  deps: { persistedStore: MainStore; settingsStore: SettingsStore },
 ): TasksState & TasksActions => ({
   ...initialState,
   getState: <Task extends TaskType>(
@@ -118,6 +243,7 @@ export const createTasksSlice = <T extends TasksState & TasksActions>(
     if (state) {
       set((currentState) =>
         mutate(currentState, (draft) => {
+          draft.tasks[taskId]?.abortController?.abort();
           draft.tasks[taskId] = {
             taskType: state.taskType,
             status: "idle",
@@ -136,14 +262,9 @@ export const createTasksSlice = <T extends TasksState & TasksActions>(
   ) => {
     set((state) =>
       mutate(state, (draft) => {
-        draft.tasks[taskId] = {
-          taskType: task.taskType,
-          status: task.status,
-          streamedText: task.streamedText,
-          error: task.error ? createSyncedTaskError(task.error) : undefined,
-          abortController: null,
-          currentStep: task.currentStep,
-        };
+        draft.tasks = setBoundedTaskState(draft.tasks, taskId, {
+          ...toSyncedTaskState(task),
+        });
       }),
     );
   },
@@ -151,17 +272,9 @@ export const createTasksSlice = <T extends TasksState & TasksActions>(
     set((state) =>
       mutate(state, (draft) => {
         draft.tasks = Object.fromEntries(
-          Object.entries(tasks).map(([taskId, task]) => [
-            taskId,
-            {
-              taskType: task.taskType,
-              status: task.status,
-              streamedText: task.streamedText,
-              error: task.error ? createSyncedTaskError(task.error) : undefined,
-              abortController: null,
-              currentStep: task.currentStep,
-            },
-          ]),
+          Object.entries(tasks)
+            .slice(-MAX_RETAINED_AI_TASKS)
+            .map(([taskId, task]) => [taskId, toSyncedTaskState(task)]),
         );
       }),
     );
@@ -186,30 +299,30 @@ export const createTasksSlice = <T extends TasksState & TasksActions>(
     try {
       set((state) =>
         mutate(state, (draft) => {
-          draft.tasks[taskId] = {
+          draft.tasks = setBoundedTaskState(draft.tasks, taskId, {
             taskType: config.taskType,
             status: "generating",
             streamedText: "",
             error: undefined,
             abortController,
             currentStep: undefined,
-          };
+          });
         }),
       );
 
-      const enrichedArgs = await taskConfig.transformArgs(
-        config.args,
-        deps.persistedStore,
-        deps.settingsStore,
+      const { values: settingsValues } = await withDatabaseLockRetry(
+        getStoredSettingValues,
+        abortController.signal,
+      );
+      const enrichedArgs = await withDatabaseLockRetry(
+        () => taskConfig.transformArgs(config.args, settingsValues),
+        abortController.signal,
       );
       let fullText = "";
+      let reasoningActive = false;
 
       const checkAbort = () => {
-        if (abortController.signal.aborted) {
-          const error = new Error("Aborted");
-          error.name = "AbortError";
-          throw error;
-        }
+        throwIfAborted(abortController.signal);
       };
 
       const onProgress = (step: TaskStepInfo<Task>) => {
@@ -223,54 +336,112 @@ export const createTasksSlice = <T extends TasksState & TasksActions>(
         );
       };
 
-      const workflowStream = taskConfig.executeWorkflow({
-        model: config.model,
-        args: enrichedArgs,
-        onProgress,
-        signal: abortController.signal,
-        store: deps.persistedStore,
+      const workflowAbortController = new AbortController();
+      const abortWorkflow = () => workflowAbortController.abort();
+      abortController.signal.addEventListener("abort", abortWorkflow, {
+        once: true,
       });
-
-      const transforms = taskConfig.transforms ?? [];
-      const transformedStream = applyTransforms(workflowStream, transforms, {
-        stopStream: () => abortController.abort(),
-      });
-
-      for await (const chunk of transformedStream) {
-        checkAbort();
-
-        if (chunk.type === "error") {
-          throw chunk.error;
-        } else if (chunk.type === "text-delta") {
-          fullText += chunk.text;
-
-          set((state) =>
-            mutate(state, (draft) => {
-              const currentState = draft.tasks[taskId];
-              if (currentState) {
-                currentState.streamedText = fullText;
-              }
-            }),
-          );
-        }
-      }
+      let workflowCompleted = false;
 
       try {
-        await taskConfig.onSuccess?.({
-          taskId,
-          text: fullText,
+        const workflowStream = taskConfig.executeWorkflow({
           model: config.model,
-          args: config.args,
-          transformedArgs: enrichedArgs,
-          store: deps.persistedStore,
-          settingsStore: deps.settingsStore,
-          signal: abortController.signal,
-          startTask: (nextTaskId, nextConfig) =>
-            get().generate(nextTaskId, nextConfig),
-          getTaskState: (nextTaskId) => getTaskState(get().tasks, nextTaskId),
+          args: enrichedArgs,
+          onProgress,
+          signal: workflowAbortController.signal,
         });
-      } catch (error) {
-        console.error("Task post-success hook failed:", error);
+
+        const transforms = taskConfig.transforms ?? [];
+        const transformedStream = applyTransforms(workflowStream, transforms, {
+          stopStream: abortWorkflow,
+        });
+        const iterator = transformedStream[Symbol.asyncIterator]();
+
+        while (true) {
+          const result = await readStreamChunkWithTimeout(
+            iterator,
+            fullText.trim()
+              ? TASK_STREAM_IDLE_TIMEOUT_MS
+              : getTaskStreamStartTimeoutMs(config.model),
+          );
+          checkAbort();
+
+          if (result === STREAM_TIMEOUT) {
+            workflowAbortController.abort();
+            if (fullText.trim()) {
+              break;
+            }
+            throw new Error("AI generation did not return any text.");
+          }
+
+          if (result.done) {
+            workflowCompleted = true;
+            break;
+          }
+
+          const chunk = result.value;
+
+          if (chunk.type === "error") {
+            throw chunk.error;
+          } else if (
+            (chunk.type === "reasoning-start" ||
+              chunk.type === "reasoning-delta") &&
+            !reasoningActive &&
+            !fullText
+          ) {
+            reasoningActive = true;
+            onProgress({ type: "reasoning" });
+          } else if (chunk.type === "text-delta") {
+            if (reasoningActive) {
+              reasoningActive = false;
+              onProgress({ type: "generating" });
+            }
+            if (
+              fullText.length + chunk.text.length >
+              MAX_AI_TASK_STREAM_CHARACTERS
+            ) {
+              workflowAbortController.abort();
+              throw new Error("AI generation exceeded the safe output limit.");
+            }
+            fullText += chunk.text;
+
+            set((state) =>
+              mutate(state, (draft) => {
+                const currentState = draft.tasks[taskId];
+                if (currentState) {
+                  currentState.streamedText = fullText;
+                }
+              }),
+            );
+          }
+        }
+      } finally {
+        if (!workflowCompleted) {
+          workflowAbortController.abort();
+        }
+        abortController.signal.removeEventListener("abort", abortWorkflow);
+      }
+
+      const onSuccess = taskConfig.onSuccess;
+      if (onSuccess) {
+        await withDatabaseLockRetry(
+          () =>
+            Promise.resolve(
+              onSuccess({
+                taskId,
+                text: fullText,
+                model: config.model,
+                args: config.args,
+                transformedArgs: enrichedArgs,
+                signal: abortController.signal,
+                startTask: (nextTaskId, nextConfig) =>
+                  get().generate(nextTaskId, nextConfig),
+                getTaskState: (nextTaskId) =>
+                  getTaskState(get().tasks, nextTaskId),
+              }),
+            ),
+          abortController.signal,
+        );
       }
 
       checkAbort();
@@ -294,6 +465,12 @@ export const createTasksSlice = <T extends TasksState & TasksActions>(
         console.error("Task onComplete callback failed:", error);
       }
     } catch (err) {
+      // A reset/regenerate may already own this task id; a stale run must not
+      // clobber the replacement's state.
+      if (get().tasks[taskId]?.abortController !== abortController) {
+        return;
+      }
+
       if (
         err instanceof Error &&
         (err.name === "AbortError" || err.message === "Aborted")
@@ -328,6 +505,42 @@ export const createTasksSlice = <T extends TasksState & TasksActions>(
     }
   },
 });
+
+function setBoundedTaskState(
+  tasks: Record<string, TaskState>,
+  taskId: string,
+  nextTask: TaskState,
+): Record<string, TaskState> {
+  const entries = Object.entries(tasks).filter(([id]) => id !== taskId);
+  entries.push([taskId, nextTask]);
+
+  while (entries.length > MAX_RETAINED_AI_TASKS) {
+    let removeIndex = entries.findIndex(
+      ([id, task]) => id !== taskId && task.status !== "generating",
+    );
+    if (removeIndex === -1) {
+      removeIndex = entries.findIndex(([id]) => id !== taskId);
+    }
+    if (removeIndex === -1) {
+      break;
+    }
+    entries[removeIndex]?.[1].abortController?.abort();
+    entries.splice(removeIndex, 1);
+  }
+
+  return Object.fromEntries(entries);
+}
+
+function toSyncedTaskState(task: RemoteTaskState): TaskState {
+  return {
+    taskType: task.taskType,
+    status: task.status,
+    streamedText: task.streamedText.slice(0, MAX_AI_TASK_STREAM_CHARACTERS),
+    error: task.error ? createSyncedTaskError(task.error) : undefined,
+    abortController: null,
+    currentStep: task.currentStep,
+  };
+}
 
 function createSyncedTaskError(error: { name?: string; message: string }) {
   const synced = new Error(error.message);
@@ -394,7 +607,7 @@ const TRANSIENT_AI_ERROR_PATTERNS = [
 ];
 
 function normalizeTaskError(error: Error): Error {
-  if (!isTransientAIError(error)) {
+  if (!isRetryableAIError(error)) {
     return error;
   }
 
@@ -403,22 +616,44 @@ function normalizeTaskError(error: Error): Error {
   return normalized;
 }
 
-function isTransientAIError(error: Error): boolean {
-  if (APICallError.isInstance(error)) {
-    if (error.statusCode === 409) {
+const MAX_CLASSIFIABLE_MESSAGE_LENGTH = 1_000;
+
+export function isRetryableAIError(error: Error): boolean {
+  if (APICallError.isInstance(error) || isAPICallErrorShape(error)) {
+    const apiError = error as Error & {
+      statusCode?: number;
+      isRetryable?: boolean;
+    };
+    if (apiError.statusCode === 409) {
       return false;
     }
 
     return (
-      error.isRetryable ||
-      error.statusCode === 429 ||
-      error.statusCode === 408 ||
-      (typeof error.statusCode === "number" && error.statusCode >= 500)
+      apiError.isRetryable === true ||
+      apiError.statusCode === 429 ||
+      apiError.statusCode === 408 ||
+      (typeof apiError.statusCode === "number" && apiError.statusCode >= 500)
     );
+  }
+
+  // API call error messages embed the request body, so scanning long messages
+  // would match transient-looking words inside user content and misclassify
+  // permanent failures as retryable.
+  if (error.message.length > MAX_CLASSIFIABLE_MESSAGE_LENGTH) {
+    return false;
   }
 
   const message = error.message.toLowerCase();
   return TRANSIENT_AI_ERROR_PATTERNS.some((pattern) =>
     message.includes(pattern),
+  );
+}
+
+// A duplicated `ai` package in the bundle defeats APICallError.isInstance, so
+// also match the serialized shape.
+function isAPICallErrorShape(error: Error): boolean {
+  return (
+    error.name === "AI_APICallError" &&
+    typeof (error as { isRetryable?: unknown }).isRetryable === "boolean"
   );
 }

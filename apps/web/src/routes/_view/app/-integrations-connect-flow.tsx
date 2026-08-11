@@ -1,13 +1,15 @@
-import Nango from "@nangohq/frontend";
+import Nango, { type ConnectUI } from "@nangohq/frontend";
 import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 
-import { createSession } from "@hypr/api-client";
-import { createClient } from "@hypr/api-client/client";
+import { createSession } from "@anlg/api-client";
+import { createClient } from "@anlg/api-client/client";
 
 import { env } from "@/env";
 import { getAccessToken } from "@/functions/access-token";
+import { useAnalytics } from "@/hooks/use-posthog";
 import { useMountEffect } from "@/hooks/useMountEffect";
+import { captureOperationalError } from "@/lib/error-reporting";
 
 import { IntegrationButton, IntegrationPageLayout } from "./-integration-ui";
 import { getIntegrationDisplay, Route } from "./integration";
@@ -15,15 +17,20 @@ import { getIntegrationDisplay, Route } from "./integration";
 export function ConnectFlow() {
   const search = Route.useSearch();
   const navigate = useNavigate();
+  const { track } = useAnalytics();
   const isGoogleCalendar = search.integration_id === "google-calendar";
+  const isOutlookCalendar = search.integration_id === "outlook";
+  const isConnectedCalendar = isGoogleCalendar || isOutlookCalendar;
   const [nango] = useState(() => new Nango());
   const [status, setStatus] = useState<
     "idle" | "loading" | "connecting" | "success" | "error"
-  >(isGoogleCalendar ? "loading" : "idle");
+  >("idle");
   const statusRef = useRef<
     "idle" | "loading" | "connecting" | "success" | "error"
-  >(isGoogleCalendar ? "loading" : "idle");
+  >("idle");
   const inFlightRef = useRef(false);
+  const connectUIRef = useRef<ConnectUI | null>(null);
+  const disposedRef = useRef(false);
 
   const display = getIntegrationDisplay(search.integration_id);
 
@@ -38,6 +45,11 @@ export function ConnectFlow() {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     updateStatus("loading");
+    track("integration_connection_started", {
+      integration: search.integration_id,
+      mode: search.action,
+      flow: search.flow,
+    });
 
     let sessionToken: string;
 
@@ -57,16 +69,47 @@ export function ConnectFlow() {
         },
       });
       if (error || !data) {
+        captureOperationalError(
+          error ?? new Error("Integration session was not created"),
+          {
+            operation: "integration_connection_session",
+            tags: {
+              integration: search.integration_id,
+              mode: search.action,
+            },
+          },
+        );
         inFlightRef.current = false;
         updateStatus("error");
+        track("integration_connection_failed", {
+          integration: search.integration_id,
+          mode: search.action,
+          flow: search.flow,
+          failure_stage: "session",
+        });
         return;
       }
       sessionToken = data.token;
-    } catch {
+    } catch (error) {
+      captureOperationalError(error, {
+        operation: "integration_connection_session",
+        tags: {
+          integration: search.integration_id,
+          mode: search.action,
+        },
+      });
       inFlightRef.current = false;
       updateStatus("error");
+      track("integration_connection_failed", {
+        integration: search.integration_id,
+        mode: search.action,
+        flow: search.flow,
+        failure_stage: "session",
+      });
       return;
     }
+
+    if (disposedRef.current) return;
 
     updateStatus("connecting");
 
@@ -79,10 +122,21 @@ export function ConnectFlow() {
           ) {
             inFlightRef.current = false;
             updateStatus("idle");
+            track("integration_connection_failed", {
+              integration: search.integration_id,
+              mode: search.action,
+              flow: search.flow,
+              failure_stage: "cancelled",
+            });
           }
         } else if (event.type === "connect") {
           inFlightRef.current = false;
           updateStatus("success");
+          track("integration_connection_succeeded", {
+            integration: search.integration_id,
+            mode: search.action,
+            flow: search.flow,
+          });
           const callbackSearch =
             search.flow === "desktop"
               ? {
@@ -106,16 +160,29 @@ export function ConnectFlow() {
       },
     });
 
+    connectUIRef.current = connect;
     connect.setSessionToken(sessionToken);
   };
 
+  // Nango's Connect UI repeats the connect prompt, so only calendars (which
+  // must show the OAuth data-use disclosure first) wait for a manual click.
+  // The Connect UI lives outside the React tree, so unmount must close it and
+  // stop in-flight session work from opening one on a stale view.
   useMountEffect(() => {
-    if (!isGoogleCalendar) return;
-    void handleConnect();
+    disposedRef.current = false;
+    if (!isConnectedCalendar) {
+      void handleConnect();
+    }
+    return () => {
+      disposedRef.current = true;
+      connectUIRef.current?.close();
+      connectUIRef.current = null;
+    };
   });
 
   const isLoading = status === "loading";
   const isConnecting = status === "connecting";
+  const consentProvider = isGoogleCalendar ? "Google" : "Microsoft";
 
   return (
     <IntegrationPageLayout>
@@ -127,6 +194,39 @@ export function ConnectFlow() {
           {isConnecting ? display.connectingHint : display.description}
         </p>
       </div>
+
+      {isConnectedCalendar && !isConnecting && status !== "success" && (
+        <div className="flex flex-col gap-3 rounded-2xl border border-stone-200 bg-stone-50 p-5 text-left text-sm leading-6 text-stone-700">
+          <p>
+            Anarlog reads your calendar and event details to show upcoming
+            events and link them to private notes. Access is read-only: Anarlog
+            cannot create, edit, or delete events.
+          </p>
+          <p>
+            Calendar data passes through Nango's encrypted proxy and is stored
+            locally on your device. Nango securely stores the credentials needed
+            to keep your calendar connected.
+          </p>
+          <p>
+            If you use encrypted Cloud Sync or share a note, its event context
+            may be included.
+          </p>
+          <p>
+            Read our{" "}
+            <a className="underline" href="/privacy">
+              Privacy Policy
+            </a>{" "}
+            and{" "}
+            <a
+              className="underline"
+              href="https://docs.anarlog.so/calendar#manage-or-delete-connected-calendar-data"
+            >
+              calendar data instructions
+            </a>
+            .
+          </p>
+        </div>
+      )}
 
       {(status === "idle" || isLoading) && (
         <IntegrationButton onClick={handleConnect} disabled={isLoading}>
@@ -152,7 +252,11 @@ export function ConnectFlow() {
               />
             </svg>
           )}
-          {isLoading ? "Connecting…" : `Connect ${display.name}`}
+          {isLoading
+            ? "Connecting…"
+            : isConnectedCalendar
+              ? `Continue to ${consentProvider}`
+              : `Connect ${display.name}`}
         </IntegrationButton>
       )}
 

@@ -1,58 +1,34 @@
-import { Pin } from "lucide-react";
+import { PushPin } from "@phosphor-icons/react";
 import React, { useCallback } from "react";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
-import { ContactFacehash, getContactBgClass } from "~/contacts/shared";
+import { ContactImage } from "~/contacts/contact-avatar";
+import { type HumanRecord, toggleContactPin } from "~/contacts/queries";
+import { ContactFacehash } from "~/contacts/shared";
 import { useNativeContextMenu } from "~/shared/hooks/useNativeContextMenu";
-import * as main from "~/store/tinybase/store/main";
 
 export function PersonItem({
-  humanId,
+  person,
   active,
   onClick,
   onDelete,
 }: {
-  humanId: string;
+  person: HumanRecord;
   active: boolean;
   onClick: () => void;
   onDelete?: (id: string) => void;
 }) {
-  const person = main.UI.useRow("humans", humanId, main.STORE_ID);
   const isPinned = Boolean(person.pinned);
-  const personName = String(person.name ?? "");
-  const personEmail = String(person.email ?? "");
-  const facehashName = personName || personEmail || humanId;
-  const bgClass = getContactBgClass(facehashName);
-
-  const store = main.UI.useStore(main.STORE_ID);
+  const personName = person.name;
+  const personEmail = person.email;
+  const facehashName = personName || personEmail || person.id;
 
   const togglePin = useCallback(() => {
-    if (!store) return;
-
-    const currentPinned = store.getCell("humans", humanId, "pinned");
-    if (currentPinned) {
-      store.setPartialRow("humans", humanId, {
-        pinned: false,
-        pin_order: 0,
-      });
-    } else {
-      const allHumans = store.getTable("humans");
-      const allOrgs = store.getTable("organizations");
-      const maxHumanOrder = Object.values(allHumans).reduce((max, h) => {
-        const order = (h.pin_order as number | undefined) ?? 0;
-        return Math.max(max, order);
-      }, 0);
-      const maxOrgOrder = Object.values(allOrgs).reduce((max, o) => {
-        const order = (o.pin_order as number | undefined) ?? 0;
-        return Math.max(max, order);
-      }, 0);
-      store.setPartialRow("humans", humanId, {
-        pinned: true,
-        pin_order: Math.max(maxHumanOrder, maxOrgOrder) + 1,
-      });
-    }
-  }, [store, humanId]);
+    void toggleContactPin("human", person.id).catch((error) => {
+      console.error("[contacts] failed to toggle contact pin", error);
+    });
+  }, [person.id]);
 
   const showContextMenu = useNativeContextMenu([
     {
@@ -63,7 +39,7 @@ export function PersonItem({
     {
       id: "delete-person",
       text: "Delete Contact",
-      action: () => onDelete?.(humanId),
+      action: () => onDelete?.(person.id),
     },
   ]);
 
@@ -92,15 +68,11 @@ export function PersonItem({
         active ? "bg-accent" : "hover:bg-accent/50",
       ])}
     >
-      <div className={cn(["shrink-0 rounded-full", bgClass])}>
-        <ContactFacehash
-          name={facehashName}
-          size={32}
-          interactive={true}
-          showInitial={true}
-          colorClasses={[bgClass]}
-        />
-      </div>
+      {person.avatarDataUrl ? (
+        <ContactImage src={person.avatarDataUrl} size={32} />
+      ) : (
+        <ContactFacehash name={facehashName} size={32} />
+      )}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1 truncate font-medium">
           {personName || personEmail || "Unnamed"}
@@ -121,7 +93,7 @@ export function PersonItem({
         ])}
         aria-label={isPinned ? "Unpin contact" : "Pin contact"}
       >
-        <Pin className="size-3.5" fill={isPinned ? "currentColor" : "none"} />
+        <PushPin className="size-3.5" weight={isPinned ? "fill" : "regular"} />
       </button>
     </div>
   );

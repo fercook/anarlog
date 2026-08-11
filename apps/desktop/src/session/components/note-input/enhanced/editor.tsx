@@ -1,12 +1,13 @@
 import type { EditorView } from "prosemirror-view";
-import { forwardRef, useCallback, useMemo } from "react";
+import { forwardRef, memo, useCallback, useMemo } from "react";
 
-import { parseJsonContent } from "@hypr/editor/markdown";
+import { parseJsonContent } from "@anlg/editor/markdown";
 import {
   NoteEditor,
   type JSONContent,
   type NoteEditorRef,
-} from "@hypr/editor/note";
+  normalizePortableAttachmentUrls,
+} from "@anlg/editor/note";
 
 import { AudioDropTarget } from "../audio-drop-target";
 import { useNoteFileHandlerConfig } from "../file-handler";
@@ -16,20 +17,56 @@ import { useMentionConfig } from "~/editor-bridge/mention-config";
 import { openEditorLink } from "~/editor-bridge/open-editor-link";
 import { sessionMentionDropConfig } from "~/editor-bridge/session-mention-drop";
 import { SessionNodeView } from "~/editor-bridge/session-view";
+import {
+  SessionCommentsLayer,
+  useOwnedSessionComments,
+} from "~/session-sharing/comments";
 import { hasStoredNoteContent } from "~/session/components/shared";
+import { useAttachmentResolver } from "~/session/hooks/useAttachmentResolver";
+import { useUpdateEnhancedNoteContent } from "~/session/queries";
 import {
   ensureFirstLineTitle,
   extractFirstLineTitle,
+  documentTitlePlaceholder,
 } from "~/session/title-content";
-import * as main from "~/store/tinybase/store/main";
 
 const extraNodeViews = { appLink: AppLinkView, session: SessionNodeView };
 
-export const EnhancedEditor = forwardRef<
+function isCanonicalEmptyDocument(
+  content: JSONContent,
+  sessionTitle: string,
+): boolean {
+  const [title, body, ...rest] = content.content ?? [];
+  const expectedTitle = sessionTitle.trim();
+  const titleContent = title?.content ?? [];
+  const titleAttrs = title?.attrs ?? {};
+  const bodyAttrs = body?.attrs ?? {};
+  const hasExpectedTitle = expectedTitle
+    ? titleContent.length === 1 &&
+      titleContent[0]?.type === "text" &&
+      titleContent[0].text === expectedTitle &&
+      !titleContent[0].marks?.length
+    : titleContent.length === 0;
+  return (
+    content.type === "doc" &&
+    rest.length === 0 &&
+    title?.type === "heading" &&
+    titleAttrs.level === 1 &&
+    Object.keys(titleAttrs).length === 1 &&
+    hasExpectedTitle &&
+    body?.type === "paragraph" &&
+    Object.keys(bodyAttrs).length === 0 &&
+    !body.content?.length
+  );
+}
+
+const EnhancedEditorInner = forwardRef<
   NoteEditorRef,
   {
     sessionId: string;
+    sessionTitle: string;
     enhancedNoteId: string;
+    content: string;
     contentOverride?: JSONContent;
     onNavigateToTitle?: (pixelWidth?: number) => void;
     onViewReady?: (view: EditorView) => void;
@@ -39,7 +76,9 @@ export const EnhancedEditor = forwardRef<
   (
     {
       sessionId,
+      sessionTitle,
       enhancedNoteId,
+      content,
       contentOverride,
       onNavigateToTitle,
       onViewReady,
@@ -49,23 +88,16 @@ export const EnhancedEditor = forwardRef<
   ) => {
     const { audioDropTargetProps, fileHandlerConfig, isAudioDragActive } =
       useNoteFileHandlerConfig(sessionId);
-    const content = main.UI.useCell(
-      "enhanced_notes",
+    const resolveAttachment = useAttachmentResolver(sessionId);
+    const updateContent = useUpdateEnhancedNoteContent(
       enhancedNoteId,
-      "content",
-      main.STORE_ID,
-    );
-    const sessionTitle = main.UI.useCell(
-      "sessions",
       sessionId,
-      "title",
-      main.STORE_ID,
-    ) as string | undefined;
+    );
 
     const initialContent = useMemo<JSONContent>(
       () =>
         ensureFirstLineTitle(
-          contentOverride ?? parseJsonContent(content as string),
+          contentOverride ?? parseJsonContent(content),
           sessionTitle,
         ),
       [content, contentOverride, sessionTitle],
@@ -75,33 +107,39 @@ export const EnhancedEditor = forwardRef<
       ? `enhanced-note-${enhancedNoteId}`
       : `enhanced-note-${enhancedNoteId}-preview`;
 
-    const persistContent = main.UI.useSetPartialRowCallback(
-      "enhanced_notes",
-      enhancedNoteId,
-      (input: JSONContent) => ({ content: JSON.stringify(input) }),
-      [],
-      main.STORE_ID,
-    );
-    const persistSessionTitle = main.UI.useSetPartialRowCallback(
-      "sessions",
-      sessionId,
-      (title: string) => ({ title }),
-      [],
-      main.STORE_ID,
-    );
     const handleChange = useCallback(
       (input: JSONContent) => {
-        persistContent(input);
-
-        const title = extractFirstLineTitle(input);
-        if (title !== null || hasStoredNoteContent(content)) {
-          persistSessionTitle(title ?? "");
+        const portableInput = normalizePortableAttachmentUrls(input);
+        if (
+          content === "" &&
+          isCanonicalEmptyDocument(portableInput, sessionTitle)
+        ) {
+          return;
         }
+        const title = extractFirstLineTitle(portableInput);
+        const nextTitle =
+          title !== null || hasStoredNoteContent(content)
+            ? (title ?? "")
+            : undefined;
+        void updateContent(JSON.stringify(portableInput), nextTitle).catch(
+          (error) => {
+            console.error("[enhanced-editor] failed to persist summary", error);
+          },
+        );
       },
-      [content, persistContent, persistSessionTitle],
+      [content, sessionTitle, updateContent],
     );
 
     const mentionConfig = useMentionConfig();
+    const comments = useOwnedSessionComments(sessionId);
+    // Stable identity: NoteEditor keys whole-document memos off this.
+    const taskSource = useMemo(
+      () =>
+        persistChanges
+          ? ({ type: "enhanced_note", id: enhancedNoteId } as const)
+          : undefined,
+      [persistChanges, enhancedNoteId],
+    );
 
     return (
       <AudioDropTarget
@@ -109,28 +147,44 @@ export const EnhancedEditor = forwardRef<
         targetProps={audioDropTargetProps}
         isActive={isAudioDragActive}
       >
-        <NoteEditor
-          ref={ref}
-          className="session-note-editor enhanced-summary-editor"
-          key={editorKey}
-          initialContent={initialContent}
-          handleChange={persistChanges ? handleChange : undefined}
-          mentionConfig={mentionConfig}
-          sessionMentionDropConfig={sessionMentionDropConfig}
-          onNavigateToTitle={onNavigateToTitle}
-          onLinkOpen={openEditorLink}
-          fileHandlerConfig={fileHandlerConfig}
-          taskSource={
-            persistChanges
-              ? { type: "enhanced_note", id: enhancedNoteId }
-              : undefined
-          }
-          extraNodeViews={extraNodeViews}
-          onViewReady={onViewReady}
-          onViewDisposed={onViewDisposed}
-          syncContentWhenFocused={!persistChanges}
-        />
+        <div ref={comments.containerRef} className="relative h-full">
+          <NoteEditor
+            ref={ref}
+            className="session-note-editor enhanced-summary-editor"
+            key={editorKey}
+            initialContent={initialContent}
+            resolveAttachment={resolveAttachment}
+            handleChange={persistChanges ? handleChange : undefined}
+            placeholderComponent={documentTitlePlaceholder}
+            mentionConfig={mentionConfig}
+            sessionMentionDropConfig={sessionMentionDropConfig}
+            onNavigateToTitle={onNavigateToTitle}
+            onLinkOpen={openEditorLink}
+            fileHandlerConfig={fileHandlerConfig}
+            taskSource={taskSource}
+            extraNodeViews={extraNodeViews}
+            commentAnchorsEnabled
+            onCommentAnchorsEvent={comments.onCommentAnchorsEvent}
+            onCommentSelection={
+              comments.selection && !comments.draft
+                ? comments.startDraft
+                : undefined
+            }
+            onViewReady={(view) => {
+              comments.onViewReady(view);
+              onViewReady?.(view);
+            }}
+            onViewDisposed={(view) => {
+              comments.onViewDisposed(view);
+              onViewDisposed?.(view);
+            }}
+            syncContentWhenFocused={!persistChanges}
+          />
+          <SessionCommentsLayer controller={comments} />
+        </div>
       </AudioDropTarget>
     );
   },
 );
+
+export const EnhancedEditor = memo(EnhancedEditorInner);

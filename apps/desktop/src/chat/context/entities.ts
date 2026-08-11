@@ -1,7 +1,7 @@
-import type { AccountInfo } from "@hypr/plugin-auth";
-import type { DeviceInfo } from "@hypr/plugin-misc";
+import type { AccountInfo } from "@anlg/plugin-auth";
+import type { DeviceInfo } from "@anlg/plugin-misc";
 
-import type { HyprUIMessage } from "../types";
+import type { AnlgUIMessage } from "../types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -98,12 +98,18 @@ function isToolOutputAvailablePart(
   );
 }
 
-function parseSearchSessionsOutput(output: unknown): ContextEntity[] {
-  if (!isRecord(output) || !Array.isArray(output.results)) {
+function parseSearchMeetingsOutput(output: unknown): ContextEntity[] {
+  if (!isRecord(output)) {
     return [];
   }
 
-  return output.results.flatMap((item): ContextEntity[] => {
+  const results = Array.isArray(output.results)
+    ? output.results
+    : Array.isArray(output.meetings)
+      ? output.meetings
+      : [];
+
+  return results.flatMap((item): ContextEntity[] => {
     if (
       !isRecord(item) ||
       (typeof item.id !== "string" && typeof item.id !== "number")
@@ -127,11 +133,13 @@ const toolEntityExtractors: Record<
   string,
   (output: unknown) => ContextEntity[]
 > = {
-  search_sessions: parseSearchSessionsOutput,
+  list_meetings: parseSearchMeetingsOutput,
+  search_meetings: parseSearchMeetingsOutput,
+  search_sessions: parseSearchMeetingsOutput,
 };
 
 export function extractToolContextEntities(
-  messages: Array<Pick<HyprUIMessage, "parts">>,
+  messages: Array<Pick<AnlgUIMessage, "parts">>,
 ): ContextEntity[] {
   const seen = new Set<string>();
   const entities: ContextEntity[] = [];

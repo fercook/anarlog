@@ -1,27 +1,32 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import {
-  ChevronDown,
-  History,
-  MessageCircle,
-  PanelRight,
-  PictureInPicture2,
+  CaretDown,
+  ChatCircle,
+  ClockCounterClockwise,
+  PictureInPicture,
   Plus,
+  SidebarSimple,
   X,
-} from "lucide-react";
+} from "@phosphor-icons/react";
 import { useState } from "react";
 
-import { Button } from "@hypr/ui/components/ui/button";
+import { Button } from "@anlg/ui/components/ui/button";
 import {
   AppFloatingPanel,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuTrigger,
-} from "@hypr/ui/components/ui/dropdown-menu";
-import { cn, formatDistanceToNow } from "@hypr/utils";
+} from "@anlg/ui/components/ui/dropdown-menu";
+import { cn, formatDistanceToNow } from "@anlg/utils";
 
-import * as main from "~/store/tinybase/store/main";
+import {
+  type ChatGroupRecord,
+  useRecentChatGroups,
+} from "~/chat/store/queries";
+import type { ChatScope } from "~/chat/types";
 
 export function ChatToolbarControls({
+  chatScope,
   currentChatGroupId,
   layout = "floating",
   onClose,
@@ -31,6 +36,7 @@ export function ChatToolbarControls({
   onSelectChat,
   surface = "light",
 }: {
+  chatScope: ChatScope;
   currentChatGroupId: string | undefined;
   layout?: "floating" | "right-panel";
   onClose?: () => void;
@@ -43,14 +49,23 @@ export function ChatToolbarControls({
   const { t } = useLingui();
   const isDark = surface === "dark";
   const isRightPanel = layout === "right-panel";
+  const actionButtonClassName = cn([
+    isDark ? darkToolbarButtonClassName : lightToolbarButtonClassName,
+    isRightPanel && "size-7",
+  ]);
 
   return (
     <div
-      className={cn(["flex h-full w-full min-w-0 items-center gap-2", "px-3"])}
+      className={cn([
+        "flex h-full w-full min-w-0 items-center gap-2",
+        isRightPanel ? "pr-1 pl-3" : "px-3",
+      ])}
     >
       <div className="flex min-w-0 flex-1 items-center gap-1">
         <ChatGroups
+          chatScope={chatScope}
           currentChatGroupId={currentChatGroupId}
+          layout={layout}
           onSelectChat={onSelectChat}
           surface={surface}
         />
@@ -63,44 +78,30 @@ export function ChatToolbarControls({
           icon={<Plus size={16} />}
           label={t`New chat`}
           onClick={onNewChat}
-          className={
-            isDark ? darkToolbarButtonClassName : lightToolbarButtonClassName
-          }
+          className={actionButtonClassName}
         />
         {isRightPanel ? (
           <>
             <ChatActionButton
-              icon={<PictureInPicture2 size={16} />}
+              icon={<PictureInPicture size={16} />}
               label={t`Float chat`}
               onClick={onOpenFloating ?? (() => {})}
-              className={
-                isDark
-                  ? darkToolbarButtonClassName
-                  : lightToolbarButtonClassName
-              }
+              className={actionButtonClassName}
             />
             <ChatActionButton
               icon={<X size={16} />}
               label={t`Close chat`}
               onClick={onClose ?? (() => {})}
-              className={
-                isDark
-                  ? darkToolbarButtonClassName
-                  : lightToolbarButtonClassName
-              }
+              className={actionButtonClassName}
             />
           </>
         ) : (
           <>
             <ChatActionButton
-              icon={<PanelRight size={16} />}
+              icon={<SidebarSimple size={16} />}
               label={t`Open in right panel`}
               onClick={onOpenRightPanel ?? (() => {})}
-              className={
-                isDark
-                  ? darkToolbarButtonClassName
-                  : lightToolbarButtonClassName
-              }
+              className={actionButtonClassName}
             />
           </>
         )}
@@ -140,11 +141,15 @@ function ChatActionButton({
 }
 
 function ChatGroups({
+  chatScope,
   currentChatGroupId,
+  layout,
   onSelectChat,
   surface = "light",
 }: {
+  chatScope: ChatScope;
   currentChatGroupId: string | undefined;
+  layout: "floating" | "right-panel";
   onSelectChat: (chatGroupId: string) => void;
   surface?: "light" | "dark";
 }) {
@@ -152,14 +157,7 @@ function ChatGroups({
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const isDark = surface === "dark";
 
-  const recentChatGroupIds = main.UI.useSortedRowIds(
-    "chat_groups",
-    "created_at",
-    true,
-    0,
-    5,
-    main.STORE_ID,
-  );
+  const recentChatGroups = useRecentChatGroups(chatScope, 5);
 
   return (
     <DropdownMenu open={isDropdownOpen} onOpenChange={setIsDropdownOpen}>
@@ -170,18 +168,19 @@ function ChatGroups({
           size="sm"
           className={cn([
             "group -ml-2 h-8 w-auto shrink-0 gap-1.5 rounded-full px-2.5 py-0 transition-colors",
+            layout === "right-panel" && "h-7",
             isDark
               ? "text-primary-foreground/70 hover:bg-primary-foreground/14 hover:text-primary-foreground data-[state=open]:bg-primary-foreground/14 data-[state=open]:text-primary-foreground"
               : "text-muted-foreground hover:bg-muted/80 hover:text-foreground data-[state=open]:bg-muted/80 data-[state=open]:text-foreground",
           ])}
         >
-          <History
+          <ClockCounterClockwise
             className={cn([
               "h-4 w-4",
               isDark ? "text-primary-foreground/70" : "text-muted-foreground",
             ])}
           />
-          <ChevronDown
+          <CaretDown
             className={cn([
               "h-3.5 w-3.5 shrink-0 transition-transform duration-200",
               isDark ? "text-primary-foreground/50" : "text-muted-foreground",
@@ -193,24 +192,25 @@ function ChatGroups({
       <DropdownMenuContent
         variant="app"
         align="start"
-        side="bottom"
+        side={layout === "floating" ? "right" : "bottom"}
         sideOffset={4}
-        avoidCollisions={false}
-        className="w-72 max-w-[calc(100vw-2rem)]"
+        avoidCollisions
+        collisionPadding={8}
+        className="max-h-[min(20rem,var(--radix-dropdown-menu-content-available-height))] w-72 max-w-[var(--radix-dropdown-menu-content-available-width)] overflow-y-auto"
       >
-        <AppFloatingPanel className="max-h-80 overflow-y-auto p-1.5">
+        <AppFloatingPanel className="p-1.5">
           <div className="px-2 py-1.5">
             <h4 className="text-muted-foreground text-[10px] font-semibold tracking-wider uppercase">
               Recent Chats
             </h4>
           </div>
-          {recentChatGroupIds.length > 0 ? (
+          {recentChatGroups.length > 0 ? (
             <div className="flex flex-col gap-0.5">
-              {recentChatGroupIds.map((groupId) => (
+              {recentChatGroups.map((chatGroup) => (
                 <ChatGroupItem
-                  key={groupId}
-                  groupId={groupId}
-                  isActive={groupId === currentChatGroupId}
+                  key={chatGroup.id}
+                  chatGroup={chatGroup}
+                  isActive={chatGroup.id === currentChatGroupId}
                   onSelect={(id) => {
                     onSelectChat(id);
                     setIsDropdownOpen(false);
@@ -220,7 +220,7 @@ function ChatGroups({
             </div>
           ) : (
             <div className="px-3 py-6 text-center">
-              <MessageCircle className="text-muted-foreground/70 mx-auto mb-1.5 h-6 w-6" />
+              <ChatCircle className="text-muted-foreground/70 mx-auto mb-1.5 h-6 w-6" />
               <p className="text-muted-foreground text-xs">
                 <Trans>No recent chats</Trans>
               </p>
@@ -233,22 +233,16 @@ function ChatGroups({
 }
 
 function ChatGroupItem({
-  groupId,
+  chatGroup,
   isActive,
   onSelect,
 }: {
-  groupId: string;
+  chatGroup: ChatGroupRecord;
   isActive: boolean;
   onSelect: (groupId: string) => void;
 }) {
-  const chatGroup = main.UI.useRow("chat_groups", groupId, main.STORE_ID);
-
-  if (!chatGroup) {
-    return null;
-  }
-
-  const formattedTime = chatGroup.created_at
-    ? formatDistanceToNow(new Date(chatGroup.created_at), {
+  const formattedTime = chatGroup.createdAt
+    ? formatDistanceToNow(new Date(chatGroup.createdAt), {
         addSuffix: true,
       })
     : "";
@@ -256,7 +250,7 @@ function ChatGroupItem({
   return (
     <Button
       variant="ghost"
-      onClick={() => onSelect(groupId)}
+      onClick={() => onSelect(chatGroup.id)}
       className={cn([
         "group h-auto w-full justify-start px-2.5 py-1.5",
         isActive
@@ -266,7 +260,7 @@ function ChatGroupItem({
     >
       <div className="flex w-full items-center gap-2.5">
         <div className="shrink-0">
-          <MessageCircle
+          <ChatCircle
             className={cn([
               "h-3.5 w-3.5 transition-colors",
               isActive

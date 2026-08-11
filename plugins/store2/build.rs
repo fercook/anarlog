@@ -6,6 +6,10 @@ const COMMANDS: &[&str] = &[
     "set_bool",
     "get_number",
     "set_number",
+    "repair_keychain_access",
+    "get_secret",
+    "set_secret",
+    "delete_secret",
 ];
 
 fn main() {

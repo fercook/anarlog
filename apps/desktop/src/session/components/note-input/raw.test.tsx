@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   createEvent,
   fireEvent,
@@ -8,18 +9,27 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { RawEditor } from "./raw";
+import { RawEditor as SessionRawEditor } from "./raw";
 
 const hoisted = vi.hoisted(() => ({
   rawMd: JSON.stringify({ type: "doc", content: [] }),
   sessionTitle: "Weekly sync",
-  persistChange: vi.fn(),
+  persistChange: vi.fn(() => Promise.resolve()),
   fileUpload: vi.fn(),
   processAudioFile: vi.fn(),
   showWindow: vi.fn(),
   unminimizeWindow: vi.fn(),
   focusWindow: vi.fn(),
+  meetingChatRecords: [] as unknown[],
+  eventParticipants: [] as Array<Record<string, unknown>>,
+  userTemplates: [] as Array<Record<string, unknown>>,
+  replacementContent: null as unknown,
+  replaceContent: vi.fn(),
+  flushPendingChanges: vi.fn(),
+  createTemplate: vi.fn(() => Promise.resolve("new-template")),
+  openTemplatesTab: vi.fn(),
   noteEditorProps: [] as Record<string, unknown>[],
+  canShowTranscript: false,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -34,26 +44,72 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 
-vi.mock("@hypr/editor/markdown", () => ({
+vi.mock("@anlg/editor/markdown", () => ({
   parseJsonContent: (value: string) => JSON.parse(value),
 }));
 
-vi.mock("@hypr/editor/note", () => ({
-  NoteEditor: (props: Record<string, unknown>) => {
-    hoisted.noteEditorProps.push(props);
-
-    return <div>Note editor</div>;
-  },
+vi.mock("@lingui/react/macro", () => ({
+  useLingui: () => ({
+    t: (input: TemplateStringsArray) => input.join(""),
+  }),
 }));
 
-vi.mock("@hypr/plugin-analytics", () => ({
+vi.mock("@anlg/editor/note", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+
+  return {
+    normalizePortableAttachmentUrls: (value: unknown) => value,
+    NoteEditor: React.forwardRef((props: Record<string, unknown>, ref) => {
+      hoisted.noteEditorProps.push(props);
+      React.useImperativeHandle(ref, () => ({
+        view: null,
+        commands: {
+          replaceContent: (content: unknown) => {
+            hoisted.replacementContent = content;
+            hoisted.replaceContent(content);
+            (
+              props.onDocumentChange as ((content: unknown) => void) | undefined
+            )?.(content);
+          },
+        },
+        flushPendingChanges: () => {
+          hoisted.flushPendingChanges();
+          if (hoisted.replacementContent) {
+            (props.handleChange as (content: unknown) => void)(
+              hoisted.replacementContent,
+            );
+          }
+        },
+      }));
+
+      return <div>Note editor</div>;
+    }),
+  };
+});
+
+vi.mock("@anlg/plugin-analytics", () => ({
   commands: {
     event: vi.fn(),
   },
 }));
 
+vi.mock("@anlg/plugin-opener2", () => ({
+  commands: { openUrl: vi.fn() },
+}));
+
+vi.mock("~/audio-player", () => ({
+  useAudioPlayer: () => ({
+    audioExists: false,
+    audioExistsResolved: true,
+  }),
+}));
+
 vi.mock("~/editor-bridge/app-link-view", () => ({
   AppLinkView: () => null,
+}));
+
+vi.mock("~/calendar/queries", () => ({
+  useSessionEventParticipants: () => hoisted.eventParticipants,
 }));
 
 vi.mock("~/editor-bridge/mention-config", () => ({
@@ -72,12 +128,67 @@ vi.mock("~/editor-bridge/session-view", () => ({
   SessionNodeView: () => null,
 }));
 
-vi.mock("~/session/components/shared", () => ({
-  hasStoredNoteContent: (value: unknown) => Boolean(value),
+vi.mock("~/session-sharing/comment-anchors", () => ({
+  useSessionCommentAnchors: () => ({
+    onViewReady: vi.fn(),
+    onViewDisposed: vi.fn(),
+  }),
 }));
 
-vi.mock("~/session/raw-editor-sync", () => ({
-  emitRawEditorSync: vi.fn(),
+vi.mock("~/session/components/shared", () => ({
+  useCanShowTranscript: () => hoisted.canShowTranscript,
+}));
+
+vi.mock("~/session/queries", () => ({
+  useUpdateSession: () => hoisted.persistChange,
+}));
+
+vi.mock("~/session/hooks/useAttachmentResolver", () => ({
+  useAttachmentResolver: () => () => null,
+}));
+
+vi.mock("~/templates", () => ({
+  TemplateIconGlyph: () => <span aria-hidden>Template icon</span>,
+  useCreateTemplate: () => hoisted.createTemplate,
+  useOpenTemplatesTab: () => hoisted.openTemplatesTab,
+  useUserTemplates: () => hoisted.userTemplates,
+}));
+
+function RawEditor({
+  sessionId,
+  className,
+  eventTitle,
+  eventDescription,
+}: {
+  sessionId: string;
+  className?: string;
+  eventTitle?: string;
+  eventDescription?: string;
+}) {
+  return (
+    <SessionRawEditor
+      sessionId={sessionId}
+      rawMd={hoisted.rawMd}
+      sessionTitle={hoisted.sessionTitle}
+      className={className}
+      eventTitle={eventTitle}
+      eventDescription={eventDescription}
+    />
+  );
+}
+
+vi.mock("~/stt/meeting-chat-records", () => ({
+  formatMeetingPlatform: (platform: string) =>
+    ({
+      zoom: "Zoom",
+      googleMeet: "Google Meet",
+      microsoftTeams: "Microsoft Teams",
+      slack: "Slack",
+      discord: "Discord",
+      webex: "Webex",
+      unknown: "Meeting app",
+    })[platform] ?? "Meeting app",
+  useMeetingChatRecords: () => hoisted.meetingChatRecords,
 }));
 
 vi.mock("~/shared/hooks/useFileUpload", () => ({
@@ -88,28 +199,10 @@ vi.mock("~/stt/useUploadFile", () => ({
   AUDIO_EXTENSIONS: ["wav", "mp3", "ogg", "mp4", "m4a", "flac", "webm", "aac"],
   isAudioUploadFile: (file: Pick<File, "name" | "type">) =>
     file.type.startsWith("audio/") ||
-    ["wav", "mp3", "ogg", "mp4", "m4a", "flac", "webm", "aac"].some(
+    ["wav", "mp3", "ogg", "mp4", "m4a", "flac", "webm", "aac", "qta"].some(
       (extension) => file.name.endsWith(`.${extension}`),
     ),
   useUploadFile: () => ({ processAudioFile: hoisted.processAudioFile }),
-}));
-
-vi.mock("~/store/tinybase/store/main", () => ({
-  STORE_ID: "main",
-  UI: {
-    useCell: (table: string, _row: string, cell: string) => {
-      if (table === "sessions" && cell === "raw_md") {
-        return hoisted.rawMd;
-      }
-
-      if (table === "sessions" && cell === "title") {
-        return hoisted.sessionTitle;
-      }
-
-      return undefined;
-    },
-    useSetPartialRowCallback: () => hoisted.persistChange,
-  },
 }));
 
 describe("RawEditor", () => {
@@ -121,9 +214,19 @@ describe("RawEditor", () => {
     hoisted.noteEditorProps = [];
     hoisted.rawMd = JSON.stringify({ type: "doc", content: [] });
     hoisted.sessionTitle = "Weekly sync";
-    hoisted.persistChange = vi.fn();
+    hoisted.persistChange = vi.fn(() => Promise.resolve());
     hoisted.fileUpload = vi.fn();
     hoisted.processAudioFile = vi.fn();
+    hoisted.meetingChatRecords = [];
+    hoisted.eventParticipants = [];
+    hoisted.userTemplates = [];
+    hoisted.canShowTranscript = false;
+    hoisted.replacementContent = null;
+    hoisted.replaceContent.mockReset();
+    hoisted.flushPendingChanges.mockReset();
+    hoisted.createTemplate.mockReset();
+    hoisted.createTemplate.mockResolvedValue("new-template");
+    hoisted.openTemplatesTab.mockReset();
     hoisted.showWindow.mockReset();
     hoisted.unminimizeWindow.mockReset();
     hoisted.focusWindow.mockReset();
@@ -139,7 +242,20 @@ describe("RawEditor", () => {
 
     expect(props?.className).toContain("session-note-editor");
     expect(props?.className).toContain("custom-editor-class");
+    expect(props?.placeholderComponent).toEqual(expect.any(Function));
+    expect((props?.placeholderComponent as () => string)()).toBe(
+      "Start writing...",
+    );
+    expect(props?.persistentPlaceholderComponent).toBeUndefined();
+    expect(props?.enforceTitleHeading).toBe(false);
     expect(props?.initialContent).toMatchObject({
+      type: "doc",
+      content: [{ type: "paragraph" }],
+    });
+  });
+
+  it("removes a legacy session title from the memo body", () => {
+    hoisted.rawMd = JSON.stringify({
       type: "doc",
       content: [
         {
@@ -147,8 +263,463 @@ describe("RawEditor", () => {
           attrs: { level: 1 },
           content: [{ type: "text", text: "Weekly sync" }],
         },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Follow up" }],
+        },
       ],
     });
+
+    render(<RawEditor sessionId="session-1" />);
+
+    const props = hoisted.noteEditorProps[hoisted.noteEditorProps.length - 1];
+    expect(props?.initialContent).toEqual({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Follow up" }],
+        },
+      ],
+    });
+  });
+
+  it("persists memo content without changing the session title", async () => {
+    render(<RawEditor sessionId="session-1" />);
+
+    const props = hoisted.noteEditorProps[hoisted.noteEditorProps.length - 1];
+    const content = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Follow up" }],
+        },
+      ],
+    };
+    (props?.handleChange as (content: unknown) => void)(content);
+
+    await waitFor(() =>
+      expect(hoisted.persistChange).toHaveBeenCalledWith({
+        raw_md: JSON.stringify(content),
+      }),
+    );
+  });
+
+  it("applies favorite template sections to an empty memo", async () => {
+    hoisted.userTemplates = [
+      {
+        id: "template-unpinned",
+        title: "Project Kickoff",
+        pinned: false,
+        pinOrder: null,
+        icon: { type: "emoji", value: "🚀" },
+        sections: [{ title: "Goals", description: "" }],
+      },
+      {
+        id: "template-retro",
+        title: "Retrospective",
+        pinned: true,
+        pinOrder: 2,
+        icon: { type: "emoji", value: "🔁" },
+        sections: [{ title: "What we learned", description: "" }],
+      },
+      {
+        id: "template-standup",
+        title: "Standup",
+        pinned: true,
+        pinOrder: 1,
+        icon: { type: "emoji", value: "☀️" },
+        sections: [
+          { title: " Yesterday ", description: "" },
+          { title: "Today", description: "" },
+        ],
+      },
+    ];
+
+    render(<RawEditor sessionId="session-1" />);
+
+    expect(screen.getByText("Start with a favorite template")).not.toBeNull();
+    expect(screen.getByText("Suggested templates")).not.toBeNull();
+    expect(
+      screen.getAllByRole("button").map((button) => button.textContent),
+    ).toEqual([
+      "Template iconStandup",
+      "Template iconRetrospective",
+      "Template iconProject Kickoff",
+      "New template",
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Standup" }));
+
+    const expectedContent = {
+      type: "doc",
+      content: [
+        {
+          type: "heading",
+          attrs: { level: 2 },
+          content: [{ type: "text", text: "Yesterday" }],
+        },
+        { type: "paragraph" },
+        {
+          type: "heading",
+          attrs: { level: 2 },
+          content: [{ type: "text", text: "Today" }],
+        },
+        { type: "paragraph" },
+      ],
+    };
+    expect(hoisted.replaceContent).toHaveBeenCalledWith(expectedContent);
+    expect(hoisted.flushPendingChanges).toHaveBeenCalledOnce();
+
+    await waitFor(() =>
+      expect(hoisted.persistChange).toHaveBeenCalledWith({
+        raw_md: JSON.stringify(expectedContent),
+        raw_template_id: "template-standup",
+      }),
+    );
+  });
+
+  it("suggests built-in templates when none are favorited", () => {
+    hoisted.userTemplates = [
+      {
+        id: "default-daily-standup",
+        title: "Daily Standup",
+        pinned: false,
+        icon: { type: "emoji", value: "☀️" },
+        sections: [{ title: "Today", description: "" }],
+      },
+      {
+        id: "default-project-kickoff",
+        title: "Project Kickoff",
+        pinned: false,
+        icon: { type: "emoji", value: "🚀" },
+        sections: [{ title: "Goals", description: "" }],
+      },
+      {
+        id: "default-one-on-one-meeting",
+        title: "1:1 Meeting",
+        pinned: false,
+        icon: { type: "emoji", value: "👥" },
+        sections: [{ title: "Updates", description: "" }],
+      },
+      {
+        id: "default-board-meeting",
+        title: "Board Meeting",
+        pinned: false,
+        icon: { type: "emoji", value: "📊" },
+        sections: [{ title: "Company Performance", description: "" }],
+      },
+    ];
+
+    render(<RawEditor sessionId="session-1" />);
+
+    const heading = screen.getByText("Suggested templates");
+    const buttons = screen.getAllByRole("button");
+
+    expect(heading.className).toContain("h-8");
+    expect(heading.className).toContain("text-muted-foreground");
+    expect(heading.className).not.toContain("px-2");
+    expect(buttons.every((button) => button.className.includes("h-8"))).toBe(
+      true,
+    );
+    expect(
+      buttons.every((button) =>
+        button.className.includes("text-muted-foreground"),
+      ),
+    ).toBe(true);
+    expect(
+      buttons.every(
+        (button) =>
+          button.className.includes("w-fit") &&
+          button.className.includes("pointer-events-auto") &&
+          // px-2 offset by -ml-2 keeps content aligned with the editor column
+          button.className.includes("-ml-2") &&
+          button.className.includes("px-2"),
+      ),
+    ).toBe(true);
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      "Template iconProject Kickoff",
+      "Template iconDaily Standup",
+      "Template icon1:1 Meeting",
+      "New template",
+    ]);
+    expect(screen.queryByRole("button", { name: "Board Meeting" })).toBeNull();
+  });
+
+  it("hides template suggestions after the meeting", () => {
+    hoisted.canShowTranscript = true;
+    hoisted.userTemplates = [
+      {
+        id: "default-daily-standup",
+        title: "Daily Standup",
+        pinned: false,
+        icon: { type: "emoji", value: "☀️" },
+        sections: [{ title: "Today", description: "" }],
+      },
+    ];
+
+    render(<RawEditor sessionId="session-1" />);
+
+    expect(screen.queryByText("Suggested templates")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Daily Standup" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New template" })).toBeNull();
+  });
+
+  it("toggles template suggestions from live memo changes", () => {
+    hoisted.userTemplates = [
+      {
+        id: "default-project-kickoff",
+        title: "Project Kickoff",
+        pinned: false,
+        icon: { type: "emoji", value: "🚀" },
+        sections: [{ title: "Goals", description: "" }],
+      },
+    ];
+
+    render(<RawEditor sessionId="session-1" />);
+
+    expect(
+      screen.getByRole("button", { name: "Project Kickoff" }),
+    ).not.toBeNull();
+    const onDocumentChange = hoisted.noteEditorProps[
+      hoisted.noteEditorProps.length - 1
+    ]?.onDocumentChange as (content: unknown) => void;
+
+    act(() => {
+      onDocumentChange({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: "Live memo" }],
+          },
+        ],
+      });
+    });
+
+    expect(
+      screen.queryByRole("button", { name: "Project Kickoff" }),
+    ).toBeNull();
+    expect(hoisted.persistChange).not.toHaveBeenCalled();
+
+    act(() => {
+      onDocumentChange({ type: "doc", content: [{ type: "paragraph" }] });
+    });
+
+    expect(
+      screen.getByRole("button", { name: "Project Kickoff" }),
+    ).not.toBeNull();
+    expect(hoisted.persistChange).not.toHaveBeenCalled();
+  });
+
+  it("hides template suggestions for structure-only content", () => {
+    hoisted.userTemplates = [
+      {
+        id: "default-project-kickoff",
+        title: "Project Kickoff",
+        pinned: false,
+        icon: { type: "emoji", value: "🚀" },
+        sections: [{ title: "Goals", description: "" }],
+      },
+    ];
+
+    render(<RawEditor sessionId="session-1" />);
+
+    const onDocumentChange = hoisted.noteEditorProps[
+      hoisted.noteEditorProps.length - 1
+    ]?.onDocumentChange as (content: unknown) => void;
+
+    act(() => {
+      onDocumentChange({
+        type: "doc",
+        content: [
+          {
+            type: "taskList",
+            content: [{ type: "taskItem", content: [{ type: "paragraph" }] }],
+          },
+        ],
+      });
+    });
+
+    expect(
+      screen.queryByRole("button", { name: "Project Kickoff" }),
+    ).toBeNull();
+
+    act(() => {
+      onDocumentChange({
+        type: "doc",
+        content: [{ type: "paragraph" }, { type: "paragraph" }],
+      });
+    });
+
+    expect(
+      screen.queryByRole("button", { name: "Project Kickoff" }),
+    ).toBeNull();
+
+    act(() => {
+      onDocumentChange({ type: "doc", content: [{ type: "paragraph" }] });
+    });
+
+    expect(
+      screen.getByRole("button", { name: "Project Kickoff" }),
+    ).not.toBeNull();
+  });
+
+  it("prioritizes event-aware template suggestions", () => {
+    hoisted.eventParticipants = [
+      { name: "John", is_current_user: true },
+      { name: "Ada", is_current_user: false },
+    ];
+    hoisted.userTemplates = [
+      {
+        id: "default-daily-standup",
+        title: "Daily Standup",
+        pinned: false,
+        sections: [{ title: "Today", description: "" }],
+      },
+      {
+        id: "default-project-kickoff",
+        title: "Project Kickoff",
+        pinned: false,
+        sections: [{ title: "Goals", description: "" }],
+      },
+      {
+        id: "default-one-on-one-meeting",
+        title: "1:1 Meeting",
+        pinned: false,
+        sections: [{ title: "Updates", description: "" }],
+      },
+      {
+        id: "default-sales-discovery-call",
+        title: "Sales Discovery Call",
+        pinned: false,
+        sections: [{ title: "Customer Needs", description: "" }],
+      },
+    ];
+
+    render(
+      <RawEditor
+        sessionId="session-1"
+        eventTitle="Acme product demo"
+        eventDescription="Qualify the prospect and understand their budget"
+      />,
+    );
+
+    expect(
+      screen.getAllByRole("button").map((button) => button.textContent),
+    ).toEqual([
+      "Template iconSales Discovery Call",
+      "Template icon1:1 Meeting",
+      "Template iconProject Kickoff",
+      "New template",
+    ]);
+  });
+
+  it("prioritizes one-on-one notes for two-person events", () => {
+    hoisted.eventParticipants = [
+      { name: "John", is_current_user: true },
+      { name: "Ada", is_current_user: false },
+    ];
+    hoisted.userTemplates = [
+      {
+        id: "default-daily-standup",
+        title: "Daily Standup",
+        pinned: false,
+        sections: [{ title: "Today", description: "" }],
+      },
+      {
+        id: "default-project-kickoff",
+        title: "Project Kickoff",
+        pinned: false,
+        sections: [{ title: "Goals", description: "" }],
+      },
+      {
+        id: "default-one-on-one-meeting",
+        title: "1:1 Meeting",
+        pinned: false,
+        sections: [{ title: "Updates", description: "" }],
+      },
+    ];
+
+    render(<RawEditor sessionId="session-1" eventTitle="Weekly catch-up" />);
+
+    expect(
+      screen.getAllByRole("button").map((button) => button.textContent),
+    ).toEqual([
+      "Template icon1:1 Meeting",
+      "Template iconProject Kickoff",
+      "Template iconDaily Standup",
+      "New template",
+    ]);
+  });
+
+  it("creates a template from the empty memo state", async () => {
+    render(<RawEditor sessionId="session-1" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "New template" }));
+
+    await waitFor(() =>
+      expect(hoisted.createTemplate).toHaveBeenCalledWith({
+        title: "New Template",
+        description: "",
+        sections: [],
+      }),
+    );
+    expect(hoisted.openTemplatesTab).toHaveBeenCalledWith({
+      selectedMineId: "new-template",
+      selectedWebIndex: null,
+      isWebMode: false,
+      showHomepage: false,
+    });
+  });
+
+  it("hides favorite templates when the memo has content", () => {
+    hoisted.rawMd = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Existing memo" }],
+        },
+      ],
+    });
+    hoisted.userTemplates = [
+      {
+        id: "template-standup",
+        title: "Standup",
+        pinned: true,
+        pinOrder: 1,
+        icon: { type: "emoji", value: "☀️" },
+        sections: [{ title: "Today", description: "" }],
+      },
+    ];
+
+    render(<RawEditor sessionId="session-1" />);
+
+    expect(screen.queryByRole("button", { name: "Standup" })).toBeNull();
+  });
+
+  it("renders captured chat without mutating the active memo editor", () => {
+    const { rerender } = render(<RawEditor sessionId="session-1" />);
+    hoisted.meetingChatRecords = [
+      {
+        id: "msg-1",
+        platform: "zoom",
+        surface: "native",
+        sender: "Ada",
+        timestamp: "10:42 AM",
+        direction: "incoming",
+        text: "Review this together",
+        links: [],
+        capturedAt: "2026-07-13T10:00:00.000Z",
+      },
+    ];
+
+    rerender(<RawEditor sessionId="session-1" />);
+
+    expect(screen.getByText("Review this together")).not.toBeNull();
+    expect(hoisted.persistChange).not.toHaveBeenCalled();
   });
 
   it("routes dropped audio files to transcription", () => {
@@ -214,7 +785,25 @@ describe("RawEditor", () => {
     });
     expect(hoisted.processAudioFile).toHaveBeenCalledWith(audioFile, {
       allowUnknownAudio: true,
+      contentType: "audio/mpeg",
     });
+  });
+
+  it("routes pasted Voice Memos audio to transcription", () => {
+    render(<RawEditor sessionId="session-1" />);
+
+    const props = hoisted.noteEditorProps[hoisted.noteEditorProps.length - 1];
+    const fileHandlerConfig = props?.fileHandlerConfig as {
+      onPaste: (
+        files: File[],
+        items?: DataTransferItemList,
+      ) => boolean | void | { remainingFiles: File[] };
+    };
+    const file = new File(["audio"], "Brian Shin.qta", { type: "" });
+    const dataTransfer = audioDataTransfer(file, "audio/quicktime");
+
+    expect(fileHandlerConfig.onPaste([file], dataTransfer.items)).toBe(true);
+    expect(hoisted.processAudioFile).toHaveBeenCalledWith(file);
   });
 
   it("only imports the first audio file from a multi-audio drop", () => {
@@ -249,6 +838,7 @@ describe("RawEditor", () => {
     expect(
       screen.getByText("Drop to upload and transcribe audio"),
     ).not.toBeNull();
+    expect(screen.getByRole("status").className).not.toContain("backdrop-blur");
     expect(
       screen.getByText("WAV, MP3, OGG, MP4, M4A, FLAC, WEBM, or AAC audio"),
     ).not.toBeNull();
@@ -298,6 +888,7 @@ describe("RawEditor", () => {
 
     expect(hoisted.processAudioFile).toHaveBeenCalledWith(file, {
       allowUnknownAudio: true,
+      contentType: "audio/mpeg",
     });
   });
 });

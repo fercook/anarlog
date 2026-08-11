@@ -7,9 +7,23 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+.undo-delete-toast-gauge {
+  animation: undo-delete-toast-gauge var(--undo-delete-duration) linear
+    forwards;
+  transform: scaleX(var(--undo-delete-progress));
+  transform-origin: left;
+}
+
+@keyframes undo-delete-toast-gauge {
+  to {
+    transform: scaleX(0);
+  }
+}
+
 @source "../../node_modules/streamdown/dist/index.js";
 @source "../../../../packages/changelog/src";
 @source "../../../../packages/editor/src";
+@source "../../../../packages/pricing/src";
 
 @theme {
   --font-sans:
@@ -240,13 +254,6 @@
   [data-settings-content] [data-slot="select-trigger"]:hover {
     box-shadow: none !important;
   }
-
-  [data-chat-floating-anchor]:has([data-chat-cta-trigger]:is(:hover, :focus-visible, :focus-within))
-    [data-transcript-scroll-chip] {
-    --transcript-scroll-chip-bottom: calc(
-      3.75rem + env(safe-area-inset-bottom)
-    );
-  }
 }
 
 /* Search result highlighting styles — matches transcript's bg-yellow-200/50 and bg-yellow-500 */
@@ -258,4 +265,26 @@
 .ProseMirror-active-search-match {
   background-color: rgb(234 179 8) !important;
   border-radius: 2px;
+}
+
+/* Sonner switches to an edge-to-edge mobile layout when the viewport is under
+   600px; a narrow desktop window should keep the regular bottom-right toast
+   layout. Selectors are doubled to out-rank sonner's mobile rules regardless
+   of stylesheet order. */
+@media (max-width: 600px) {
+  [data-sonner-toaster][data-sonner-toaster] {
+    width: var(--width);
+    left: auto;
+    right: var(--offset-right);
+  }
+
+  [data-sonner-toaster][data-sonner-toaster][data-y-position="bottom"] {
+    bottom: var(--offset-bottom);
+  }
+
+  [data-sonner-toaster][data-sonner-toaster] [data-sonner-toast] {
+    left: auto;
+    right: auto;
+    width: var(--width);
+  }
 }

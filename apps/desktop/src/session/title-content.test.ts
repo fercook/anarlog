@@ -1,10 +1,33 @@
 import { describe, expect, it } from "vitest";
 
+import { schema } from "@anlg/editor/note";
+
 import {
+  documentTitlePlaceholder,
   ensureFirstLineTitle,
   ensureMarkdownFirstLineTitle,
   extractFirstLineTitle,
+  removeDocumentTitle,
 } from "./title-content";
+
+describe("documentTitlePlaceholder", () => {
+  it("shows Untitled only for the document title block", () => {
+    expect(
+      documentTitlePlaceholder({
+        node: schema.node("heading", { level: 1 }),
+        pos: 0,
+        hasAnchor: true,
+      }),
+    ).toBe("Untitled");
+    expect(
+      documentTitlePlaceholder({
+        node: schema.node("paragraph"),
+        pos: 2,
+        hasAnchor: true,
+      }),
+    ).toBe("");
+  });
+});
 
 describe("extractFirstLineTitle", () => {
   it("returns the first block text", () => {
@@ -48,6 +71,68 @@ describe("extractFirstLineTitle", () => {
         content: [{ type: "heading", attrs: { level: 1 } }],
       }),
     ).toBeNull();
+  });
+});
+
+describe("removeDocumentTitle", () => {
+  it("removes a legacy title block that matches the session title", () => {
+    expect(
+      removeDocumentTitle(
+        {
+          type: "doc",
+          content: [
+            {
+              type: "heading",
+              attrs: { level: 1 },
+              content: [{ type: "text", text: "Planning" }],
+            },
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "Follow up" }],
+            },
+          ],
+        },
+        "Planning",
+      ),
+    ).toEqual({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "Follow up" }],
+        },
+      ],
+    });
+  });
+
+  it("keeps a first heading that is part of the memo body", () => {
+    const content = {
+      type: "doc",
+      content: [
+        {
+          type: "heading",
+          attrs: { level: 1 },
+          content: [{ type: "text", text: "Agenda" }],
+        },
+      ],
+    };
+
+    expect(removeDocumentTitle(content, "Planning")).toBe(content);
+  });
+
+  it("leaves an empty paragraph after removing an empty title", () => {
+    expect(
+      removeDocumentTitle(
+        {
+          type: "doc",
+          content: [{ type: "heading", attrs: { level: 1 } }],
+        },
+        "",
+      ),
+    ).toEqual({
+      type: "doc",
+      content: [{ type: "paragraph" }],
+    });
   });
 });
 

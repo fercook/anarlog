@@ -1,9 +1,12 @@
 @import "tailwindcss";
 @import "tailwind-scrollbar-hide/v4";
 @plugin "@tailwindcss/typography";
+@import "../../../packages/ui/src/styles/corners.css";
 @import "../../../packages/ui/src/styles/scroll-fade.css";
 
 @source "../../../packages/changelog/src";
+@source "../../../packages/editor/src";
+@source "../../../packages/pricing/src";
 @source "../../../packages/ui/src";
 
 @theme {
@@ -22,7 +25,8 @@
 
   /* ── Animations ──────────────────────────────── */
   --animate-ios-opacity-spin: ios-opacity-spin 1s linear infinite;
-  --animate-hypr-dancing-stick: hypr-dancing-stick 1s ease-in-out infinite;
+  --animate-anarlog-dancing-stick: anarlog-dancing-stick 1s ease-in-out
+    infinite;
 
   /* ── Colors: greys ────────────────────────────── */
   --grey-900: oklch(0.3 0.0197 81.53);
@@ -58,7 +62,7 @@
 }
 
 @theme inline {
-  @keyframes hypr-dancing-stick {
+  @keyframes anarlog-dancing-stick {
     0%,
     100% {
       transform: scaleY(0.2);
@@ -368,24 +372,24 @@
     0%,
     26% {
       z-index: 3;
-      transform: translate(1.6rem, 0.45rem) rotate(8deg) scale(1);
+      transform: translate(1.3rem, 0.35rem) rotate(8deg) scale(1);
     }
 
     36%,
     60% {
       z-index: 1;
-      transform: translate(-1.75rem, 0.9rem) rotate(-14deg) scale(0.92);
+      transform: translate(-1.4rem, 0.7rem) rotate(-14deg) scale(0.92);
     }
 
     70%,
     94% {
       z-index: 2;
-      transform: translate(-0.15rem, 0.25rem) rotate(-5deg) scale(0.96);
+      transform: translate(-0.1rem, 0.2rem) rotate(-5deg) scale(0.96);
     }
 
     100% {
       z-index: 3;
-      transform: translate(1.6rem, 0.45rem) rotate(8deg) scale(1);
+      transform: translate(1.3rem, 0.35rem) rotate(8deg) scale(1);
     }
   }
 
@@ -393,24 +397,24 @@
     0%,
     26% {
       z-index: 2;
-      transform: translate(-0.15rem, 0.25rem) rotate(-5deg) scale(0.96);
+      transform: translate(-0.1rem, 0.2rem) rotate(-5deg) scale(0.96);
     }
 
     36%,
     60% {
       z-index: 3;
-      transform: translate(1.6rem, 0.45rem) rotate(8deg) scale(1);
+      transform: translate(1.3rem, 0.35rem) rotate(8deg) scale(1);
     }
 
     70%,
     94% {
       z-index: 1;
-      transform: translate(-1.75rem, 0.9rem) rotate(-14deg) scale(0.92);
+      transform: translate(-1.4rem, 0.7rem) rotate(-14deg) scale(0.92);
     }
 
     100% {
       z-index: 2;
-      transform: translate(-0.15rem, 0.25rem) rotate(-5deg) scale(0.96);
+      transform: translate(-0.1rem, 0.2rem) rotate(-5deg) scale(0.96);
     }
   }
 
@@ -418,24 +422,24 @@
     0%,
     26% {
       z-index: 1;
-      transform: translate(-1.75rem, 0.9rem) rotate(-14deg) scale(0.92);
+      transform: translate(-1.4rem, 0.7rem) rotate(-14deg) scale(0.92);
     }
 
     36%,
     60% {
       z-index: 2;
-      transform: translate(-0.15rem, 0.25rem) rotate(-5deg) scale(0.96);
+      transform: translate(-0.1rem, 0.2rem) rotate(-5deg) scale(0.96);
     }
 
     70%,
     94% {
       z-index: 3;
-      transform: translate(1.6rem, 0.45rem) rotate(8deg) scale(1);
+      transform: translate(1.3rem, 0.35rem) rotate(8deg) scale(1);
     }
 
     100% {
       z-index: 1;
-      transform: translate(-1.75rem, 0.9rem) rotate(-14deg) scale(0.92);
+      transform: translate(-1.4rem, 0.7rem) rotate(-14deg) scale(0.92);
     }
   }
 
@@ -444,17 +448,17 @@
     top: 0.2rem;
     left: 50%;
     display: flex;
-    width: 4.25rem;
-    height: 5.75rem;
+    width: 3.4rem;
+    height: 4.6rem;
     align-items: center;
     justify-content: center;
     overflow: hidden;
     border: 1.5px solid #d6d3cc;
-    border-radius: 0.42rem;
+    border-radius: 0.35rem;
     background: #fffefa;
     box-shadow: 0 10px 18px rgba(24, 22, 19, 0.14);
     color: #181613;
-    margin-left: -2.125rem;
+    margin-left: -1.7rem;
     animation-duration: 9s;
     animation-iteration-count: infinite;
     animation-timing-function: ease-in-out;
@@ -468,15 +472,15 @@
 
   .ai-option-card-face {
     display: flex;
-    width: 2.35rem;
-    height: 2.35rem;
+    width: 1.9rem;
+    height: 1.9rem;
     align-items: center;
     justify-content: center;
   }
 
   .ai-option-card-face svg {
-    width: 2rem;
-    height: 2rem;
+    width: 1.6rem;
+    height: 1.6rem;
     stroke-width: 2.4;
   }
 
@@ -484,7 +488,7 @@
     position: absolute;
     display: flex;
     align-items: center;
-    font-size: 0.82rem;
+    font-size: 0.7rem;
     font-weight: 700;
     line-height: 0.86;
     letter-spacing: 0;
@@ -496,13 +500,13 @@
   }
 
   .ai-option-card-corner-top {
-    top: 0.42rem;
-    left: 0.42rem;
+    top: 0.35rem;
+    left: 0.35rem;
   }
 
   .ai-option-card-corner-bottom {
-    right: 0.42rem;
-    bottom: 0.42rem;
+    right: 0.35rem;
+    bottom: 0.35rem;
     transform: rotate(180deg);
   }
 
@@ -518,7 +522,68 @@
     animation-name: ai-card-shuffle-chip;
   }
 
+  @keyframes partner-hand-left {
+    0% {
+      transform: translateX(-3.5rem) rotate(-9deg);
+    }
+    55% {
+      transform: translateX(0) rotate(0deg);
+    }
+    70% {
+      transform: translateX(0) translateY(-0.2rem) rotate(-1.5deg);
+    }
+    85% {
+      transform: translateX(0) translateY(0.15rem) rotate(1deg);
+    }
+    100% {
+      transform: translateX(0) translateY(0) rotate(0deg);
+    }
+  }
+
+  @keyframes partner-hand-right {
+    0% {
+      transform: translateX(3.5rem) rotate(9deg);
+    }
+    55% {
+      transform: translateX(0) rotate(0deg);
+    }
+    70% {
+      transform: translateX(0) translateY(0.2rem) rotate(1.5deg);
+    }
+    85% {
+      transform: translateX(0) translateY(-0.15rem) rotate(-1deg);
+    }
+    100% {
+      transform: translateX(0) translateY(0) rotate(0deg);
+    }
+  }
+
+  /* Scroll-linked: hands meet as the section scrolls in, wiggle while
+     scrolling continues. Without support they stay statically clasped. */
+  @supports (animation-timeline: view()) {
+    .partner-hand-left,
+    .partner-hand-right {
+      animation-timing-function: linear;
+      animation-fill-mode: both;
+      animation-timeline: view();
+      animation-range: entry 0% cover 45%;
+    }
+
+    .partner-hand-left {
+      animation-name: partner-hand-left;
+    }
+
+    .partner-hand-right {
+      animation-name: partner-hand-right;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
+    .partner-hand-left,
+    .partner-hand-right {
+      animation: none;
+    }
+
     .meeting-audio-bar {
       animation: none;
       transform: scaleY(0.7);
@@ -530,132 +595,17 @@
 
     .ai-option-card-cloud {
       z-index: 3;
-      transform: translate(1.6rem, 0.45rem) rotate(8deg) scale(1);
+      transform: translate(1.3rem, 0.35rem) rotate(8deg) scale(1);
     }
 
     .ai-option-card-key {
       z-index: 2;
-      transform: translate(-0.15rem, 0.25rem) rotate(-5deg) scale(0.96);
+      transform: translate(-0.1rem, 0.2rem) rotate(-5deg) scale(0.96);
     }
 
     .ai-option-card-chip {
       z-index: 1;
-      transform: translate(-1.75rem, 0.9rem) rotate(-14deg) scale(0.92);
-    }
-  }
-
-  @keyframes char-announcement-text-primary {
-    0%,
-    36%,
-    100% {
-      opacity: 1;
-      transform: translateY(0);
-    }
-
-    46%,
-    90% {
-      opacity: 0;
-      transform: translateY(1px);
-    }
-  }
-
-  @keyframes char-announcement-text-secondary {
-    0%,
-    46%,
-    90%,
-    100% {
-      opacity: 0;
-      transform: translateY(1px);
-    }
-
-    56%,
-    80% {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  @keyframes char-announcement-bracket-left {
-    0%,
-    36%,
-    56%,
-    80%,
-    100% {
-      transform: translate(-7.05rem, -50%);
-    }
-
-    46%,
-    90% {
-      transform: translate(-0.66rem, -50%);
-    }
-  }
-
-  @keyframes char-announcement-bracket-right {
-    0%,
-    36%,
-    56%,
-    80%,
-    100% {
-      transform: translate(6.52rem, -50%);
-    }
-
-    46%,
-    90% {
-      transform: translate(0.28rem, -50%);
-    }
-  }
-
-  .char-announcement-text {
-    animation-duration: 7.4s;
-    animation-iteration-count: infinite;
-    animation-timing-function: ease-in-out;
-    left: 0;
-    right: 0;
-    will-change: opacity, transform;
-  }
-
-  .char-announcement-text-primary {
-    animation-name: char-announcement-text-primary;
-  }
-
-  .char-announcement-text-secondary {
-    animation-name: char-announcement-text-secondary;
-  }
-
-  .char-announcement-bracket {
-    animation-duration: 7.4s;
-    animation-iteration-count: infinite;
-    animation-timing-function: ease-in-out;
-    display: block;
-    transform-box: fill-box;
-    transform-origin: center;
-    will-change: transform;
-  }
-
-  .char-announcement-bracket-left {
-    animation-name: char-announcement-bracket-left;
-  }
-
-  .char-announcement-bracket-right {
-    animation-name: char-announcement-bracket-right;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .char-announcement-text,
-    .char-announcement-bracket {
-      animation: none;
-    }
-
-    .char-announcement-text-secondary {
-      opacity: 0;
-    }
-
-    .char-announcement-bracket-left {
-      transform: translate(-7.05rem, -50%);
-    }
-
-    .char-announcement-bracket-right {
-      transform: translate(6.52rem, -50%);
+      transform: translate(-1.4rem, 0.7rem) rotate(-14deg) scale(0.92);
     }
   }
 }
@@ -911,6 +861,167 @@
   .blog-prose
     :where(h3):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
     font-size: 2rem;
+  }
+}
+
+.changelog-prose {
+  color: #4f4940;
+  font-size: 1.0625rem;
+  line-height: 1.75;
+}
+
+.changelog-prose h1,
+.changelog-prose h2,
+.changelog-prose h3,
+.changelog-prose h4,
+.changelog-prose h5,
+.changelog-prose h6 {
+  margin-top: 3.5rem;
+  margin-bottom: 1rem;
+  min-height: 0;
+  color: #756b5d;
+  font-family: var(--font-hand);
+  font-size: 2rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.1 !important;
+}
+
+.changelog-prose h3,
+.changelog-prose h4,
+.changelog-prose h5,
+.changelog-prose h6 {
+  font-size: 1.625rem;
+}
+
+.changelog-prose > :first-child:is(h1, h2, h3) {
+  margin-top: 0;
+}
+
+.changelog-prose p,
+.changelog-prose li {
+  color: #4f4940;
+  font-size: 1.0625rem;
+  line-height: 1.75;
+}
+
+.changelog-prose p {
+  margin-bottom: 1.25rem;
+}
+
+.changelog-prose ul,
+.changelog-prose ol {
+  margin-bottom: 2rem;
+  padding-left: 1.5rem;
+  color: #4f4940;
+}
+
+.changelog-prose li {
+  margin-bottom: 0.75rem;
+  padding-left: 0.25rem;
+}
+
+.changelog-prose li::marker {
+  color: #b1a798;
+}
+
+.changelog-prose strong {
+  color: #181613;
+  font-weight: 650;
+}
+
+.changelog-prose code {
+  border-color: #ded7cc;
+  background: #f7f4ef;
+  color: #363029;
+  font-size: 0.875em;
+}
+
+.changelog-prose a {
+  color: #181613;
+  text-decoration-color: #b1a798;
+  text-underline-offset: 0.2em;
+}
+
+.changelog-prose a:hover {
+  color: #756b5d;
+}
+
+.changelog-prose blockquote {
+  margin: 2rem 0;
+  border-left-color: #b1a798;
+  padding-left: 1.25rem;
+  color: #756b5d;
+}
+
+.changelog-prose img {
+  width: 100%;
+  margin: 2.5rem 0;
+  border-color: #eee8df;
+  border-radius: 0.75rem;
+}
+
+.changelog-prose [data-changelog-banner] {
+  margin-bottom: 3rem;
+  border-color: #c9d9ec;
+  border-radius: 0.75rem;
+  background: #f3f7fc;
+  padding: 1.25rem 1.5rem;
+  color: #29466c;
+}
+
+.changelog-prose [data-changelog-banner][data-variant="warning"] {
+  border-color: #e8d6a8;
+  background: #fcf8ed;
+  color: #684f1e;
+}
+
+.changelog-prose [data-changelog-banner-title] {
+  margin-bottom: 0.375rem;
+  color: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.changelog-prose [data-changelog-banner-content],
+.changelog-prose [data-changelog-banner-content] p,
+.changelog-prose [data-changelog-banner-content] ul,
+.changelog-prose [data-changelog-banner-content] ol,
+.changelog-prose [data-changelog-banner-content] li,
+.changelog-prose [data-changelog-banner-content] strong,
+.changelog-prose [data-changelog-banner-content] a,
+.changelog-prose [data-changelog-banner-content] a:hover {
+  color: inherit;
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.changelog-prose [data-changelog-banner-content] ul,
+.changelog-prose [data-changelog-banner-content] ol,
+.changelog-prose [data-changelog-banner-content] li {
+  margin-bottom: 0.25rem;
+}
+
+.changelog-prose [data-changelog-banner-content] li::marker {
+  color: inherit;
+}
+
+.changelog-prose [data-changelog-banner-content] a {
+  text-decoration-color: currentColor;
+}
+
+.changelog-prose [data-changelog-banner-content] p:last-child,
+.changelog-prose [data-changelog-banner-content] ul:last-child,
+.changelog-prose [data-changelog-banner-content] ol:last-child {
+  margin-bottom: 0;
+}
+
+@media (min-width: 768px) {
+  .changelog-prose h1,
+  .changelog-prose h2 {
+    font-size: 2.25rem;
   }
 }
 

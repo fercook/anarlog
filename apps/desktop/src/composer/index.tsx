@@ -1,17 +1,19 @@
 import {
-  ArrowUpIcon,
-  ArrowUpRightIcon,
-  Settings2Icon,
-  SparklesIcon,
-  XIcon,
-} from "lucide-react";
+  ArrowUp,
+  ArrowUpRight,
+  GearSix,
+  Sparkle,
+  X,
+} from "@phosphor-icons/react";
+import { platform } from "@tauri-apps/plugin-os";
 import { useEffect, useRef } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 
-import { ChatEditor, type ChatEditorHandle } from "@hypr/editor/chat";
-import type { PlaceholderFunction } from "@hypr/editor/plugins";
-import { commands as windowsCommands } from "@hypr/plugin-windows";
-import { cn } from "@hypr/utils";
+import { ChatEditor, type ChatEditorHandle } from "@anlg/editor/chat";
+import type { PlaceholderFunction } from "@anlg/editor/plugins";
+import { commands as windowsCommands } from "@anlg/plugin-windows";
+import { sonnerToast } from "@anlg/ui/components/ui/toast";
+import { cn } from "@anlg/utils";
 
 import { useLanguageModel } from "~/ai/hooks";
 import {
@@ -21,24 +23,22 @@ import {
 } from "~/chat/components/input/hooks";
 import { ChatSession } from "~/chat/components/session-provider";
 import { dedupeByKey, type ContextRef } from "~/chat/context/entities";
+import { useChatGroup } from "~/chat/store/queries";
 import { useChatActions } from "~/chat/store/use-chat-actions";
 import { useShell } from "~/contexts/shell";
 import { useMentionConfig } from "~/editor-bridge/mention-config";
-import * as main from "~/store/tinybase/store/main";
+import { useOwnerUserId } from "~/shared/owner-user";
 
 export function ComposerScreen() {
   const { chat } = useShell();
   const model = useLanguageModel("chat");
-  const { user_id } = main.UI.useValues(main.STORE_ID);
-  const currentTitle = main.UI.useCell(
-    "chat_groups",
-    chat.groupId ?? "",
-    "title",
-    main.STORE_ID,
-  );
+  const userId = useOwnerUserId();
+  const currentChatGroup = useChatGroup(chat.groupId, chat.scope);
   const { handleSendMessage } = useChatActions({
+    chatScope: chat.scope,
     groupId: chat.groupId,
     onGroupCreated: chat.setGroupId,
+    onGroupCreateFailed: chat.rollbackFailedGroup,
   });
 
   useEffect(() => {
@@ -62,7 +62,7 @@ export function ComposerScreen() {
     [],
   );
 
-  if (!user_id) {
+  if (!userId) {
     return <div className="h-screen w-screen bg-transparent" />;
   }
 
@@ -99,7 +99,7 @@ export function ComposerScreen() {
               }
               onStop={sessionProps.stop}
               onSendMessage={sendMessage}
-              title={currentTitle || "Ask Anarlog AI anything"}
+              title={currentChatGroup?.title || "Ask Anarlog AI anything"}
             />
           ) : (
             <ComposerSettingsCard />
@@ -138,7 +138,7 @@ function ComposerSettingsCard() {
             "hover:bg-primary-foreground/12 hover:text-primary-foreground",
           ])}
         >
-          <XIcon className="size-4" />
+          <X className="size-4" />
         </button>
       </div>
 
@@ -151,7 +151,7 @@ function ComposerSettingsCard() {
           "hover:bg-primary-foreground/10 hover:text-primary-foreground",
         ])}
       >
-        <Settings2Icon className="size-4" />
+        <GearSix className="size-4" />
         Configure a chat model in Settings
       </button>
     </div>
@@ -189,6 +189,7 @@ function ComposerInput({
     onSendMessage,
   });
   const mentionConfig = useMentionConfig();
+  const primaryModifier = platform() === "macos" ? "⌘" : "Ctrl";
 
   useAutoFocusEditor({
     editorRef,
@@ -223,7 +224,7 @@ function ComposerInput({
               "hover:bg-primary-foreground/12 hover:text-primary-foreground transition-colors",
             ])}
           >
-            <ArrowUpRightIcon className="size-3.5" />
+            <ArrowUpRight className="size-3.5" />
             Open Anarlog
           </button>
           <button
@@ -236,13 +237,14 @@ function ComposerInput({
               "hover:bg-primary-foreground/12 hover:text-primary-foreground",
             ])}
           >
-            <XIcon className="size-4" />
+            <X className="size-4" />
           </button>
         </div>
       </div>
 
       <ChatEditor
         ref={editorRef}
+        onAttachmentError={(message) => sonnerToast.error(message)}
         className={cn([
           "text-primary-foreground max-h-[88px] min-h-[34px] overflow-y-auto text-[15px] leading-6",
           "[&_.ProseMirror]:min-h-[34px] [&_.ProseMirror]:outline-none",
@@ -261,7 +263,7 @@ function ComposerInput({
             Esc to dismiss
           </span>
           <span className="bg-primary-foreground/8 rounded-full px-2 py-1">
-            ⌘ ↩ to send
+            {primaryModifier} ↩ to send
           </span>
         </div>
 
@@ -275,7 +277,7 @@ function ComposerInput({
               "hover:bg-primary-foreground/12 hover:text-primary-foreground",
             ])}
           >
-            <SparklesIcon className="size-3.5" />
+            <Sparkle className="size-3.5" />
             Stop
           </button>
         ) : (
@@ -294,7 +296,7 @@ function ComposerInput({
               !hasContent && !disabled && "opacity-55",
             ])}
           >
-            <ArrowUpIcon className="size-4" />
+            <ArrowUp className="size-4" />
           </button>
         )}
       </div>

@@ -1,48 +1,51 @@
 import "./styles/globals.css";
 import "./styles/cursor.css";
 
-import * as Sentry from "@sentry/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode, useMemo } from "react";
 import ReactDOM from "react-dom/client";
-import { Provider as TinyBaseProvider, useStores } from "tinybase/ui-react";
 import { createManager } from "tinytick";
 import {
   Provider as TinyTickProvider,
   useCreateManager,
 } from "tinytick/ui-react";
 
-import "@hypr/ui/globals.css";
+import "@anlg/ui/globals.css";
+import { commands as analyticsCommands } from "@anlg/plugin-analytics";
 import {
   getCurrentWebviewWindowLabel,
   init as initWindowsPlugin,
-} from "@hypr/plugin-windows";
-import { Toaster } from "@hypr/ui/components/ui/toast";
+} from "@anlg/plugin-windows";
+import { Toaster } from "@anlg/ui/components/ui/toast";
 
 import { AITaskWindowSyncBridge } from "./ai/task-window-sync";
+import { trackAnalyticsEvent } from "./analytics";
 import { createToolRegistry } from "./contexts/tool-registry/core";
-import { env } from "./env";
+import {
+  captureOperationalError,
+  initializeErrorReporting,
+} from "./error-reporting";
 import { AppI18nProvider } from "./i18n/provider";
 import { FloatingMeetingWindowHost } from "./meeting-float/host";
 import { routeTree } from "./routeTree.gen";
 import { EventListeners } from "./services/event-listeners";
+import { MeetingImportSync } from "./services/meeting-import-sync";
 import { TaskManager } from "./services/task-manager";
+import { TrayRecordingSync } from "./services/tray-recording";
+import { TrayScheduleSync } from "./services/tray-schedule";
+import { UpdaterMeetingSync } from "./services/updater-meeting";
 import { useRemoteSessionDeletionUndoListener } from "./session/hooks/useDeleteSession";
-import { RawEditorSyncBridge } from "./session/raw-editor-sync";
+import { refreshLegacySettingsSnapshots } from "./settings/legacy-snapshots";
+import { migratePlaintextAiProviderApiKeys } from "./settings/providers";
+import { initializeApplicationSettings } from "./settings/queries";
+import { initializeAppExitFlush } from "./shared/app-exit";
+import { useConfigValue } from "./shared/config";
 import { ErrorComponent, NotFoundComponent } from "./shared/control";
+import { startInteractionProfiler } from "./shared/perf/interaction-profiler";
 import { bootstrapThemeFromSettings } from "./shared/theme/apply";
 import { AppThemeProvider } from "./shared/theme/provider";
-import {
-  type Store,
-  STORE_ID,
-  StoreComponent,
-} from "./store/tinybase/store/main";
-import {
-  STORE_ID as SETTINGS_STORE_ID,
-  type Store as SettingsStore,
-  StoreComponent as SettingsStoreComponent,
-} from "./store/tinybase/store/settings";
+import type { ThemePreference } from "./shared/theme/resolve";
 import { createAITaskStore } from "./store/zustand/ai-task";
 import { listenerStore } from "./store/zustand/listener/instance";
 
@@ -63,21 +66,7 @@ declare module "@tanstack/react-router" {
 }
 
 function App() {
-  const stores = useStores();
-
-  const store = stores[STORE_ID] as unknown as Store;
-  const settingsStore = stores[SETTINGS_STORE_ID] as unknown as SettingsStore;
-
-  const aiTaskStore = useMemo(() => {
-    if (!store || !settingsStore) {
-      return null;
-    }
-    return createAITaskStore({ persistedStore: store, settingsStore });
-  }, [store, settingsStore]);
-
-  if (!store || !settingsStore || !aiTaskStore) {
-    return <div className="bg-background h-screen w-screen" />;
-  }
+  const aiTaskStore = useMemo(() => createAITaskStore(), []);
 
   return (
     <AppThemeProvider>
@@ -86,8 +75,6 @@ function App() {
         <RouterProvider
           router={router}
           context={{
-            persistedStore: store,
-            internalStore: store,
             listenerStore,
             aiTaskStore,
             toolRegistry,
@@ -98,46 +85,53 @@ function App() {
   );
 }
 
-if (env.VITE_SENTRY_DSN) {
-  Sentry.init({
-    dsn: env.VITE_SENTRY_DSN,
-    release: env.VITE_APP_VERSION
-      ? `hyprnote-desktop@${env.VITE_APP_VERSION}`
-      : undefined,
-    environment: import.meta.env.MODE,
-    tracePropagationTargets: [],
-    integrations: [Sentry.replayIntegration()],
-    replaysSessionSampleRate: 0.1,
-    replaysOnErrorSampleRate: 1.0,
-  });
-}
+initializeErrorReporting();
 
-function AppWithTiny() {
+function AppRoot() {
   const manager = useCreateManager(() => {
     return createManager().start();
   });
-  const isMainWindow = getCurrentWebviewWindowLabel() === "main";
+  const theme = useConfigValue("theme") as ThemePreference;
   useRemoteSessionDeletionUndoListener(isMainWindow);
 
   return (
     <QueryClientProvider client={queryClient}>
       <TinyTickProvider manager={manager}>
-        <TinyBaseProvider>
-          <StoreComponent />
-          <SettingsStoreComponent />
-          <RawEditorSyncBridge />
-          <App />
-          {isMainWindow ? <TaskManager /> : null}
-          {isMainWindow ? <FloatingMeetingWindowHost /> : null}
-          {isMainWindow ? <EventListeners /> : null}
-          <Toaster />
-        </TinyBaseProvider>
+        <App />
+        {isMainWindow ? <TaskManager /> : null}
+        {isMainWindow ? <FloatingMeetingWindowHost /> : null}
+        {isMainWindow ? <EventListeners /> : null}
+        {isMainWindow ? <MeetingImportSync /> : null}
+        {isMainWindow ? <TrayScheduleSync /> : null}
+        {isMainWindow ? <TrayRecordingSync /> : null}
+        {isMainWindow ? <UpdaterMeetingSync /> : null}
+        <Toaster position="bottom-right" theme={theme} />
       </TinyTickProvider>
     </QueryClientProvider>
   );
 }
 
 initWindowsPlugin();
+
+const isMainWindow = getCurrentWebviewWindowLabel() === "main";
+
+if (isMainWindow) {
+  void analyticsCommands.eventFireAndForget({ event: "app_started" });
+  try {
+    const firstOpenKey = "anarlog:analytics:first-opened";
+    if (localStorage.getItem(firstOpenKey) === null) {
+      localStorage.setItem(firstOpenKey, "1");
+      trackAnalyticsEvent("app_first_opened", {
+        first_open_marker: "local_install",
+      });
+    }
+  } catch {}
+  void initializeAppExitFlush().catch((error) => {
+    captureOperationalError(error, {
+      operation: "app_exit_flush_initialize",
+    });
+  });
+}
 
 const rootElement = document.getElementById("root")!;
 
@@ -152,14 +146,33 @@ async function enableReactScanInDev() {
   } catch (error) {
     console.warn("Failed to start React Scan:", error);
   }
+
+  startInteractionProfiler();
 }
 
 async function renderApp() {
+  if (isMainWindow) {
+    await refreshLegacySettingsSnapshots().catch((error) => {
+      captureOperationalError(error, {
+        operation: "legacy_settings_refresh",
+      });
+    });
+    await initializeApplicationSettings().catch((error) => {
+      captureOperationalError(error, {
+        operation: "application_settings_initialize",
+      });
+    });
+    await migratePlaintextAiProviderApiKeys().catch((error) => {
+      captureOperationalError(error, {
+        operation: "ai_credentials_migrate",
+      });
+    });
+  }
   await Promise.all([bootstrapThemeFromSettings(), enableReactScanInDev()]);
   const root = ReactDOM.createRoot(rootElement);
   root.render(
     <StrictMode>
-      <AppWithTiny />
+      <AppRoot />
     </StrictMode>,
   );
 }

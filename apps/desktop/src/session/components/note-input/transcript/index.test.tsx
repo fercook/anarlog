@@ -1,32 +1,27 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Transcript } from "./index";
 
 const {
-  useSliceRowIdsMock,
-  useStoreMock,
   useListenerMock,
   useAudioPlayerMock,
+  useSessionTranscriptsMock,
+  regenerateTranscriptMock,
 } = vi.hoisted(() => ({
-  useSliceRowIdsMock: vi.fn(),
-  useStoreMock: vi.fn(),
   useListenerMock: vi.fn(),
   useAudioPlayerMock: vi.fn(),
+  useSessionTranscriptsMock: vi.fn(),
+  regenerateTranscriptMock: vi.fn(),
 }));
 
-vi.mock("~/store/tinybase/store/main", () => ({
-  STORE_ID: "main",
-  INDEXES: {
-    transcriptBySession: "transcriptBySession",
-  },
-  UI: {
-    useSliceRowIds: useSliceRowIdsMock,
-    useStore: useStoreMock,
-    useCheckpoints: vi.fn(() => null),
-    useIndexes: vi.fn(() => null),
-  },
+vi.mock("./actions", () => ({
+  useRegenerateTranscript: () => regenerateTranscriptMock,
+}));
+
+vi.mock("~/stt/queries", () => ({
+  useSessionTranscripts: useSessionTranscriptsMock,
 }));
 
 vi.mock("~/stt/contexts", () => ({
@@ -52,7 +47,19 @@ vi.mock("./screens/listening", () => ({
 }));
 
 vi.mock("./renderer", () => ({
-  TranscriptViewer: () => <div data-testid="transcript-viewer" />,
+  TranscriptViewer: ({
+    captureGeneration,
+    editMode,
+  }: {
+    captureGeneration: number;
+    editMode?: boolean;
+  }) => (
+    <div
+      data-testid="transcript-viewer"
+      data-capture-generation={captureGeneration}
+      data-edit-mode={String(editMode ?? false)}
+    />
+  ),
 }));
 
 vi.mock("~/stt/useUploadFile", () => ({
@@ -75,6 +82,8 @@ describe("Transcript", () => {
     getSessionMode: (id: string) => "inactive" | "active" | "finalizing";
     batch: Record<string, { error?: string | null }>;
     live: {
+      captureGenerationCounter: number;
+      captureGenerationBySession: Record<string, number>;
       degraded: null;
       requestedLiveTranscription: boolean;
       liveTranscriptionActive: boolean;
@@ -83,21 +92,24 @@ describe("Transcript", () => {
     partialWordsByChannel: Record<number, unknown[]>;
     partialHintsByChannel: Record<number, unknown[]>;
   };
-  let transcriptRowListener: (() => void) | null;
-  let transcriptWordsJson: string;
+  let transcripts: Array<{ id: string; words: unknown[] }>;
 
   afterEach(() => {
     cleanup();
   });
 
   beforeEach(() => {
-    transcriptRowListener = null;
-    transcriptWordsJson = "[]";
+    transcripts = [{ id: transcriptId, words: [] }];
 
     listenerState = {
       getSessionMode: () => "active",
       batch: {},
       live: {
+        captureGenerationCounter: 2,
+        captureGenerationBySession: {
+          [sessionId]: 1,
+          "session-2": 2,
+        },
         degraded: null,
         requestedLiveTranscription: true,
         liveTranscriptionActive: true,
@@ -107,32 +119,7 @@ describe("Transcript", () => {
       partialHintsByChannel: {},
     };
 
-    useSliceRowIdsMock.mockReturnValue([transcriptId]);
-    useStoreMock.mockReturnValue({
-      addRowListener: vi.fn(
-        (tableId: string, rowId: string, listener: () => void) => {
-          if (tableId === "transcripts" && rowId === transcriptId) {
-            transcriptRowListener = listener;
-          }
-
-          return "listener-1";
-        },
-      ),
-      delListener: vi.fn(),
-      getCell: vi.fn(
-        (tableId: string, rowId: string, cellId: "words" | "speaker_hints") => {
-          if (
-            tableId === "transcripts" &&
-            rowId === transcriptId &&
-            cellId === "words"
-          ) {
-            return transcriptWordsJson;
-          }
-
-          return undefined;
-        },
-      ),
-    });
+    useSessionTranscriptsMock.mockImplementation(() => transcripts);
     useListenerMock.mockImplementation((selector) => selector(listenerState));
     useAudioPlayerMock.mockReturnValue({ audioExists: false });
   });
@@ -145,26 +132,31 @@ describe("Transcript", () => {
 
     expect(screen.getByTestId("listening-state").textContent).toBe("listening");
 
-    transcriptWordsJson = '[{"id":"word-1","text":" Hello"}]';
-    act(() => {
-      transcriptRowListener?.();
-    });
+    transcripts = [
+      { id: transcriptId, words: [{ id: "word-1", text: " Hello" }] },
+    ];
 
     view.rerender(<Transcript sessionId={sessionId} scrollRef={scrollRef} />);
 
-    expect(screen.queryByTestId("transcript-viewer")).not.toBeNull();
+    expect(
+      screen
+        .getByTestId("transcript-viewer")
+        .getAttribute("data-capture-generation"),
+    ).toBe("1");
   });
 
-  it("shows finalizing status over existing transcript content", () => {
+  it("keeps existing transcript content unobstructed while finalizing", () => {
     listenerState = {
       ...listenerState,
       getSessionMode: () => "finalizing",
     };
-    transcriptWordsJson = '[{"id":"word-1","text":" Hello"}]';
+    transcripts = [
+      { id: transcriptId, words: [{ id: "word-1", text: " Hello" }] },
+    ];
 
     render(<Transcript sessionId={sessionId} scrollRef={createRef()} />);
 
-    expect(screen.getByText("Finalizing transcript...")).not.toBeNull();
+    expect(screen.queryByText("Finalizing transcript...")).toBeNull();
     expect(screen.getByTestId("transcript-viewer")).not.toBeNull();
   });
 
@@ -182,5 +174,36 @@ describe("Transcript", () => {
 
     expect(screen.queryByTestId("listening-state")).toBeNull();
     expect(screen.getByTestId("batch-state")).not.toBeNull();
+  });
+
+  it("renders finalized transcripts in the requested edit mode", () => {
+    listenerState = {
+      ...listenerState,
+      getSessionMode: () => "inactive",
+    };
+    transcripts = [
+      { id: transcriptId, words: [{ id: "word-1", text: " Hello" }] },
+    ];
+
+    const view = render(
+      <Transcript
+        sessionId={sessionId}
+        scrollRef={createRef()}
+        editMode={false}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("transcript-viewer").getAttribute("data-edit-mode"),
+    ).toBe("false");
+    expect(screen.queryByRole("button", { name: "Write" })).toBeNull();
+
+    view.rerender(
+      <Transcript sessionId={sessionId} scrollRef={createRef()} editMode />,
+    );
+
+    expect(
+      screen.getByTestId("transcript-viewer").getAttribute("data-edit-mode"),
+    ).toBe("true");
   });
 });

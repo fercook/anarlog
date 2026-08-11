@@ -4,12 +4,25 @@ import { z } from "zod";
 
 import { isAdminEmail } from "@/functions/admin";
 import { getRequestAppOrigin } from "@/functions/app-origin";
+import { mintDesktopSessionForAuthenticatedUser } from "@/functions/auth-session";
 import { desktopSchemeSchema } from "@/functions/desktop-flow";
+import { ensureNewAccountTrial } from "@/functions/new-account-trial";
+import {
+  isConfirmedNewAccount,
+  type NewAccountAuthMethod,
+  shouldOfferNewAccountTrialCheckoutFallback,
+} from "@/functions/new-account-trial-policy";
 import {
   getSupabaseAdminClient,
   getSupabaseDesktopFlowClient,
   getSupabaseServerClient,
 } from "@/functions/supabase";
+import { sanitizeInternalReturnPath } from "@/lib/auth-redirect";
+import { captureOperationalError } from "@/lib/error-reporting";
+import {
+  clearServerAnalyticsIdentity,
+  identifyServerUserFromRequest,
+} from "@/lib/server-analytics";
 
 const shared = z.object({
   flow: z.enum(["desktop", "web"]).default("desktop"),
@@ -23,6 +36,63 @@ type FlowTokenResult =
   | { ok: true; access_token: string; refresh_token: string }
   | { ok: false; error: string };
 
+async function prepareNewAccountTrial(
+  flow: Flow,
+  supabase: SupabaseClient,
+  session: Session,
+  method: NewAccountAuthMethod,
+) {
+  if (!isConfirmedNewAccount(session.user, method)) {
+    return { needsTrialCheckout: false, session };
+  }
+
+  let result: Awaited<ReturnType<typeof ensureNewAccountTrial>>;
+  try {
+    result = await ensureNewAccountTrial(session.access_token);
+  } catch (error) {
+    captureOperationalError(error, {
+      operation: "new_account_trial_start",
+      context: {
+        flow,
+        method,
+        user_id: session.user.id,
+      },
+    });
+    return {
+      needsTrialCheckout: shouldOfferNewAccountTrialCheckoutFallback({
+        flow,
+        method,
+        user: session.user,
+      }),
+      session,
+    };
+  }
+
+  if (flow !== "web" || result !== "started") {
+    return { needsTrialCheckout: false, session };
+  }
+
+  const { data, error } = await supabase.auth.refreshSession({
+    refresh_token: session.refresh_token,
+  });
+  if (error || !data.session) {
+    captureOperationalError(
+      error ?? new Error("New account trial session refresh failed"),
+      {
+        operation: "new_account_trial_session_refresh",
+        context: {
+          flow,
+          method,
+          user_id: session.user.id,
+        },
+      },
+    );
+    return { needsTrialCheckout: false, session };
+  }
+
+  return { needsTrialCheckout: false, session: data.session };
+}
+
 function buildAuthCallbackParams(data: {
   flow: Flow;
   scheme?: string;
@@ -30,7 +100,9 @@ function buildAuthCallbackParams(data: {
 }) {
   const params = new URLSearchParams({ flow: data.flow });
   if (data.scheme) params.set("scheme", data.scheme);
-  if (data.redirect) params.set("redirect", data.redirect);
+  if (data.redirect) {
+    params.set("redirect", sanitizeInternalReturnPath(data.redirect));
+  }
   return params;
 }
 
@@ -78,7 +150,7 @@ async function resolveTokensForFlow({
   return tokenSuccess(desktopSession);
 }
 
-function toSuccessTokenResponse(result: FlowTokenResult) {
+function toSuccessTokenResponse(result: FlowTokenResult, userId?: string) {
   if (!result.ok) {
     return { success: false as const, error: result.error };
   }
@@ -86,10 +158,11 @@ function toSuccessTokenResponse(result: FlowTokenResult) {
     success: true as const,
     access_token: result.access_token,
     refresh_token: result.refresh_token,
+    userId,
   };
 }
 
-function toMutationTokenResponse(result: FlowTokenResult) {
+function toMutationTokenResponse(result: FlowTokenResult, userId?: string) {
   if (!result.ok) {
     return { error: true as const, message: result.error };
   }
@@ -97,6 +170,7 @@ function toMutationTokenResponse(result: FlowTokenResult) {
     success: true as const,
     access_token: result.access_token,
     refresh_token: result.refresh_token,
+    userId,
   };
 }
 
@@ -131,9 +205,11 @@ async function mintDesktopSessionFromEmail(email: string) {
       });
 
     if (linkError || !linkData.properties?.hashed_token) {
-      console.error(
-        "[mintDesktopSessionFromEmail] generateLink failed:",
-        linkError?.message ?? "no hashed_token",
+      captureOperationalError(
+        new Error("Desktop auth link generation failed"),
+        {
+          operation: "desktop_auth_link_generate",
+        },
       );
       return null;
     }
@@ -145,10 +221,9 @@ async function mintDesktopSessionFromEmail(email: string) {
     });
 
     if (error || !authData.session) {
-      console.error(
-        "[mintDesktopSessionFromEmail] verifyOtp failed:",
-        error?.message ?? "no session",
-      );
+      captureOperationalError(new Error("Desktop auth verification failed"), {
+        operation: "desktop_auth_otp_verify",
+      });
       return null;
     }
 
@@ -156,8 +231,10 @@ async function mintDesktopSessionFromEmail(email: string) {
       access_token: authData.session.access_token,
       refresh_token: authData.session.refresh_token,
     };
-  } catch (e) {
-    console.error("[mintDesktopSessionFromEmail] unexpected error:", e);
+  } catch {
+    captureOperationalError(new Error("Desktop auth session mint failed"), {
+      operation: "desktop_auth_session_mint",
+    });
     return null;
   }
 }
@@ -237,6 +314,21 @@ export const signOutFn = createServerFn({ method: "POST" }).handler(
       return { success: false, message: error.message };
     }
 
+    clearServerAnalyticsIdentity();
+    return { success: true };
+  },
+);
+
+export const signOutEverywhereFn = createServerFn({ method: "POST" }).handler(
+  async () => {
+    const supabase = getSupabaseServerClient();
+    const { error } = await supabase.auth.signOut({ scope: "global" });
+
+    if (error) {
+      return { success: false, message: error.message };
+    }
+
+    clearServerAnalyticsIdentity();
     return { success: true };
   },
 );
@@ -258,16 +350,30 @@ export const exchangeOAuthCode = createServerFn({ method: "POST" })
     }
 
     await upsertAdminGithubTokenIfNeeded(supabase, authData.session);
+    await identifyServerUserFromRequest(authData.session.user.id, {
+      method: "oauth",
+      flow: data.flow,
+    });
+    const trial = await prepareNewAccountTrial(
+      data.flow,
+      supabase,
+      authData.session,
+      "oauth",
+    );
     const tokens = await resolveTokensForFlow({
       flow: data.flow,
-      session: authData.session,
+      session: trial.session,
     });
-    return toSuccessTokenResponse(tokens);
+    const response = toSuccessTokenResponse(tokens, authData.session.user.id);
+    return response.success
+      ? { ...response, newAccount: trial.needsTrialCheckout }
+      : response;
   });
 
 export const doPasswordSignUp = createServerFn({ method: "POST" })
   .inputValidator(
     shared.extend({
+      name: z.string().trim().min(1).max(100),
       email: z.string().email(),
       password: z.string().min(6),
     }),
@@ -280,6 +386,10 @@ export const doPasswordSignUp = createServerFn({ method: "POST" })
       email: data.email,
       password: data.password,
       options: {
+        data: {
+          full_name: data.name,
+          name: data.name,
+        },
         emailRedirectTo: buildAuthCallbackUrl(params),
       },
     });
@@ -289,15 +399,31 @@ export const doPasswordSignUp = createServerFn({ method: "POST" })
     }
 
     if (authData.session) {
+      const trial = await prepareNewAccountTrial(
+        data.flow,
+        supabase,
+        authData.session,
+        "password-signup",
+      );
       const tokens = await resolveTokensForFlow({
         flow: data.flow,
-        session: authData.session,
+        session: trial.session,
         email: data.email,
       });
-      return toMutationTokenResponse(tokens);
+      const response = toMutationTokenResponse(
+        tokens,
+        authData.session.user.id,
+      );
+      return response.success
+        ? { ...response, newAccount: trial.needsTrialCheckout }
+        : response;
     }
 
-    return { success: true, needsConfirmation: true };
+    return {
+      success: true,
+      needsConfirmation: true,
+      userId: authData.user?.id,
+    };
   });
 
 export const doPasswordSignIn = createServerFn({ method: "POST" })
@@ -328,7 +454,7 @@ export const doPasswordSignIn = createServerFn({ method: "POST" })
       session: authData.session,
       email: data.email,
     });
-    return toMutationTokenResponse(tokens);
+    return toMutationTokenResponse(tokens, authData.session.user.id);
   });
 
 export const exchangeOtpToken = createServerFn({ method: "POST" })
@@ -357,6 +483,13 @@ export const exchangeOtpToken = createServerFn({ method: "POST" })
       return { success: false, error: error?.message || "Unknown error" };
     }
 
+    const trial = await prepareNewAccountTrial(
+      data.flow,
+      supabase,
+      authData.session,
+      data.type,
+    );
+
     const shouldMintDesktopSession =
       data.flow === "desktop" &&
       data.type !== "recovery" &&
@@ -364,26 +497,40 @@ export const exchangeOtpToken = createServerFn({ method: "POST" })
     const flow: Flow = shouldMintDesktopSession ? "desktop" : "web";
     const tokens = await resolveTokensForFlow({
       flow,
-      session: authData.session,
+      session: trial.session,
     });
-    return toSuccessTokenResponse(tokens);
+    const response = toSuccessTokenResponse(tokens, authData.session.user.id);
+    return response.success
+      ? { ...response, newAccount: trial.needsTrialCheckout }
+      : response;
   });
 
-export const createDesktopSession = createServerFn({ method: "POST" })
-  .inputValidator(z.object({ email: z.string().email() }))
-  .handler(async ({ data }) => mintDesktopSessionFromEmail(data.email));
+export const createDesktopSession = createServerFn({ method: "POST" }).handler(
+  async () => {
+    const supabase = getSupabaseServerClient();
+    return mintDesktopSessionForAuthenticatedUser({
+      getUser: () => supabase.auth.getUser(),
+      mintSession: mintDesktopSessionFromEmail,
+    });
+  },
+);
 
 export const doPasswordResetRequest = createServerFn({ method: "POST" })
   .inputValidator(
     z.object({
       email: z.string().email(),
+      flow: z.enum(["desktop", "web"]).default("web"),
+      scheme: desktopSchemeSchema.optional(),
+      redirect: z.string().optional(),
     }),
   )
   .handler(async ({ data }) => {
     const supabase = getSupabaseServerClient();
+    const params = buildAuthCallbackParams(data);
+    params.set("type", "recovery");
 
     const { error } = await supabase.auth.resetPasswordForEmail(data.email, {
-      redirectTo: `${getRequestAppOrigin()}/callback/auth?flow=web&type=recovery`,
+      redirectTo: buildAuthCallbackUrl(params),
     });
 
     if (error) {
@@ -397,17 +544,29 @@ export const doUpdatePassword = createServerFn({ method: "POST" })
   .inputValidator(
     z.object({
       password: z.string().min(6),
+      flow: z.enum(["desktop", "web"]).default("web"),
     }),
   )
   .handler(async ({ data }) => {
     const supabase = getSupabaseServerClient();
 
-    const { error } = await supabase.auth.updateUser({
+    const { data: authData, error } = await supabase.auth.updateUser({
       password: data.password,
     });
 
     if (error) {
       return { error: true, message: error.message };
+    }
+
+    if (data.flow === "desktop" && authData.user.email) {
+      const session = await mintDesktopSessionFromEmail(authData.user.email);
+      if (session) {
+        return {
+          success: true,
+          access_token: session.access_token,
+          refresh_token: session.refresh_token,
+        };
+      }
     }
 
     return { success: true };

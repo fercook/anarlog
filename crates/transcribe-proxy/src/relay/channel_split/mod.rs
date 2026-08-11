@@ -36,7 +36,7 @@ pub struct ChannelSplitProxy {
     mic_request: ClientRequestBuilder,
     spk_request: ClientRequestBuilder,
     initial_message: Option<InitialMessage>,
-    response_transformer: Option<ResponseTransformer>,
+    response_transformers: [Option<ResponseTransformer>; 2],
     connect_timeout: Duration,
     on_close: Option<OnCloseCallback>,
     client_message_filter: Option<ClientMessageFilter>,
@@ -47,7 +47,7 @@ impl ChannelSplitProxy {
     pub fn new(
         upstream_request: ClientRequestBuilder,
         initial_message: Option<InitialMessage>,
-        response_transformer: Option<ResponseTransformer>,
+        response_transformers: [Option<ResponseTransformer>; 2],
         connect_timeout: Duration,
         on_close: Option<OnCloseCallback>,
     ) -> Self {
@@ -55,7 +55,7 @@ impl ChannelSplitProxy {
             upstream_request.clone(),
             upstream_request,
             initial_message,
-            response_transformer,
+            response_transformers,
             connect_timeout,
             on_close,
         )
@@ -65,7 +65,7 @@ impl ChannelSplitProxy {
         mic_request: ClientRequestBuilder,
         spk_request: ClientRequestBuilder,
         initial_message: Option<InitialMessage>,
-        response_transformer: Option<ResponseTransformer>,
+        response_transformers: [Option<ResponseTransformer>; 2],
         connect_timeout: Duration,
         on_close: Option<OnCloseCallback>,
     ) -> Self {
@@ -73,7 +73,7 @@ impl ChannelSplitProxy {
             mic_request,
             spk_request,
             initial_message,
-            response_transformer,
+            response_transformers,
             connect_timeout,
             on_close,
             client_message_filter: None,
@@ -99,7 +99,7 @@ impl ChannelSplitProxy {
             .clone()
             .into_client_request()
             .map_err(|error| crate::ProxyError::InvalidRequest(error.to_string()))?;
-        hypr_observability::inject_current_trace_context(req.headers_mut());
+        anlg_observability::inject_current_trace_context(req.headers_mut());
 
         let result = tokio::time::timeout(timeout, connect_async(req)).await;
         match result {
@@ -144,7 +144,7 @@ impl ChannelSplitProxy {
         }
 
         tracing::info!(
-            hyprnote.duration_ms = %(duration.as_millis() as u64),
+            anarlog.duration_ms = %(duration.as_millis() as u64),
             "channel_split_proxy_closed"
         );
 
@@ -190,7 +190,7 @@ impl ChannelSplitProxy {
 
         let event_coordinator = {
             let shutdown_tx = shutdown_tx.clone();
-            let response_transformer = self.response_transformer.clone();
+            let response_transformers = self.response_transformers.clone();
             async move {
                 let mut coordinator = SplitCoordinator::default();
 
@@ -204,7 +204,7 @@ impl ChannelSplitProxy {
                             let raw_log = proxy_debug_enabled().then(|| raw.clone());
                             let upstream_error = Provider::detect_any_error(raw.as_bytes())
                                 .map(|error| (error.to_ws_close_code(), error.message));
-                            let transformed = match &response_transformer {
+                            let transformed = match &response_transformers[channel as usize] {
                                 Some(transformer) => transformer(&raw),
                                 None => Some(raw),
                             };
@@ -242,7 +242,7 @@ impl ChannelSplitProxy {
                                     passthrough_text.as_deref().unwrap_or("<none>");
 
                                 tracing::info!(
-                                    hyprnote.stream.channel = channel,
+                                    anarlog.stream.channel = channel,
                                     raw = %raw_log.as_deref().unwrap_or("<none>"),
                                     transformed = %transformed_log.as_deref().unwrap_or("<none>"),
                                     rewritten = %rewritten_log,

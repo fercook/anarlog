@@ -50,28 +50,30 @@ describe("ChatCTA", () => {
 
     expect(button.hasAttribute("data-chat-cta-trigger")).toBe(true);
     expect(button.className).toContain("h-10");
-    expect(button.className).toContain("w-40");
+    expect(button.className).toContain("w-[180px]");
     expect(button.className).toContain("cursor-text");
     expect(surface?.className).toContain("absolute");
     expect(surface?.className).toContain("bottom-0");
     expect(surface?.className).toContain("left-1/2");
-    expect(surface?.className).toContain("w-[min(640px,calc(100cqw_-_2rem))]");
+    expect(surface?.className).toContain("w-[180px]");
     expect(surface?.className).toContain(
-      "[clip-path:inset(0_calc(50%_-_3rem)_0_calc(50%_-_3rem)_round_9999px)]",
-    );
-    expect(surface?.className).toContain(
-      "transition-[clip-path,height,padding,background-color,border-color,box-shadow]",
+      "transition-[width,height,padding,background-color,border-color,box-shadow]",
     );
     expect(surface?.className).toContain("origin-bottom");
     expect(surface?.className).toContain("h-2");
+    expect(surface?.className).toContain("dark:h-3");
     expect(surface?.className).toContain("rounded-full");
-    expect(surface?.className).toContain("bg-black");
-    expect(surface?.className).toContain("dark:bg-white");
     expect(surface?.className).toContain(
-      "shadow-[0_10px_26px_rgba(0,0,0,0.22)]",
+      "bg-[linear-gradient(180deg,#faf8f6_0%,#e3e1df_100%)]",
     );
     expect(surface?.className).toContain(
-      "dark:shadow-[0_10px_30px_rgba(0,0,0,0.5)]",
+      "dark:bg-[linear-gradient(180deg,#211d1d_0%,#574f3b_100%)]",
+    );
+    expect(surface?.className).toContain(
+      "shadow-[0_0_0_1px_rgba(0,0,0,0.1),0_4px_12px_rgba(0,0,0,0.16),0_4px_16px_rgba(0,0,0,0.1),inset_0_-1px_0_rgba(0,0,0,0.25),inset_0_1px_0_rgba(255,255,255,0.4)]",
+    );
+    expect(surface?.className).toContain(
+      "dark:shadow-[0_4px_12px_rgba(33,29,29,0.1),inset_0_-1px_0_rgba(0,0,0,0.25),inset_0_1px_0_rgba(255,255,255,0.4)]",
     );
     expect(surface?.className).toContain(
       "group-hover/anarlog-chat-cta:shadow-[0_16px_42px_rgba(0,0,0,0.26)]",
@@ -94,26 +96,22 @@ describe("ChatCTA", () => {
     );
     expect(surface?.className).toContain("group-hover/anarlog-chat-cta:h-10");
     expect(surface?.className).toContain(
-      "group-hover/anarlog-chat-cta:[clip-path:inset(0_0_0_0_round_9999px)]",
+      "group-hover/anarlog-chat-cta:w-[min(640px,calc(100cqw_-_2rem))]",
     );
     expect(surface?.className).toContain(
-      "group-focus-visible/anarlog-chat-cta:[clip-path:inset(0_0_0_0_round_9999px)]",
+      "group-focus-visible/anarlog-chat-cta:w-[min(640px,calc(100cqw_-_2rem))]",
     );
+    expect(surface?.className).not.toContain("clip-path");
     expect(surface?.className).not.toContain("inset_0_0_0_1px");
     expect(button.querySelectorAll("svg")).toHaveLength(0);
-    expect(label.className).toContain("max-w-0");
     expect(label.className).toContain("opacity-0");
     expect(label.className).toContain("text-white/55");
     expect(label.className).not.toContain("ml-2");
     expect(label.className).toContain(
       "group-hover/anarlog-chat-cta:text-muted-foreground",
     );
-    expect(label.className).toContain(
-      "group-hover/anarlog-chat-cta:max-w-full",
-    );
-    expect(label.className).toContain(
-      "group-focus-within/anarlog-chat-cta:max-w-full",
-    );
+    expect(label.className).toContain("transition-opacity");
+    expect(label.className).not.toContain("max-w");
   });
 
   it("uses a compact hover rectangle for the floating trigger", () => {
@@ -124,7 +122,7 @@ describe("ChatCTA", () => {
     }).parentElement?.parentElement;
 
     expect(hoverZone?.className).toContain("h-10");
-    expect(hoverZone?.className).toContain("w-40");
+    expect(hoverZone?.className).toContain("w-[180px]");
     expect(hoverZone?.className).toContain("bottom-3");
     expect(hoverZone?.className).toContain("pb-0");
   });

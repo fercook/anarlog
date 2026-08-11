@@ -3,7 +3,7 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use hypr_audio_utils::{
+use anlg_audio_utils::{
     decode_vorbis_to_mono_wav_file, decode_vorbis_to_wav_file, mix_audio_f32,
     ogg_has_identical_channels,
 };
@@ -29,16 +29,12 @@ pub(super) fn create_disk_sink(session_dir: &Path) -> Result<DiskSink, ActorProc
     let wav_path = session_dir.join(WAV_FILE);
     let ogg_path = session_dir.join(OGG_FILE);
     let encoded_path = session_dir.join(FINAL_AUDIO_FILE);
-    let is_stereo = prepare_existing_audio_state(&encoded_path, &ogg_path, &wav_path)?;
+    let has_existing_audio = encoded_path.exists() || ogg_path.exists() || wav_path.exists();
+    let is_stereo =
+        prepare_existing_audio_state(&encoded_path, &ogg_path, &wav_path)? || !has_existing_audio;
 
-    let stereo_spec = hound::WavSpec {
-        channels: 2,
-        sample_rate: super::super::SAMPLE_RATE,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mono_spec = hound::WavSpec {
-        channels: 1,
+    let spec = hound::WavSpec {
+        channels: if is_stereo { 2 } else { 1 },
         sample_rate: super::super::SAMPLE_RATE,
         bits_per_sample: 32,
         sample_format: hound::SampleFormat::Float,
@@ -46,10 +42,13 @@ pub(super) fn create_disk_sink(session_dir: &Path) -> Result<DiskSink, ActorProc
 
     let writer = if wav_path.exists() {
         hound::WavWriter::append(&wav_path)?
-    } else if is_stereo {
-        hound::WavWriter::create(&wav_path, stereo_spec)?
     } else {
-        hound::WavWriter::create(&wav_path, mono_spec)?
+        hound::WavWriter::create(&wav_path, spec)?
+    };
+
+    let mono_spec = hound::WavSpec {
+        channels: 1,
+        ..spec
     };
 
     let (writer_mic, writer_spk) = if is_debug_mode() {
@@ -129,7 +128,7 @@ pub(super) fn finalize_disk_sink(sink: &mut DiskSink) -> Result<(), ActorProcess
 
     if sink.wav_path.exists() {
         let encoded_path = sink.wav_path.with_extension("mp3");
-        match hypr_mp3::encode_wav(&sink.wav_path, &encoded_path) {
+        match anlg_mp3::encode_wav(&sink.wav_path, &encoded_path) {
             Ok(()) => {
                 sync_file(&encoded_path);
                 sync_dir(&encoded_path);
@@ -173,7 +172,7 @@ fn prepare_existing_audio_state(
         return Ok(wav_is_stereo(wav_path)?);
     }
 
-    Ok(true)
+    Ok(false)
 }
 
 fn decode_mp3_to_wav(encoded_path: &Path, wav_path: &Path) -> Result<(), ActorProcessingErr> {
@@ -182,7 +181,7 @@ fn decode_mp3_to_wav(encoded_path: &Path, wav_path: &Path) -> Result<(), ActorPr
         std::fs::remove_file(&tmp_path)?;
     }
 
-    hypr_mp3::decode_to_wav(encoded_path, &tmp_path).map_err(into_actor_err)?;
+    anlg_mp3::decode_to_wav(encoded_path, &tmp_path).map_err(into_actor_err)?;
 
     if wav_path.exists() {
         std::fs::remove_file(wav_path)?;
@@ -302,7 +301,7 @@ mod tests {
         let session_dir = dir.path().join("session");
         std::fs::create_dir_all(&session_dir).unwrap();
         std::fs::copy(
-            hypr_data::english_1::AUDIO_MP3_PATH,
+            anlg_data::english_1::AUDIO_MP3_PATH,
             session_dir.join(FINAL_AUDIO_FILE),
         )
         .unwrap();
@@ -314,13 +313,55 @@ mod tests {
     }
 
     #[test]
+    fn create_disk_sink_preserves_new_recording_channels() {
+        let dir = tempdir().unwrap();
+        let session_dir = dir.path().join("session");
+        std::fs::create_dir_all(&session_dir).unwrap();
+
+        let mut sink = create_disk_sink(&session_dir).unwrap();
+        write_dual(&mut sink, &[0.25, -0.25], &[0.5, 0.5]).unwrap();
+        finalize_writer(&mut sink.writer, Some(&sink.wav_path)).unwrap();
+
+        let mut reader = hound::WavReader::open(session_dir.join(WAV_FILE)).unwrap();
+        assert_eq!(reader.spec().channels, 2);
+        assert_eq!(
+            reader
+                .samples::<f32>()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            vec![0.25, 0.5, -0.25, 0.5]
+        );
+    }
+
+    #[test]
+    fn create_disk_sink_duplicates_new_single_channel_recordings() {
+        let dir = tempdir().unwrap();
+        let session_dir = dir.path().join("session");
+        std::fs::create_dir_all(&session_dir).unwrap();
+
+        let mut sink = create_disk_sink(&session_dir).unwrap();
+        write_single(&mut sink, &[0.25, -0.25]).unwrap();
+        finalize_writer(&mut sink.writer, Some(&sink.wav_path)).unwrap();
+
+        let mut reader = hound::WavReader::open(session_dir.join(WAV_FILE)).unwrap();
+        assert_eq!(reader.spec().channels, 2);
+        assert_eq!(
+            reader
+                .samples::<f32>()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            vec![0.25, 0.25, -0.25, -0.25]
+        );
+    }
+
+    #[test]
     fn create_disk_sink_prefers_existing_mp3_over_stale_wav() {
         let dir = tempdir().unwrap();
         let session_dir = dir.path().join("session");
         std::fs::create_dir_all(&session_dir).unwrap();
         let encoded_path = session_dir.join(FINAL_AUDIO_FILE);
         let wav_path = session_dir.join(WAV_FILE);
-        std::fs::copy(hypr_data::english_1::AUDIO_MP3_PATH, &encoded_path).unwrap();
+        std::fs::copy(anlg_data::english_1::AUDIO_MP3_PATH, &encoded_path).unwrap();
         write_test_wav(&wav_path, 128);
         let original_frames = decoded_frame_count(&encoded_path);
 
@@ -338,7 +379,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let session_dir = dir.path().join("session");
         std::fs::create_dir_all(&session_dir).unwrap();
-        std::fs::copy(hypr_data::english_1::AUDIO_PATH, session_dir.join(WAV_FILE)).unwrap();
+        std::fs::copy(anlg_data::english_1::AUDIO_PATH, session_dir.join(WAV_FILE)).unwrap();
 
         let _sink = create_disk_sink(&session_dir).unwrap();
 
@@ -347,9 +388,9 @@ mod tests {
     }
 
     fn decoded_frame_count(path: &Path) -> usize {
-        use hypr_audio_utils::Source;
+        use anlg_audio_utils::Source;
 
-        let source = hypr_audio_utils::source_from_path(path).unwrap();
+        let source = anlg_audio_utils::source_from_path(path).unwrap();
         let channels = u16::from(source.channels()).max(1) as usize;
         source.count() / channels
     }

@@ -1,47 +1,70 @@
-import type * as main from "~/store/tinybase/store/main";
+import {
+  countTranscriptWordCharacters,
+  MIN_TRANSCRIPT_CHARACTERS_FOR_SUMMARY,
+} from "./summary-length";
 
 export const MIN_WORDS_FOR_ENHANCEMENT = 5;
 
-export function countTranscriptWords(
-  transcriptIds: string[],
-  store: main.Store | undefined,
-): number {
-  if (!store) return 0;
+export type EnhanceEligibilitySkipCode =
+  | "no_transcript"
+  | "transcript_too_short";
 
-  let totalWordCount = 0;
-  for (const transcriptId of transcriptIds) {
-    const wordsJson = store.getCell("transcripts", transcriptId, "words") as
-      | string
-      | undefined;
-    if (wordsJson) {
-      totalWordCount += (JSON.parse(wordsJson) as unknown[]).length;
-    }
-  }
-  return totalWordCount;
+export function countTranscriptWords(
+  transcripts: ReadonlyArray<{ words: readonly unknown[] }>,
+): number {
+  return transcripts.reduce(
+    (total, transcript) => total + transcript.words.length,
+    0,
+  );
 }
 
 type EligibilityResult =
-  | { eligible: true; wordCount: number }
-  | { eligible: false; reason: string; wordCount: number };
+  | { eligible: true; characterCount: number; wordCount: number }
+  | {
+      eligible: false;
+      code: EnhanceEligibilitySkipCode;
+      characterCount: number;
+      reason: string;
+      wordCount: number;
+    };
 
 export function getEligibility(
-  hasTranscript: boolean,
-  transcriptIds: string[],
-  store: main.Store | undefined,
+  transcripts: ReadonlyArray<{
+    words: ReadonlyArray<{ text?: unknown }>;
+  }>,
 ): EligibilityResult {
-  if (!hasTranscript) {
-    return { eligible: false, reason: "No transcript recorded", wordCount: 0 };
+  if (transcripts.length === 0) {
+    return {
+      eligible: false,
+      code: "no_transcript",
+      reason: "No transcript recorded",
+      characterCount: 0,
+      wordCount: 0,
+    };
   }
 
-  const wordCount = countTranscriptWords(transcriptIds, store);
+  const wordCount = countTranscriptWords(transcripts);
+  const characterCount = countTranscriptWordCharacters(transcripts);
 
   if (wordCount < MIN_WORDS_FOR_ENHANCEMENT) {
     return {
       eligible: false,
+      code: "transcript_too_short",
       reason: `Not enough words recorded (${wordCount}/${MIN_WORDS_FOR_ENHANCEMENT} minimum)`,
+      characterCount,
       wordCount,
     };
   }
 
-  return { eligible: true, wordCount };
+  if (characterCount < MIN_TRANSCRIPT_CHARACTERS_FOR_SUMMARY) {
+    return {
+      eligible: false,
+      code: "transcript_too_short",
+      reason: `Transcript too short to summarize (${characterCount}/${MIN_TRANSCRIPT_CHARACTERS_FOR_SUMMARY} characters minimum)`,
+      characterCount,
+      wordCount,
+    };
+  }
+
+  return { eligible: true, characterCount, wordCount };
 }

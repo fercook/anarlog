@@ -1,63 +1,63 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { AlertCircleIcon, ArrowRightIcon, CheckIcon } from "lucide-react";
-import { useState } from "react";
+import { ArrowRight, Check, WarningCircle } from "@phosphor-icons/react";
+import { platform } from "@tauri-apps/plugin-os";
 
-import type { PermissionStatus } from "@hypr/plugin-permissions";
-import { Button } from "@hypr/ui/components/ui/button";
-import { cn } from "@hypr/utils";
+import type { PermissionStatus } from "@anlg/plugin-permissions";
+import { Button } from "@anlg/ui/components/ui/button";
+import { cn } from "@anlg/utils";
 
-import { usePermission } from "~/shared/hooks/usePermissions";
-
-function ActionLink({
-  onClick,
-  disabled,
-  children,
-}: {
-  onClick: () => void;
-  disabled?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={cn([
-        "hover:text-foreground underline transition-colors",
-        disabled && "cursor-not-allowed opacity-50",
-      ])}
-    >
-      {children}
-    </button>
-  );
-}
+import { useMountEffect } from "~/shared/hooks/useMountEffect";
+import {
+  trackPermissionRequested,
+  usePermissionAnalytics,
+} from "~/shared/hooks/usePermissionAnalytics";
+import {
+  closePermissionAssistant,
+  usePermission,
+  usePermissionGuidance,
+} from "~/shared/hooks/usePermissions";
 
 function PermissionRow({
   title,
   description,
   status,
   isPending,
+  error,
+  permission,
   onRequest,
-  onReset,
   onOpen,
+  assisted = false,
+  runtimeCapability = false,
 }: {
   title: string;
   description: string;
   status: PermissionStatus | undefined;
   isPending: boolean;
+  error?: string | null;
+  permission: string;
   onRequest: () => void;
-  onReset: () => void;
   onOpen: () => void;
+  assisted?: boolean;
+  runtimeCapability?: boolean;
 }) {
   const { t } = useLingui();
-  const [showActions, setShowActions] = useState(false);
   const isAuthorized = status === "authorized";
   const isDenied = status === "denied";
 
   const handleButtonClick = () => {
-    if (isAuthorized || isDenied) {
+    if (runtimeCapability) {
+      if (!isAuthorized) {
+        trackPermissionRequested(permission, status, "settings", "request");
+        onRequest();
+      }
+      return;
+    }
+
+    if (assisted || isAuthorized || isDenied) {
+      trackPermissionRequested(permission, status, "settings", "open_settings");
       onOpen();
     } else {
+      trackPermissionRequested(permission, status, "settings", "request");
       onRequest();
     }
   };
@@ -71,58 +71,40 @@ function PermissionRow({
             !isAuthorized && "text-red-500",
           ])}
         >
-          {!isAuthorized && <AlertCircleIcon className="size-4" />}
+          {!isAuthorized && <WarningCircle className="size-4" />}
           <h3 className="text-sm font-medium">{title}</h3>
         </div>
-        <div className="text-muted-foreground text-xs">
-          {!showActions ? (
-            <div>
-              {!isAuthorized && <span>{description} · </span>}
-              <button
-                type="button"
-                onClick={() => setShowActions(true)}
-                className="hover:text-foreground underline transition-colors"
-              >
-                <Trans>Having trouble?</Trans>
-              </button>
-            </div>
-          ) : (
-            <div>
-              <Trans>You can</Trans>{" "}
-              <ActionLink onClick={onRequest} disabled={isPending}>
-                <Trans>Request,</Trans>
-              </ActionLink>{" "}
-              <ActionLink onClick={onReset} disabled={isPending}>
-                <Trans>Reset</Trans>
-              </ActionLink>{" "}
-              <Trans>or</Trans>{" "}
-              <ActionLink onClick={onOpen} disabled={isPending}>
-                <Trans>Open</Trans>
-              </ActionLink>{" "}
-              <Trans>permission panel.</Trans>
-            </div>
-          )}
-        </div>
+        <p className="text-muted-foreground text-xs">{description}</p>
+        {error && (
+          <p role="alert" className="mt-1 text-xs text-red-500">
+            {error}
+          </p>
+        )}
       </div>
       <Button
-        variant={isAuthorized ? "outline" : "default"}
+        variant={isAuthorized ? "ghost" : "default"}
         size="icon"
         onClick={handleButtonClick}
-        disabled={isPending}
+        disabled={isPending || (runtimeCapability && isAuthorized)}
         className={cn([
           "size-8",
-          isAuthorized && "bg-muted text-foreground hover:bg-accent",
+          isAuthorized &&
+            "text-green-600 hover:bg-transparent hover:text-green-600",
         ])}
         aria-label={
-          isAuthorized
-            ? t`Open ${title.toLowerCase()} settings`
-            : t`Request ${title.toLowerCase()} permission`
+          runtimeCapability
+            ? isDenied
+              ? `${t`Try again`}: ${title}`
+              : title
+            : assisted || isAuthorized || isDenied
+              ? t`Open ${title.toLowerCase()} settings`
+              : t`Request ${title.toLowerCase()} permission`
         }
       >
         {isAuthorized ? (
-          <CheckIcon className="size-5" />
+          <Check className="size-4" />
         ) : (
-          <ArrowRightIcon className="size-5" />
+          <ArrowRight className="size-5" />
         )}
       </Button>
     </div>
@@ -147,53 +129,103 @@ function PermissionGroup({
 }
 
 export function Permissions() {
-  const { t } = useLingui();
-  const calendar = usePermission("calendar");
-  const mic = usePermission("microphone");
-  const systemAudio = usePermission("systemAudio");
-  const accessibility = usePermission("accessibility");
+  if (platform() === "macos") {
+    return <MacOSPermissions />;
+  }
 
   return (
     <div className="flex flex-col gap-8">
-      <PermissionGroup title={<Trans>Audio</Trans>}>
-        <PermissionRow
-          title={t`Microphone`}
-          description={t`Required to record your voice during meetings and calls`}
-          status={mic.status}
-          isPending={mic.isPending}
-          onRequest={mic.request}
-          onReset={mic.reset}
-          onOpen={mic.open}
-        />
-        <PermissionRow
-          title={t`System audio`}
-          description={t`Required to capture other participants' voices in meetings`}
-          status={systemAudio.status}
-          isPending={systemAudio.isPending}
-          onRequest={systemAudio.request}
-          onReset={systemAudio.reset}
-          onOpen={systemAudio.open}
-        />
-      </PermissionGroup>
+      <AudioPermissions runtimeCapabilities />
+    </div>
+  );
+}
+
+function AudioPermissions({
+  runtimeCapabilities = false,
+}: {
+  runtimeCapabilities?: boolean;
+}) {
+  const { t } = useLingui();
+  const mic = usePermission("microphone");
+  const systemAudio = usePermission("systemAudio");
+  usePermissionAnalytics("microphone", mic.confirmedStatus, "settings");
+  usePermissionAnalytics(
+    "system_audio",
+    systemAudio.confirmedStatus,
+    "settings",
+  );
+
+  return (
+    <PermissionGroup title={<Trans>Audio</Trans>}>
+      <PermissionRow
+        permission="microphone"
+        title={t`Microphone`}
+        description={t`Record your voice in meetings and calls.`}
+        status={mic.status}
+        isPending={mic.isPending}
+        error={mic.error}
+        onRequest={mic.request}
+        onOpen={mic.open}
+        runtimeCapability={runtimeCapabilities}
+      />
+      <PermissionRow
+        permission="system_audio"
+        title={t`System audio`}
+        description={t`Record other participants in meetings.`}
+        status={systemAudio.status}
+        isPending={systemAudio.isPending}
+        error={systemAudio.error}
+        onRequest={systemAudio.request}
+        onOpen={systemAudio.open}
+        runtimeCapability={runtimeCapabilities}
+      />
+    </PermissionGroup>
+  );
+}
+
+function MacOSPermissions() {
+  const { t } = useLingui();
+  const calendar = usePermission("calendar");
+  const accessibility = usePermission("accessibility");
+  const accessibilityGuidance = usePermissionGuidance("accessibility");
+  usePermissionAnalytics("calendar", calendar.confirmedStatus, "settings");
+  usePermissionAnalytics(
+    "accessibility",
+    accessibility.confirmedStatus,
+    "settings",
+  );
+
+  // Leaving settings while the assistant is up would strand its overlay on top
+  // of System Settings with nothing left to dismiss it.
+  useMountEffect(() => () => void closePermissionAssistant());
+
+  return (
+    <div className="flex flex-col gap-8">
+      <AudioPermissions />
 
       <PermissionRow
+        permission="accessibility"
         title={t`Accessibility`}
-        description={t`Required to detect meeting apps and sync mute status`}
+        description={
+          accessibilityGuidance
+            ? t`Opens System Settings and guides you to add Anarlog to the ${accessibilityGuidance.paneTitle ?? "Privacy"} list.`
+            : t`Read meeting controls, chat, and participant status.`
+        }
         status={accessibility.status}
         isPending={accessibility.isPending}
         onRequest={accessibility.request}
-        onReset={accessibility.reset}
         onOpen={accessibility.open}
+        assisted={Boolean(accessibilityGuidance)}
       />
 
       <PermissionGroup title={<Trans>Others</Trans>}>
         <PermissionRow
+          permission="calendar"
           title={t`Calendar`}
-          description={t`Required to sync Apple Calendar events into Anarlog`}
+          description={t`Show Apple Calendar events in Anarlog.`}
           status={calendar.status}
           isPending={calendar.isPending}
           onRequest={calendar.request}
-          onReset={calendar.reset}
           onOpen={calendar.open}
         />
       </PermissionGroup>

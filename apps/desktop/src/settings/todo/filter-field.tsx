@@ -1,9 +1,9 @@
 import { useForm } from "@tanstack/react-form";
-import { useEffect } from "react";
 
-import { Input } from "@hypr/ui/components/ui/input";
+import { Input } from "@anlg/ui/components/ui/input";
 
-import * as settings from "~/store/tinybase/store/settings";
+import { useSetSettingValue } from "~/settings/queries";
+import { useConfigValue } from "~/shared/config";
 
 export const TODO_FILTER_SETTING_KEYS = {
   github: "todo_github_repository",
@@ -25,13 +25,8 @@ export function TodoFilterField({
   placeholder: string;
   invalidMessage?: string;
 }) {
-  const storedValue = settings.UI.useValue(settingKey, settings.STORE_ID) ?? "";
-  const setValue = settings.UI.useSetValueCallback(
-    settingKey,
-    (value: string) => value,
-    [settingKey],
-    settings.STORE_ID,
-  );
+  const storedValue = useConfigValue(settingKey) ?? "";
+  const setValue = useSetSettingValue(settingKey);
 
   const form = useForm({
     defaultValues: { value: storedValue },
@@ -44,13 +39,6 @@ export function TodoFilterField({
       setValue(value.value);
     },
   });
-
-  useEffect(() => {
-    if (form.getFieldValue("value") === storedValue) {
-      return;
-    }
-    form.setFieldValue("value", storedValue);
-  }, [form, storedValue]);
 
   return (
     <div className="flex items-center justify-between gap-4">

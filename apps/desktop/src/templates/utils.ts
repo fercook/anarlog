@@ -9,9 +9,12 @@ import {
   type UserTemplate,
 } from "./queries";
 
+import { useHumans } from "~/contacts/queries";
+import { useOwnerUserId } from "~/shared/owner-user";
 import { useWebResources } from "~/shared/ui/resource-list";
-import * as main from "~/store/tinybase/store/main";
 import { type Tab, useTabs } from "~/store/zustand/tabs";
+
+export const AUTO_TEMPLATE_ID = "__auto__";
 
 export function resolveTemplateTabSelection({
   isWebMode,
@@ -64,21 +67,22 @@ export function resolveTemplateTabSelection({
   return {
     isWebMode: false,
     selectedMineId:
-      userTemplates.find((template) => template.id === selectedMineId)?.id ??
-      userTemplates[0]?.id ??
-      null,
+      selectedMineId === AUTO_TEMPLATE_ID
+        ? AUTO_TEMPLATE_ID
+        : (userTemplates.find((template) => template.id === selectedMineId)
+            ?.id ??
+          userTemplates[0]?.id ??
+          AUTO_TEMPLATE_ID),
     selectedWebIndex: null,
     selectedWebTemplate: null,
   };
 }
 
 export function useTemplateCreatorName() {
-  const userId = main.UI.useValue("user_id", main.STORE_ID);
-  const name = main.UI.useCell("humans", userId ?? "", "name", main.STORE_ID);
+  const ownerUserId = useOwnerUserId();
+  const name = useHumans().find((human) => human.id === ownerUserId)?.name;
 
-  return typeof name === "string" && name.trim().length > 0
-    ? name.trim()
-    : "user";
+  return name?.trim() || "user";
 }
 
 export function getTemplateCreatorLabel({

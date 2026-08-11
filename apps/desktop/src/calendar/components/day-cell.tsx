@@ -6,8 +6,8 @@ import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "@hypr/ui/components/ui/popover";
-import { cn } from "@hypr/utils";
+} from "@anlg/ui/components/ui/popover";
+import { cn } from "@anlg/utils";
 
 import { EventChip } from "./event-chip";
 import { SessionChip } from "./session-chip";
@@ -125,10 +125,18 @@ export function DayCell({
         className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-hidden"
       >
         {visibleEvents.map((eventId) => (
-          <EventChip key={eventId} eventId={eventId} />
+          <EventChip
+            key={eventId}
+            eventId={eventId}
+            event={calendarData.eventsById[eventId]}
+          />
         ))}
         {visibleSessions.map((sessionId) => (
-          <SessionChip key={sessionId} sessionId={sessionId} />
+          <SessionChip
+            key={sessionId}
+            sessionId={sessionId}
+            session={calendarData.sessionsById[sessionId]}
+          />
         ))}
         {overflow > 0 && (
           <Popover>
@@ -149,10 +157,18 @@ export function DayCell({
                 </div>
                 <div className="flex flex-col gap-0.5">
                   {eventIds.map((eventId) => (
-                    <EventChip key={eventId} eventId={eventId} />
+                    <EventChip
+                      key={eventId}
+                      eventId={eventId}
+                      event={calendarData.eventsById[eventId]}
+                    />
                   ))}
                   {sessionIds.map((sessionId) => (
-                    <SessionChip key={sessionId} sessionId={sessionId} />
+                    <SessionChip
+                      key={sessionId}
+                      sessionId={sessionId}
+                      session={calendarData.sessionsById[sessionId]}
+                    />
                   ))}
                 </div>
               </AppFloatingPanel>

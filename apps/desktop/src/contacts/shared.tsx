@@ -1,9 +1,9 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { Facehash, stringHash } from "facehash";
-import { ArrowDownUp, Plus, Search, X } from "lucide-react";
-import type { ComponentProps, KeyboardEvent, RefObject } from "react";
+import { ArrowsDownUp, MagnifyingGlass, Plus, X } from "@phosphor-icons/react";
+import type { KeyboardEvent, RefObject } from "react";
 
-import { Button } from "@hypr/ui/components/ui/button";
+import { Avatar } from "@anlg/ui/components/avatar";
+import { Button } from "@anlg/ui/components/ui/button";
 import {
   AppFloatingPanel,
   DropdownMenu,
@@ -11,47 +11,20 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
-} from "@hypr/ui/components/ui/dropdown-menu";
-import { cn } from "@hypr/utils";
+} from "@anlg/ui/components/ui/dropdown-menu";
 
 import { CustomSidebarHeader } from "~/sidebar/custom-sidebar-header";
 
-const COLOR_PALETTES = [
-  "bg-amber-50 dark:bg-amber-950",
-  "bg-rose-50 dark:bg-rose-950",
-  "bg-violet-50 dark:bg-violet-950",
-  "bg-blue-50 dark:bg-blue-950",
-  "bg-teal-50 dark:bg-teal-950",
-  "bg-green-50 dark:bg-green-950",
-  "bg-cyan-50 dark:bg-cyan-950",
-  "bg-fuchsia-50 dark:bg-fuchsia-950",
-  "bg-indigo-50 dark:bg-indigo-950",
-  "bg-yellow-50 dark:bg-yellow-950",
-] as const;
-
-export const CONTACT_FACEHASH_CLASS = "text-foreground";
-
-export function getContactBgClass(name: string) {
-  const hash = stringHash(name);
-  return COLOR_PALETTES[hash % COLOR_PALETTES.length];
-}
-
 export function ContactFacehash({
   name,
+  size = 40,
   className,
-  colorClasses,
-  ...props
-}: ComponentProps<typeof Facehash>) {
-  const bgClass = colorClasses?.[0] ?? getContactBgClass(name);
-
-  return (
-    <Facehash
-      name={name}
-      className={cn([CONTACT_FACEHASH_CLASS, className])}
-      colorClasses={colorClasses ?? [bgClass]}
-      {...props}
-    />
-  );
+}: {
+  name: string;
+  size?: number;
+  className?: string;
+}) {
+  return <Avatar seed={name} label={name} size={size} className={className} />;
 }
 
 export type SortOption =
@@ -71,8 +44,13 @@ function SortDropdown({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size="icon" variant="ghost" aria-label={t`Sort options`}>
-          <ArrowDownUp size={16} />
+        <Button
+          size="icon"
+          variant="ghost"
+          className="text-muted-foreground hover:text-foreground"
+          aria-label={t`Sort options`}
+        >
+          <ArrowsDownUp size={16} />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent variant="app" align="end">
@@ -113,7 +91,6 @@ function SortDropdown({
 }
 
 export function ColumnHeader({
-  title,
   sortOption,
   setSortOption,
   onAdd,
@@ -121,7 +98,6 @@ export function ColumnHeader({
   onSearchChange,
   searchInputRef,
 }: {
-  title: React.ReactNode;
   sortOption?: SortOption;
   setSortOption?: (option: SortOption) => void;
   onAdd: () => void;
@@ -138,7 +114,7 @@ export function ColumnHeader({
 
   return (
     <div className="@container">
-      <CustomSidebarHeader title={title}>
+      <CustomSidebarHeader>
         <div className="flex shrink-0 items-center">
           {sortOption && setSortOption && (
             <div className="hidden @[220px]:block">
@@ -148,7 +124,13 @@ export function ColumnHeader({
               />
             </div>
           )}
-          <Button onClick={onAdd} size="icon" variant="ghost" title={t`Add`}>
+          <Button
+            onClick={onAdd}
+            size="icon"
+            variant="ghost"
+            className="text-muted-foreground hover:text-foreground"
+            title={t`Add`}
+          >
             <Plus size={16} />
           </Button>
         </div>
@@ -156,7 +138,7 @@ export function ColumnHeader({
       {onSearchChange && (
         <div className="pb-2">
           <div className="border-border bg-muted focus-within:bg-accent flex h-8 w-full items-center gap-2 rounded-lg border px-3 transition-colors">
-            <Search className="text-muted-foreground h-4 w-4 shrink-0" />
+            <MagnifyingGlass className="text-muted-foreground h-4 w-4 shrink-0" />
             <input
               ref={searchInputRef}
               type="text"

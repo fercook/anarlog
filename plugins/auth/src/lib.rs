@@ -1,10 +1,30 @@
 mod commands;
+mod error;
 mod ext;
 mod migrate;
+#[cfg(any(target_os = "windows", test))]
+mod windows;
 
+// Tauri unit tests bypass the application manifest while still importing
+// TaskDialogIndirect, so the test object must activate Common Controls v6.
+#[cfg(all(test, target_os = "windows", target_env = "msvc"))]
+#[used]
+#[unsafe(link_section = ".drectve")]
+static WINDOWS_TEST_MANIFEST_DIRECTIVES: [u8; 184] = *b" /MANIFEST:EMBED /MANIFESTDEPENDENCY:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"\0";
+
+pub use error::{Error, Result};
 pub use ext::*;
-pub use hypr_supabase_auth::client::{Error, Result};
 use tauri::Manager;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountInfo {
+    pub user_id: String,
+    pub email: Option<String>,
+    pub full_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub stripe_customer_id: Option<String>,
+}
 
 const PLUGIN_NAME: &str = "auth";
 
@@ -19,7 +39,7 @@ fn make_specta_builder<R: tauri::Runtime>() -> tauri_specta::Builder<R> {
             commands::clear::<tauri::Wry>,
             commands::get_account_info::<tauri::Wry>,
         ])
-        .typ::<hypr_supabase_auth::Claims>()
+        .typ::<anlg_supabase_auth::Claims>()
         .error_handling(tauri_specta::ErrorHandlingMode::Result)
 }
 
@@ -29,10 +49,22 @@ pub fn init<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new(PLUGIN_NAME)
         .invoke_handler(specta_builder.invoke_handler())
         .setup(|app, _api| {
-            let auth_path = migrate::auth_path(app)?;
-            app.manage(hypr_supabase_auth::client::store::AuthStore::load(
-                auth_path,
-            ));
+            #[cfg(all(target_os = "linux", not(test)))]
+            let auth_store = anlg_supabase_auth::client::store::AuthStore::in_memory(
+                migrate::load_linux_auth(app)?,
+            );
+
+            #[cfg(all(target_os = "windows", not(test)))]
+            let auth_store =
+                anlg_supabase_auth::client::store::AuthStore::in_memory(windows::load_auth(app)?);
+
+            #[cfg(any(not(any(target_os = "linux", target_os = "windows")), test))]
+            let auth_store = {
+                let auth_path = migrate::auth_path(app)?;
+                anlg_supabase_auth::client::store::AuthStore::load(auth_path)
+            };
+
+            app.manage(auth_store);
             Ok(())
         })
         .build()

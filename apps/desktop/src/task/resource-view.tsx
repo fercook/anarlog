@@ -1,18 +1,18 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { useQuery } from "@tanstack/react-query";
 import {
-  CircleDotIcon,
-  ExternalLinkIcon,
-  GitMergeIcon,
-  GitPullRequestIcon,
-  MessageSquareIcon,
-  XCircleIcon,
-} from "lucide-react";
+  ArrowSquareOut,
+  Chat,
+  GitMerge,
+  GitPullRequest,
+  RadioButton,
+  XCircle,
+} from "@phosphor-icons/react";
+import { useQuery } from "@tanstack/react-query";
 import { defaultRehypePlugins, Streamdown } from "streamdown";
 
-import { commands as openerCommands } from "@hypr/plugin-opener2";
-import { commands as todoCommands } from "@hypr/plugin-todo";
-import { cn } from "@hypr/utils";
+import { commands as openerCommands } from "@anlg/plugin-opener2";
+import { commands as todoCommands } from "@anlg/plugin-todo";
+import { cn } from "@anlg/utils";
 
 import { streamdownComponents } from "~/session/components/streamdown";
 import { type TaskResource } from "~/store/zustand/tabs";
@@ -106,7 +106,7 @@ export function ResourceView({ resource }: { resource: TaskResource }) {
                 onClick={() => openerCommands.openUrl(url, null)}
                 title={t`Open on GitHub`}
               >
-                <ExternalLinkIcon className="size-4" />
+                <ArrowSquareOut className="size-4" />
               </button>
             </div>
             <div className="text-muted-foreground mt-2 flex items-center gap-2 text-sm">
@@ -173,7 +173,7 @@ export function ResourceView({ resource }: { resource: TaskResource }) {
           {issue.body ? (
             <div className="border-border border-t pt-4">
               <Streamdown
-                className="text-muted-foreground mt-1 text-sm"
+                className="note-typography text-muted-foreground mt-1 [--note-editor-font-size:0.875rem]"
                 components={streamdownComponents}
                 isAnimating={false}
                 rehypePlugins={rehypePlugins}
@@ -190,7 +190,7 @@ export function ResourceView({ resource }: { resource: TaskResource }) {
           {comments && comments.length > 0 ? (
             <div className="border-border mt-6 border-t pt-4">
               <div className="text-muted-foreground mb-4 flex items-center gap-2 text-sm font-medium">
-                <MessageSquareIcon className="size-4" />
+                <Chat className="size-4" />
                 <span>
                   {comments.length}{" "}
                   {comments.length === 1 ? t`comment` : t`comments`}
@@ -228,7 +228,7 @@ export function ResourceView({ resource }: { resource: TaskResource }) {
                     <div className="px-4 py-3">
                       {comment.body ? (
                         <Streamdown
-                          className="text-muted-foreground mt-1 text-sm"
+                          className="note-typography text-muted-foreground mt-1 [--note-editor-font-size:0.875rem]"
                           components={streamdownComponents}
                           isAnimating={false}
                           rehypePlugins={rehypePlugins}
@@ -264,22 +264,22 @@ function StateBadge({
   const { t } = useLingui();
   let label: string;
   let colorClass: string;
-  let Icon: typeof CircleDotIcon;
+  let Icon: typeof RadioButton;
 
   if (isPR && isMerged) {
     label = t`Merged`;
     colorClass = "bg-purple-100 text-purple-700";
-    Icon = GitMergeIcon;
+    Icon = GitMerge;
   } else if (isClosed) {
     label = t`Closed`;
     colorClass = isPR
       ? "bg-red-100 text-red-700"
       : "bg-purple-100 text-purple-700";
-    Icon = XCircleIcon;
+    Icon = XCircle;
   } else {
     label = t`Open`;
     colorClass = "bg-green-100 text-green-700";
-    Icon = isPR ? GitPullRequestIcon : CircleDotIcon;
+    Icon = isPR ? GitPullRequest : RadioButton;
   }
 
   return (

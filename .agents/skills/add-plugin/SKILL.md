@@ -1,6 +1,8 @@
 ---
 name: add-plugin
 description: Scaffold a new Tauri plugin in this repository when asked to add or create a plugin under `plugins/`. Use this for plugin generation and repository integration work, not for editing an existing plugin unless the request is specifically about bringing a freshly generated plugin in line with project conventions.
+metadata:
+  internal: true
 ---
 
 Create a new plugin with:
@@ -25,7 +27,7 @@ If the user does not ask for different command behavior, keep the single `ping` 
 After the code changes are in place, generate bindings:
 
 ```bash
-pnpm -F @hypr/plugin-<NAME> codegen
+pnpm -F @anlg/plugin-<NAME> codegen
 ```
 
 Finish by updating these integration points:

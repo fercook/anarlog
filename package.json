@@ -1,8 +1,12 @@
 {
   "scripts": {
+    "dev:desktop": "pnpm -F @anlg/desktop tauri:dev",
+    "dev:web": "pnpm -F @anlg/web dev",
     "fmt:check": "dprint check",
     "fmt": "dprint fmt",
-    "lint": "oxlint --type-aware || eslint",
+    "lint": "pnpm lint:oxlint && pnpm lint:eslint",
+    "lint:eslint": "eslint",
+    "lint:oxlint": "oxlint --type-aware",
     "plugin:hello-world:install": "pnpm --dir examples/plugins/hello-world install:dev"
   },
   "devDependencies": {

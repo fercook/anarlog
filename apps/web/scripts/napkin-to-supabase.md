@@ -11,7 +11,58 @@ Generated Napkin file URLs expire after 30 minutes, so every accepted figure
 must be downloaded immediately and rehosted in the Supabase `blog` bucket under
 `articles/<slug>/...`.
 
-## Usage
+## Batch usage (preferred)
+
+Figures are declared per article in `content/articles/figures.json`, keyed by
+slug. `napkin-batch.mjs` reads that manifest, skips figures already present in
+the bucket, and generates only what is missing.
+
+```bash
+infisical run --silent \
+  --env=prod \
+  --projectId=87dad7b5-72a6-4791-9228-b3b86b169db1 \
+  --path=/anarlog/web \
+  -- pnpm -F @anlg/web media:figures
+```
+
+Add `--slug <slug>` to limit it to one article, `--upsert` to regenerate
+existing figures, or `--dry-run` to print the requests without calling Napkin.
+
+Declare a figure like this:
+
+```json
+{
+  "my-post-slug": [
+    {
+      "filename": "capture-flow.png",
+      "content": "Meeting audio\nLocal transcription\nMarkdown note",
+      "context": "Horizontal flow diagram for an Anarlog blog post.",
+      "visualQuery": "flowchart",
+      "orientation": "horizontal",
+      "width": 1200
+    }
+  ]
+}
+```
+
+An empty array marks a post as deliberately figure-less.
+
+### The check
+
+```bash
+pnpm -F @anlg/web media:figures:check
+```
+
+Needs no credentials — it only makes public HEAD requests — so `web_ci` runs it
+on every PR touching `apps/web/`. It **fails** when an article has no manifest
+entry, or when the manifest names a slug that no longer exists. A declared but
+not-yet-generated figure only warns, so a generation backlog does not turn CI
+red; pass `--strict` to gate on that too.
+
+The effect is that adding a new post forces a decision about its figure, without
+requiring Napkin credentials in CI.
+
+## Single-figure usage
 
 Run through Infisical so the script can read `NAPKIN_API_TOKEN`,
 `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`:

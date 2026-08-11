@@ -21,7 +21,7 @@ impl BatchSttAdapter for MistralAdapter {
 
     fn is_supported_languages(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
         _model: Option<&str>,
     ) -> bool {
         MistralAdapter::is_supported_languages_batch(languages)
@@ -84,14 +84,14 @@ async fn do_transcribe_file(
         .map(ToOwned::to_owned)
         .unwrap_or(fallback_name);
 
-    let file_bytes = tokio::fs::read(&file_path)
+    let file_part = Part::file(&file_path)
         .await
-        .map_err(|e| Error::AudioProcessing(e.to_string()))?;
+        .map_err(|e| Error::AudioProcessing(e.to_string()))?
+        .file_name(file_name);
 
     let mime_type = mime_type_from_extension(&file_path);
 
-    let file_part = Part::bytes(file_bytes)
-        .file_name(file_name)
+    let file_part = file_part
         .mime_str(mime_type)
         .map_err(|e| Error::AudioProcessing(e.to_string()))?;
 
@@ -132,7 +132,7 @@ async fn do_transcribe_file(
     } else {
         Err(Error::UnexpectedStatus {
             status,
-            body: response.text().await.unwrap_or_default(),
+            body: crate::adapter::http::error_body(response).await,
         })
     }
 }

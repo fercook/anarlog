@@ -1,4 +1,4 @@
-use hypr_ws_client::client::Message;
+use anlg_ws_client::client::Message;
 use owhisper_interface::ListenParams;
 use owhisper_interface::stream::StreamResponse;
 
@@ -14,7 +14,7 @@ impl RealtimeSttAdapter for ArgmaxAdapter {
 
     fn is_supported_languages(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
         model: Option<&str>,
     ) -> bool {
         ArgmaxAdapter::is_supported_languages_live(languages, model)
@@ -71,7 +71,7 @@ impl RealtimeSttAdapter for ArgmaxAdapter {
                     }]
                 } else {
                     tracing::warn!(
-                        hyprnote.payload.size_bytes = raw.len() as u64,
+                        anarlog.payload.size_bytes = raw.len() as u64,
                         "argmax_unknown_message"
                     );
                     vec![]
@@ -90,7 +90,7 @@ struct ArgmaxError {
 
 #[cfg(test)]
 mod tests {
-    use hypr_language::ISO639;
+    use anlg_language::ISO639;
 
     use super::ArgmaxAdapter;
     use crate::ListenClient;
@@ -194,7 +194,8 @@ mod tests {
                     .api_key("")
                     .params($params)
                     .build_single()
-                    .await;
+                    .await
+                    .unwrap();
                 run_single_test(client, "argmax").await;
             }
         };
@@ -204,7 +205,7 @@ mod tests {
         test_build_single,
         owhisper_interface::ListenParams {
             model: Some("large-v3-v20240930_626MB".to_string()),
-            languages: vec![hypr_language::ISO639::En.into()],
+            languages: vec![anlg_language::ISO639::En.into()],
             ..Default::default()
         }
     );
@@ -213,8 +214,8 @@ mod tests {
         test_single_with_keywords,
         owhisper_interface::ListenParams {
             model: Some("large-v3-v20240930_626MB".to_string()),
-            languages: vec![hypr_language::ISO639::En.into()],
-            keywords: vec!["Hyprnote".to_string(), "transcription".to_string()],
+            languages: vec![anlg_language::ISO639::En.into()],
+            keywords: vec!["Anarlog".to_string(), "transcription".to_string()],
             ..Default::default()
         }
     );
@@ -228,11 +229,12 @@ mod tests {
             .api_key("")
             .params(owhisper_interface::ListenParams {
                 model: Some("large-v3-v20240930_626MB".to_string()),
-                languages: vec![hypr_language::ISO639::En.into()],
+                languages: vec![anlg_language::ISO639::En.into()],
                 ..Default::default()
             })
             .build_dual()
-            .await;
+            .await
+            .unwrap();
 
         run_dual_test(client, "argmax").await;
     }

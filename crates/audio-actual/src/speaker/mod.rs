@@ -55,7 +55,7 @@ impl SpeakerInput {
 
     #[cfg(all(target_os = "macos", not(test)))]
     pub fn stream(self) -> Result<SpeakerStream> {
-        Ok(self.inner.stream())
+        self.inner.stream()
     }
 
     #[cfg(all(not(target_os = "macos"), not(test)))]
@@ -150,7 +150,7 @@ impl Stream for SpeakerStream {
 }
 
 #[cfg(any(test, not(target_os = "macos")))]
-impl hypr_audio_interface::AsyncSource for SpeakerStream {
+impl anlg_audio_interface::AsyncSource for SpeakerStream {
     fn as_stream(&mut self) -> impl Stream<Item = f32> + '_ {
         self
     }
@@ -163,8 +163,8 @@ impl hypr_audio_interface::AsyncSource for SpeakerStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anlg_audio_interface::AsyncSource;
     use futures_util::StreamExt;
-    use hypr_audio_interface::AsyncSource;
     use serial_test::serial;
     use std::sync::atomic::Ordering;
 
@@ -241,66 +241,70 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[tokio::test]
     #[serial]
+    #[ignore = "requires Windows audio hardware and active system playback"]
     async fn test_windows() {
-        let input = match SpeakerInput::new() {
-            Ok(input) => input,
-            Err(e) => {
-                println!("Failed to create SpeakerInput: {}", e);
-                return;
-            }
-        };
+        println!("Play continuous audio through the Windows default output while this test runs");
 
-        let mut stream = match input.stream() {
-            Ok(stream) => stream,
-            Err(e) => {
-                println!("Failed to create speaker stream: {}", e);
-                return;
-            }
-        };
+        let input = SpeakerInput::new().expect("failed to create Windows WASAPI speaker input");
+        let mut stream = input
+            .stream()
+            .expect("failed to initialize Windows WASAPI loopback capture");
 
         let sample_rate = stream.sample_rate();
-        assert!(sample_rate > 0);
         println!("Windows speaker sample rate: {}", sample_rate);
+        assert!(sample_rate > 0);
 
-        let mut sample_count = 0;
-        while let Some(_sample) = stream.next().await {
-            sample_count += 1;
-            if sample_count > 100 {
-                break;
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        let mut samples = Vec::new();
+        let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
+        tokio::pin!(timeout);
+
+        loop {
+            tokio::select! {
+                _ = &mut timeout => {
+                    break;
+                }
+                sample = stream.next() => {
+                    match sample {
+                        Some(sample) => samples.push(sample),
+                        None => panic!("Windows WASAPI loopback capture ended unexpectedly"),
+                    }
+                    if samples.len() >= sample_rate as usize {
+                        break;
+                    }
+                }
             }
         }
 
-        assert!(sample_count > 0, "Should receive some audio samples");
-        println!("Received {} samples from Windows speaker", sample_count);
+        println!("Received {} Windows speaker samples", samples.len());
+        assert!(
+            !samples.is_empty(),
+            "Windows WASAPI loopback capture produced no samples"
+        );
+        let rms = (samples.iter().map(|sample| sample * sample).sum::<f32>()
+            / samples.len() as f32)
+            .sqrt();
+        assert!(
+            rms > 1e-4,
+            "Windows WASAPI loopback capture was silent; play audio through the default output while running this test"
+        );
     }
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
     #[serial]
-    #[ignore = "requires audio hardware"]
+    #[ignore = "requires Linux audio hardware and active system playback"]
     async fn test_linux() {
-        let input = match SpeakerInput::new() {
-            Ok(input) => input,
-            Err(e) => {
-                println!("Failed to create SpeakerInput: {}", e);
-                println!(
-                    "This is expected if PulseAudio is not running or no audio devices are available"
-                );
-                return;
-            }
-        };
+        let input = SpeakerInput::new().expect("failed to create Linux speaker input");
 
         let sample_rate = input.sample_rate();
         println!("Linux speaker sample rate: {}", sample_rate);
         assert!(sample_rate > 0);
 
-        let mut stream = match input.stream() {
-            Ok(stream) => stream,
-            Err(e) => {
-                println!("Failed to create speaker stream: {}", e);
-                return;
-            }
-        };
+        let mut stream = input
+            .stream()
+            .expect("failed to initialize Linux system audio capture");
 
         let stream_sample_rate = stream.sample_rate();
         println!("Linux speaker stream sample rate: {}", stream_sample_rate);
@@ -308,33 +312,38 @@ mod tests {
 
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        let mut sample_count = 0;
-        let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(2));
+        let mut samples = Vec::new();
+        let timeout = tokio::time::sleep(tokio::time::Duration::from_secs(5));
         tokio::pin!(timeout);
 
         loop {
             tokio::select! {
                 _ = &mut timeout => {
-                    println!("Timeout reached after collecting {} samples", sample_count);
                     break;
                 }
                 sample = stream.next() => {
-                    if let Some(_s) = sample {
-                        sample_count += 1;
-                        if sample_count >= 1000 {
-                            break;
-                        }
-                    } else {
+                    match sample {
+                        Some(sample) => samples.push(sample),
+                        None => panic!("Linux system audio capture ended unexpectedly"),
+                    }
+                    if samples.len() >= stream_sample_rate as usize {
                         break;
                     }
                 }
             }
         }
 
-        println!("Received {} samples from Linux speaker", sample_count);
+        println!("Received {} samples from Linux speaker", samples.len());
         assert!(
-            sample_count > 0,
-            "Should receive audio samples from speaker monitor"
+            !samples.is_empty(),
+            "system audio capture produced no samples"
+        );
+        let rms = (samples.iter().map(|sample| sample * sample).sum::<f32>()
+            / samples.len() as f32)
+            .sqrt();
+        assert!(
+            rms > 1e-4,
+            "system audio capture was silent; play audio while running this test"
         );
     }
 }

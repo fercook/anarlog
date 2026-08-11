@@ -11,7 +11,7 @@ pub async fn models_dir<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<S
 #[tauri::command]
 #[specta::specta]
 pub async fn list_supported_model() -> Result<Vec<ModelInfo>, String> {
-    Ok(hypr_local_llm_core::list_supported_models())
+    Ok(anlg_local_llm_core::list_supported_models())
 }
 
 #[tauri::command]
@@ -103,4 +103,30 @@ pub async fn server_url<R: tauri::Runtime>(
         .server_url()
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn foundation_model_availability() -> Result<crate::FoundationModelAvailability, String> {
+    crate::foundation_models::availability()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn foundation_model_begin(request_id: String) -> Result<(), String> {
+    crate::foundation_models::begin(request_id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn foundation_model_cancel(request_id: String) -> Result<(), String> {
+    crate::foundation_models::cancel(request_id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn foundation_model_generate(
+    request: crate::FoundationModelRequest,
+) -> Result<crate::FoundationModelResponse, String> {
+    crate::foundation_models::generate(request).await
 }

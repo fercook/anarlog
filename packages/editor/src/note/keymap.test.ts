@@ -92,6 +92,55 @@ describe("buildInputRules", () => {
     });
   });
 
+  it("replaces a double dash after a word with an em dash", () => {
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, [schema.text("wait-")]),
+    ]);
+    const { handled, state } = runTextInput(doc, "-");
+
+    expect(handled).toBe(true);
+    expect(state.doc.toJSON()).toEqual({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "wait—" }],
+        },
+      ],
+    });
+  });
+
+  it("leaves a third dash alone so --- can still become a horizontal rule", () => {
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, [schema.text("--")]),
+    ]);
+    const { handled, state } = runTextInput(doc, "-");
+
+    expect(handled).toBeFalsy();
+    expect(state.doc.toJSON()).toEqual({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "--" }],
+        },
+      ],
+    });
+  });
+
+  it("turns --- followed by a space into a horizontal rule", () => {
+    const doc = schema.node("doc", null, [
+      schema.node("paragraph", null, [schema.text("---")]),
+    ]);
+    const { handled, state } = runTextInput(doc, " ");
+
+    expect(handled).toBe(true);
+    expect(state.doc.toJSON()).toEqual({
+      type: "doc",
+      content: [{ type: "horizontalRule" }, { type: "paragraph" }],
+    });
+  });
+
   it("replaces typed copyright shorthand with a copyright symbol", () => {
     const doc = schema.node("doc", null, [
       schema.node("paragraph", null, [schema.text("(c")]),
@@ -188,7 +237,7 @@ describe("buildKeymap", () => {
     });
   });
 
-  it("keeps the first task item separate from a previous bullet list", () => {
+  it("lifts the first task item to a paragraph instead of merging into a previous bullet list", () => {
     const doc = schema.node("doc", null, [
       schema.node("bulletList", null, [
         schema.node("listItem", null, [
@@ -210,7 +259,87 @@ describe("buildKeymap", () => {
     ]);
     const { state } = runBackspaceAtTextStart(doc, "two");
 
-    expect(state.doc.toJSON()).toEqual(doc.toJSON());
+    expect(state.doc.toJSON()).toEqual({
+      type: "doc",
+      content: [
+        {
+          type: "bulletList",
+          content: [
+            {
+              type: "listItem",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "one" }],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "two" }],
+        },
+      ],
+    });
+  });
+
+  it("lifts the first task item to a paragraph when the list starts the doc", () => {
+    const doc = schema.node("doc", null, [
+      schema.node("taskList", null, [
+        schema.node(
+          "taskItem",
+          {
+            status: "todo",
+            checked: false,
+            taskId: "task-1",
+            taskItemId: "task-item-1",
+          },
+          [schema.node("paragraph", null, [schema.text("two")])],
+        ),
+        schema.node(
+          "taskItem",
+          {
+            status: "todo",
+            checked: false,
+            taskId: "task-2",
+            taskItemId: "task-item-2",
+          },
+          [schema.node("paragraph", null, [schema.text("three")])],
+        ),
+      ]),
+    ]);
+    const { state } = runBackspaceAtTextStart(doc, "two");
+
+    expect(state.doc.toJSON()).toEqual({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "two" }],
+        },
+        {
+          type: "taskList",
+          content: [
+            {
+              type: "taskItem",
+              attrs: {
+                status: "todo",
+                checked: false,
+                taskId: "task-2",
+                taskItemId: "task-item-2",
+              },
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "three" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
   });
 
   it("joins later task item paragraphs within the same task item", () => {

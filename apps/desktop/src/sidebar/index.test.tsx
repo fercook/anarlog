@@ -30,12 +30,12 @@ vi.mock("~/sidebar/timeline", () => ({
   ),
 }));
 
-vi.mock("~/sidebar/toast", () => ({
-  ToastArea: () => <div data-testid="toast-area" />,
-}));
-
 vi.mock("~/sidebar/calendar", () => ({
   CalendarNav: () => <div data-testid="calendar-nav" />,
+}));
+
+vi.mock("~/sidebar/automations", () => ({
+  AutomationsNav: () => <div data-testid="automations-nav" />,
 }));
 
 vi.mock("~/sidebar/contacts", () => ({
@@ -48,6 +48,10 @@ vi.mock("~/sidebar/settings", () => ({
 
 vi.mock("~/sidebar/templates", () => ({
   TemplatesNav: () => <div data-testid="templates-nav" />,
+}));
+
+vi.mock("~/sidebar/shared-notes", () => ({
+  SharedNotesNav: () => <div data-testid="shared-notes-nav" />,
 }));
 
 import { LeftSidebar } from "./index";
@@ -102,20 +106,31 @@ describe("LeftSidebar", () => {
     ).toBe("true");
   });
 
+  it("shows received notes without the personal timeline", () => {
+    render(<LeftSidebar noteFilter="shared" />);
+
+    expect(screen.queryByTestId("timeline-view")).toBeNull();
+    expect(screen.getByTestId("shared-notes-nav")).toBeTruthy();
+  });
+
   it.each([
     ["settings", "settings-nav"],
     ["calendar", "calendar-nav"],
     ["contacts", "contacts-nav"],
     ["templates", "templates-nav"],
-  ])("keeps %s below the window chrome", (type, testId) => {
-    mocks.currentTab = { type };
+    ["automations", "automations-nav"],
+  ])(
+    "lets the %s nav place its own header in the chrome row",
+    (type, testId) => {
+      mocks.currentTab = { type };
 
-    const { container } = render(<LeftSidebar />);
-    const classList = container.firstElementChild?.className.split(" ") ?? [];
+      const { container } = render(<LeftSidebar />);
+      const classList = container.firstElementChild?.className.split(" ") ?? [];
 
-    expect(screen.getByTestId(testId)).toBeTruthy();
-    expect(classList).toContain("pt-11");
-    expect(classList).toContain("pr-1");
-    expect(classList).not.toContain("pt-0");
-  });
+      expect(screen.getByTestId(testId)).toBeTruthy();
+      expect(classList).toContain("pt-0");
+      expect(classList).toContain("pr-1");
+      expect(classList).not.toContain("pt-11");
+    },
+  );
 });

@@ -11,7 +11,7 @@ export type NavigationState = {
 
 type InvalidatableResourceType = Extract<
   Tab["type"],
-  "sessions" | "humans" | "organizations"
+  "sessions" | "shared_sessions" | "humans" | "organizations"
 >;
 
 export type NavigationActions = {
@@ -98,12 +98,41 @@ export const createNavigationSlice = <T extends NavigationState & BasicState>(
       }
     }
 
-    const nextTabs = tabs.filter((tab) => !isResourceMatch(tab, type, id));
+    let nextTabs = tabs.filter((tab) => !isResourceMatch(tab, type, id));
+    let nextCurrentTab = currentTab;
 
-    const nextCurrentTab =
-      currentTab && isResourceMatch(currentTab, type, id)
-        ? nextTabs.find((t) => t.active) || nextTabs[0] || null
-        : currentTab;
+    if (currentTab && isResourceMatch(currentTab, type, id)) {
+      const slotHistory = nextHistory.get(currentTab.slotId);
+      const historyFallback = slotHistory?.stack[slotHistory.currentIndex];
+      const otherFallback = nextTabs.find((tab) => tab.active) ?? nextTabs[0];
+      const fallback: Tab | undefined =
+        type === "sessions"
+          ? {
+              type: "empty",
+              active: true,
+              slotId: currentTab.slotId,
+              pinned: false,
+            }
+          : (historyFallback ?? otherFallback);
+
+      nextTabs = nextTabs.map((tab) => ({ ...tab, active: false }));
+      if (fallback && (type === "sessions" || historyFallback)) {
+        const removedIndex = tabs.findIndex((tab) =>
+          isResourceMatch(tab, type, id),
+        );
+        nextTabs.splice(
+          Math.max(0, Math.min(removedIndex, nextTabs.length)),
+          0,
+          { ...fallback, active: true },
+        );
+      } else if (fallback) {
+        const fallbackIndex = nextTabs.findIndex(
+          (tab) => tab.slotId === fallback.slotId,
+        );
+        nextTabs[fallbackIndex] = { ...nextTabs[fallbackIndex], active: true };
+      }
+      nextCurrentTab = nextTabs.find((tab) => tab.active) ?? null;
+    }
 
     if (hasChanges || nextTabs.length !== tabs.length) {
       set({
@@ -118,6 +147,7 @@ export const createNavigationSlice = <T extends NavigationState & BasicState>(
 export type SlotId = string;
 export type TabHistory = { stack: Tab[]; currentIndex: number };
 export type HistoryMap = Map<SlotId, TabHistory>;
+export const MAX_TAB_HISTORY_ENTRIES = 100;
 
 export const computeHistoryFlags = (
   history: Map<string, TabHistory>,
@@ -140,7 +170,7 @@ export const pushHistory = (
   history: Map<string, TabHistory>,
   tab: Tab,
 ): Map<string, TabHistory> => {
-  if (tab.type === "empty") {
+  if (tab.type === "empty" || tab.type === "shared_note_preview") {
     return history;
   }
 
@@ -148,9 +178,10 @@ export const pushHistory = (
   const slotId = tab.slotId;
   const existing = newHistory.get(slotId);
 
-  const stack = existing
+  const expandedStack = existing
     ? [...existing.stack.slice(0, existing.currentIndex + 1), tab]
     : [tab];
+  const stack = expandedStack.slice(-MAX_TAB_HISTORY_ENTRIES);
 
   newHistory.set(slotId, { stack, currentIndex: stack.length - 1 });
   return newHistory;

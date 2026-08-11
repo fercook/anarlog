@@ -42,9 +42,11 @@ vi.mock("~/contexts/shell", () => ({
 }));
 
 vi.mock("~/sidebar/toast", () => ({
-  ToastArea: ({ placement }: { placement?: "default" | "left-sidebar" }) => (
-    <div data-placement={placement} data-testid="toast-area" />
-  ),
+  ToastNotifications: () => <div data-testid="toast-notifications" />,
+}));
+
+vi.mock("./sync-status", () => ({
+  SyncStatusIndicator: () => <div data-testid="sync-status-indicator" />,
 }));
 
 vi.mock("~/store/zustand/tabs", () => ({
@@ -68,14 +70,29 @@ describe("ClassicMainShellFrame", () => {
   it("uses left-edge main surface chrome while the sidebar timeline is expanded", () => {
     render(<ClassicMainShellFrame />);
 
-    expect(
-      screen.getByTestId("toast-area").getAttribute("data-placement"),
-    ).toBe("left-sidebar");
+    expect(screen.getByTestId("toast-notifications")).not.toBeNull();
+    expect(screen.getByTestId("sync-status-indicator")).not.toBeNull();
     expect(
       screen
         .getByTestId("main-shell-scaffold")
         .getAttribute("data-main-surface-chrome"),
     ).toBe("left");
+  });
+
+  it("shows sync status in note views", () => {
+    mocks.currentTab = { type: "sessions" };
+
+    render(<ClassicMainShellFrame />);
+
+    expect(screen.getByTestId("sync-status-indicator")).not.toBeNull();
+  });
+
+  it("hides sync status outside empty and note views", () => {
+    mocks.currentTab = { type: "settings" };
+
+    render(<ClassicMainShellFrame />);
+
+    expect(screen.queryByTestId("sync-status-indicator")).toBeNull();
   });
 
   it("uses borderless top-edge main surface chrome while the sidebar timeline is collapsed", () => {
@@ -83,9 +100,7 @@ describe("ClassicMainShellFrame", () => {
 
     render(<ClassicMainShellFrame />);
 
-    expect(
-      screen.getByTestId("toast-area").getAttribute("data-placement"),
-    ).toBe("default");
+    expect(screen.getByTestId("toast-notifications")).not.toBeNull();
     expect(
       screen
         .getByTestId("main-shell-scaffold")
@@ -93,17 +108,20 @@ describe("ClassicMainShellFrame", () => {
     ).toBe("top-borderless");
   });
 
-  it("uses left-edge main surface chrome for custom sidebar tabs", () => {
-    mocks.currentTab = { type: "settings" };
+  it.each(["settings", "automations"])(
+    "uses left-edge main surface chrome for the %s custom sidebar",
+    (type) => {
+      mocks.currentTab = { type };
 
-    render(<ClassicMainShellFrame />);
+      render(<ClassicMainShellFrame />);
 
-    expect(
-      screen
-        .getByTestId("main-shell-scaffold")
-        .getAttribute("data-main-surface-chrome"),
-    ).toBe("left");
-  });
+      expect(
+        screen
+          .getByTestId("main-shell-scaffold")
+          .getAttribute("data-main-surface-chrome"),
+      ).toBe("left");
+    },
+  );
 
   it("keeps left-edge main surface chrome for changelog tabs while expanded", () => {
     mocks.currentTab = { type: "changelog" };
@@ -126,5 +144,6 @@ describe("ClassicMainShellFrame", () => {
 
     expect(scaffold.getAttribute("data-edge-to-edge")).toBe("true");
     expect(scaffold.getAttribute("data-main-surface-chrome")).toBeNull();
+    expect(screen.queryByTestId("sync-status-indicator")).toBeNull();
   });
 });

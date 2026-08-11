@@ -1,8 +1,8 @@
 use std::io::BufReader;
 use std::time::Duration;
 
+use anlg_audio_utils::AudioFormatExt;
 use futures_util::{Stream, StreamExt};
-use hypr_audio_utils::AudioFormatExt;
 use owhisper_client::{
     AssemblyAIAdapter, DashScopeAdapter, DeepgramAdapter, ElevenLabsAdapter, FinalizeHandle,
     FireworksAdapter, GladiaAdapter, ListenClient, MistralAdapter, OpenAIAdapter, Provider,
@@ -20,7 +20,7 @@ fn timeout_secs() -> u64 {
 fn test_audio_stream_single()
 -> impl Stream<Item = MixedMessage<bytes::Bytes, ControlMessage>> + Send + Unpin + 'static {
     let audio = rodio::Decoder::new(BufReader::new(
-        std::fs::File::open(hypr_data::english_1::AUDIO_PATH).unwrap(),
+        std::fs::File::open(anlg_data::english_1::AUDIO_PATH).unwrap(),
     ))
     .unwrap()
     .to_i16_le_chunks(16_000, 1_600);
@@ -37,7 +37,7 @@ fn test_audio_stream_dual()
 + Unpin
 + 'static {
     let audio = rodio::Decoder::new(BufReader::new(
-        std::fs::File::open(hypr_data::english_1::AUDIO_PATH).unwrap(),
+        std::fs::File::open(anlg_data::english_1::AUDIO_PATH).unwrap(),
     ))
     .unwrap()
     .to_i16_le_chunks(16_000, 1_600);
@@ -59,11 +59,12 @@ async fn run_direct_live_single_e2e<A: RealtimeSttAdapter>(provider: Provider) {
         .api_key(api_key)
         .params(owhisper_interface::ListenParams {
             model: Some(provider.default_live_model().to_string()),
-            languages: vec![hypr_language::ISO639::En.into()],
+            languages: vec![anlg_language::ISO639::En.into()],
             ..Default::default()
         })
         .build_single()
-        .await;
+        .await
+        .unwrap();
 
     let timeout = Duration::from_secs(timeout_secs());
     let input = test_audio_stream_single();
@@ -109,11 +110,12 @@ async fn run_direct_live_dual_e2e<A: RealtimeSttAdapter>(provider: Provider) {
         .api_key(api_key)
         .params(owhisper_interface::ListenParams {
             model: Some(provider.default_live_model().to_string()),
-            languages: vec![hypr_language::ISO639::En.into()],
+            languages: vec![anlg_language::ISO639::En.into()],
             ..Default::default()
         })
         .build_dual()
-        .await;
+        .await
+        .unwrap();
 
     let timeout = Duration::from_secs(timeout_secs());
     let input = test_audio_stream_dual();
@@ -181,6 +183,7 @@ direct_live_test!(assemblyai, AssemblyAIAdapter, Provider::AssemblyAI);
 direct_live_test!(soniox, SonioxAdapter, Provider::Soniox);
 direct_live_test!(gladia, GladiaAdapter, Provider::Gladia);
 direct_live_test!(fireworks, FireworksAdapter, Provider::Fireworks);
+direct_live_test!(openai, OpenAIAdapter, Provider::OpenAI);
 direct_live_test!(elevenlabs, ElevenLabsAdapter, Provider::ElevenLabs);
 direct_live_test!(dashscope, DashScopeAdapter, Provider::DashScope);
 direct_live_test!(mistral, MistralAdapter, Provider::Mistral);

@@ -1,17 +1,39 @@
 use tauri::Manager;
 
+const MAX_CONCURRENT_FIRE_AND_FORGET_EVENTS: usize = 32;
+
 mod commands;
 mod error;
 mod ext;
+mod session;
 mod store;
 
 pub use error::{Error, Result};
 pub use ext::*;
+use session::*;
 use store::*;
 
-pub use hypr_analytics::*;
+pub use anlg_analytics::*;
 
-pub type ManagedState = hypr_analytics::AnalyticsClient;
+pub struct ManagedState {
+    client: anlg_analytics::AnalyticsClient,
+    fire_and_forget_slots: std::sync::Arc<tokio::sync::Semaphore>,
+    groups: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    session: std::sync::Mutex<SessionTracker>,
+}
+
+impl ManagedState {
+    fn new(client: anlg_analytics::AnalyticsClient) -> Self {
+        Self {
+            client,
+            fire_and_forget_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_FIRE_AND_FORGET_EVENTS,
+            )),
+            groups: std::sync::Mutex::new(std::collections::HashMap::new()),
+            session: std::sync::Mutex::new(SessionTracker::new(std::time::SystemTime::now())),
+        }
+    }
+}
 
 const PLUGIN_NAME: &str = "analytics";
 
@@ -19,11 +41,13 @@ fn make_specta_builder<R: tauri::Runtime>() -> tauri_specta::Builder<R> {
     tauri_specta::Builder::<R>::new()
         .plugin_name(PLUGIN_NAME)
         .commands(tauri_specta::collect_commands![
+            commands::event_fire_and_forget::<tauri::Wry>,
             commands::event::<tauri::Wry>,
             commands::set_properties::<tauri::Wry>,
             commands::set_disabled::<tauri::Wry>,
             commands::is_disabled::<tauri::Wry>,
             commands::identify::<tauri::Wry>,
+            commands::clear_groups::<tauri::Wry>,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Result)
 }
@@ -49,7 +73,7 @@ pub fn init<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             };
 
             let client = {
-                let mut builder = hypr_analytics::AnalyticsClientBuilder::default();
+                let mut builder = anlg_analytics::AnalyticsClientBuilder::default();
                 if let Some(key) = posthog_key {
                     builder = builder.with_posthog(key);
                 }
@@ -57,7 +81,7 @@ pub fn init<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
                 builder.build()
             };
 
-            assert!(app.manage(client));
+            assert!(app.manage(ManagedState::new(client)));
             Ok(())
         })
         .build()
@@ -89,7 +113,13 @@ mod test {
         ctx.config_mut().identifier = "com.hyprnote.dev".to_string();
         ctx.config_mut().version = Some("0.0.1".to_string());
 
-        builder.plugin(init()).build(ctx).unwrap()
+        builder
+            .plugin(tauri_plugin_store::Builder::default().build())
+            .plugin(tauri_plugin_store2::init())
+            .plugin(tauri_plugin_misc::init())
+            .plugin(init())
+            .build(ctx)
+            .unwrap()
     }
 
     #[tokio::test]
@@ -97,7 +127,7 @@ mod test {
         let app = create_app(tauri::test::mock_builder());
         let result = app
             .analytics()
-            .event(hypr_analytics::AnalyticsPayload::builder("test_event").build())
+            .event(anlg_analytics::AnalyticsPayload::builder("test_event").build())
             .await;
         assert!(result.is_ok());
 
@@ -116,5 +146,33 @@ mod test {
             let bundle_id = app.config().identifier.clone();
             println!("bundle_id: {}", bundle_id);
         }
+    }
+
+    #[test]
+    fn fire_and_forget_admission_is_bounded() {
+        let state = ManagedState::new(AnalyticsClientBuilder::default().build());
+        let permits = (0..MAX_CONCURRENT_FIRE_AND_FORGET_EVENTS)
+            .map(|_| {
+                state
+                    .fire_and_forget_slots
+                    .clone()
+                    .try_acquire_owned()
+                    .expect("slot should be available")
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            state
+                .fire_and_forget_slots
+                .clone()
+                .try_acquire_owned()
+                .is_err()
+        );
+
+        drop(permits);
+        assert_eq!(
+            state.fire_and_forget_slots.available_permits(),
+            MAX_CONCURRENT_FIRE_AND_FORGET_EVENTS
+        );
     }
 }

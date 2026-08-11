@@ -55,8 +55,8 @@ common_derives! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anlg_askama_utils::tpl_snapshot;
     use askama::Template;
-    use hypr_askama_utils::tpl_snapshot;
 
     #[derive(Template)]
     #[template(
@@ -231,6 +231,8 @@ mod tests {
     Sections:
     1. Summary - Brief overview
     2. Action Items
+
+    Use every section in order with its exact title. Keep sections without relevant content brief instead of inventing details.
     "
     );
 

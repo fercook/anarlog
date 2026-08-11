@@ -1,8 +1,7 @@
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  currentTimeMs: Date.now(),
   isIgnored: vi.fn(() => false),
   timelineEventsTable: {} as Record<string, Record<string, unknown>>,
   timelineSessionsTable: {} as Record<string, Record<string, unknown>>,
@@ -61,28 +60,17 @@ vi.mock("~/shared/config", () => ({
   useConfigValue: () => undefined,
 }));
 
-vi.mock("~/store/tinybase/hooks", () => ({
-  useIgnoredEvents: () => ({
-    isIgnored: mocks.isIgnored,
+vi.mock("~/calendar/queries", () => ({
+  useTimelineTables: () => ({
+    timelineEventsTable: mocks.timelineEventsTable,
+    timelineSessionsTable: mocks.timelineSessionsTable,
   }),
 }));
 
-vi.mock("~/store/tinybase/store/main", () => ({
-  QUERIES: {
-    timelineEvents: "timelineEvents",
-    timelineSessions: "timelineSessions",
-  },
-  STORE_ID: "main",
-  UI: {
-    useResultTable: (query: string) =>
-      query === "timelineEvents"
-        ? mocks.timelineEventsTable
-        : mocks.timelineSessionsTable,
-  },
-}));
-
-vi.mock("./realtime", () => ({
-  useCurrentTimeMs: () => mocks.currentTimeMs,
+vi.mock("~/calendar/ignored-events", () => ({
+  useIgnoredEvents: () => ({
+    isIgnored: mocks.isIgnored,
+  }),
 }));
 
 import { useSidebarUpcomingMeetingStatus } from "./upcoming-meeting";
@@ -92,7 +80,6 @@ describe("useSidebarUpcomingMeetingStatus", () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2024-01-15T12:00:00.000Z"));
-    mocks.currentTimeMs = Date.parse("2024-01-15T12:00:00.000Z");
     mocks.isIgnored.mockReturnValue(false);
     mocks.timelineEventsTable = {};
     mocks.timelineSessionsTable = {};
@@ -152,9 +139,99 @@ describe("useSidebarUpcomingMeetingStatus", () => {
       title: "Team standup",
     });
 
-    mocks.currentTimeMs = Date.parse("2024-01-15T12:30:01.000Z");
-    active.rerender();
+    vi.setSystemTime(new Date("2024-01-15T12:30:01.000Z"));
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
 
     expect(active.result.current).toBeNull();
+  });
+
+  it("does not rerender every second while the active status is unchanged", () => {
+    mocks.timelineEventsTable = {
+      standup: {
+        title: "Team standup",
+        started_at: "2024-01-15T11:55:00.000Z",
+        ended_at: "2024-01-15T12:30:00.000Z",
+        tracking_id_event: "event-standup",
+        has_recurrence_rules: false,
+      },
+    };
+    let renderCount = 0;
+
+    renderHook(() => {
+      renderCount += 1;
+      return useSidebarUpcomingMeetingStatus();
+    });
+    const initialRenderCount = renderCount;
+
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+
+    expect(renderCount).toBe(initialRenderCount);
+  });
+
+  it("refreshes the status when the window regains focus", () => {
+    mocks.timelineEventsTable = {
+      standup: {
+        title: "Team standup",
+        started_at: "2024-01-15T11:55:00.000Z",
+        ended_at: "2024-01-15T12:30:00.000Z",
+        tracking_id_event: "event-standup",
+        has_recurrence_rules: false,
+      },
+    };
+
+    const active = renderHook(() => useSidebarUpcomingMeetingStatus());
+    vi.setSystemTime(new Date("2024-01-15T12:30:01.000Z"));
+
+    act(() => window.dispatchEvent(new Event("focus")));
+
+    expect(active.result.current).toBeNull();
+  });
+
+  it("refreshes the status when the document becomes visible", () => {
+    mocks.timelineEventsTable = {
+      standup: {
+        title: "Team standup",
+        started_at: "2024-01-15T11:55:00.000Z",
+        ended_at: "2024-01-15T12:30:00.000Z",
+        tracking_id_event: "event-standup",
+        has_recurrence_rules: false,
+      },
+    };
+
+    const active = renderHook(() => useSidebarUpcomingMeetingStatus());
+    vi.setSystemTime(new Date("2024-01-15T12:30:01.000Z"));
+
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+
+    expect(active.result.current).toBeNull();
+  });
+
+  it("rebuilds timeline buckets after a day boundary", () => {
+    vi.setSystemTime(new Date("2024-01-15T23:59:00.000Z"));
+    mocks.timelineEventsTable = {
+      standup: {
+        title: "Team standup",
+        started_at: "2024-01-17T00:01:00.000Z",
+        ended_at: "2024-01-17T00:30:00.000Z",
+        tracking_id_event: "event-standup",
+        has_recurrence_rules: false,
+      },
+    };
+
+    const upcoming = renderHook(() => useSidebarUpcomingMeetingStatus());
+    expect(upcoming.result.current).toBeNull();
+
+    vi.setSystemTime(new Date("2024-01-16T23:59:00.000Z"));
+    act(() => window.dispatchEvent(new Event("focus")));
+
+    expect(upcoming.result.current).toMatchObject({
+      itemKey: "event-standup",
+      label: "In 2m 0s",
+      title: "Team standup",
+    });
   });
 });

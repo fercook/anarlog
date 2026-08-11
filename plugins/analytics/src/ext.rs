@@ -1,5 +1,17 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::SystemTime;
+
 use tauri_plugin_misc::MiscPluginExt;
 use tauri_plugin_store2::Store2PluginExt;
+
+static REPORTED_QUEUE_FULL: AtomicBool = AtomicBool::new(false);
+static REPORTED_DELIVERY_FAILURE: AtomicBool = AtomicBool::new(false);
+
+fn report_delivery_problem_once(reported: &AtomicBool, event: &'static str) {
+    if !reported.swap(true, Ordering::Relaxed) {
+        tracing::event!(tracing::Level::ERROR, message = event);
+    }
+}
 
 pub struct Analytics<'a, R: tauri::Runtime, M: tauri::Manager<R>> {
     manager: &'a M,
@@ -9,49 +21,105 @@ pub struct Analytics<'a, R: tauri::Runtime, M: tauri::Manager<R>> {
 impl<'a, R: tauri::Runtime, M: tauri::Manager<R>> Analytics<'a, R, M> {
     pub async fn event(
         &self,
-        mut payload: hypr_analytics::AnalyticsPayload,
+        mut payload: anlg_analytics::AnalyticsPayload,
     ) -> Result<(), crate::Error> {
-        Self::enrich_payload(self.manager, &mut payload);
-
         if self.is_disabled().unwrap_or(true) {
             return Ok(());
         }
 
-        let machine_id = hypr_host::fingerprint();
-        let client = self.manager.state::<crate::ManagedState>();
-        client
+        Self::enrich_payload(self.manager, &mut payload);
+
+        let machine_id = anlg_host::fingerprint();
+        let state = self.manager.state::<crate::ManagedState>();
+        state
+            .client
             .event(machine_id, payload)
             .await
-            .map_err(crate::Error::HyprAnalytics)?;
+            .map_err(crate::Error::AnlgAnalytics)?;
 
         Ok(())
     }
 
-    pub fn event_fire_and_forget(&self, mut payload: hypr_analytics::AnalyticsPayload) {
-        Self::enrich_payload(self.manager, &mut payload);
-
+    pub fn event_fire_and_forget(&self, mut payload: anlg_analytics::AnalyticsPayload) {
         if self.is_disabled().unwrap_or(true) {
             return;
         }
 
-        let machine_id = hypr_host::fingerprint();
-        let client = self.manager.state::<crate::ManagedState>().inner().clone();
+        let state = self.manager.state::<crate::ManagedState>();
+        let Ok(permit) = state.fire_and_forget_slots.clone().try_acquire_owned() else {
+            report_delivery_problem_once(&REPORTED_QUEUE_FULL, "analytics_event_queue_full");
+            tracing::warn!(event = %payload.event, "analytics event dropped because the queue is full");
+            return;
+        };
+
+        Self::enrich_payload(self.manager, &mut payload);
+
+        let machine_id = anlg_host::fingerprint();
+        let client = state.client.clone();
+        let event = payload.event.clone();
 
         tauri::async_runtime::spawn(async move {
-            let _ = client.event(machine_id, payload).await;
+            let _permit = permit;
+            if let Err(error) = client.event(machine_id, payload).await {
+                report_delivery_problem_once(
+                    &REPORTED_DELIVERY_FAILURE,
+                    "analytics_event_delivery_failed",
+                );
+                tracing::warn!(%error, %event, "analytics event delivery failed");
+            }
         });
     }
 
-    fn enrich_payload(manager: &M, payload: &mut hypr_analytics::AnalyticsPayload) {
+    fn session_id(manager: &M) -> String {
+        let state = manager.state::<crate::ManagedState>();
+        let mut session = state
+            .session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        session.session_id(SystemTime::now())
+    }
+
+    fn enrich_payload(manager: &M, payload: &mut anlg_analytics::AnalyticsPayload) {
         let app_version = env!("APP_VERSION");
         let app_identifier = manager.config().identifier.clone();
         let git_hash = manager.misc().get_git_hash();
         let bundle_id = manager.config().identifier.clone();
+        let session_id = Self::session_id(manager);
+        let groups = {
+            let state = manager.state::<crate::ManagedState>();
+            state
+                .groups
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        };
+
+        payload
+            .props
+            .insert("$session_id".into(), session_id.into());
+
+        for (group_type, group_key) in groups {
+            payload
+                .groups
+                .get_or_insert_default()
+                .entry(group_type)
+                .or_insert(group_key);
+        }
 
         payload
             .props
             .entry("app_version".into())
             .or_insert(app_version.into());
+
+        payload
+            .props
+            .entry("surface".into())
+            .or_insert("desktop".into());
+
+        payload
+            .props
+            .entry("analytics_schema_version".into())
+            .or_insert(1.into());
 
         payload
             .props
@@ -91,16 +159,17 @@ impl<'a, R: tauri::Runtime, M: tauri::Manager<R>> Analytics<'a, R, M> {
 
     pub async fn set_properties(
         &self,
-        payload: hypr_analytics::PropertiesPayload,
+        payload: anlg_analytics::PropertiesPayload,
     ) -> Result<(), crate::Error> {
         if !self.is_disabled()? {
-            let machine_id = hypr_host::fingerprint();
+            let machine_id = anlg_host::fingerprint();
 
-            let client = self.manager.state::<crate::ManagedState>();
-            client
+            let state = self.manager.state::<crate::ManagedState>();
+            state
+                .client
                 .set_properties(machine_id, payload)
                 .await
-                .map_err(crate::Error::HyprAnalytics)?;
+                .map_err(crate::Error::AnlgAnalytics)?;
         }
 
         Ok(())
@@ -109,20 +178,37 @@ impl<'a, R: tauri::Runtime, M: tauri::Manager<R>> Analytics<'a, R, M> {
     pub async fn identify(
         &self,
         user_id: impl Into<String>,
-        payload: hypr_analytics::PropertiesPayload,
+        payload: anlg_analytics::PropertiesPayload,
     ) -> Result<(), crate::Error> {
         if !self.is_disabled()? {
-            let machine_id = hypr_host::fingerprint();
+            let machine_id = anlg_host::fingerprint();
             let user_id = user_id.into();
 
-            let client = self.manager.state::<crate::ManagedState>();
-            client
+            let state = self.manager.state::<crate::ManagedState>();
+            if let Some(group) = &payload.group {
+                state
+                    .groups
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(group.r#type.clone(), group.key.clone());
+            }
+            state
+                .client
                 .identify(user_id, machine_id, payload)
                 .await
-                .map_err(crate::Error::HyprAnalytics)?;
+                .map_err(crate::Error::AnlgAnalytics)?;
         }
 
         Ok(())
+    }
+
+    pub fn clear_groups(&self) {
+        self.manager
+            .state::<crate::ManagedState>()
+            .groups
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
     }
 }
 

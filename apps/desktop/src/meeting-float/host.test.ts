@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { LiveTranscriptSegment } from "@hypr/plugin-transcription";
+import type { LiveTranscriptSegment } from "@anlg/plugin-transcription";
 
 import {
   getCurrentFloatingBarColorScheme,
@@ -12,6 +12,7 @@ import {
 } from "./host";
 
 import { createListenerStore } from "~/store/zustand/listener";
+import { LIVE_TRANSCRIPT_PREVIEW_SEGMENT_LIMIT } from "~/store/zustand/listener/transcript";
 import type { RenderLabelContext } from "~/stt/live-segment";
 
 type ListenerLiveState = ReturnType<
@@ -264,6 +265,29 @@ describe("getFloatingTranscriptBubbles", () => {
     ]);
   });
 
+  it("keeps only the recent bounded transcript window", () => {
+    const segmentCount = LIVE_TRANSCRIPT_PREVIEW_SEGMENT_LIMIT + 5;
+    const bubbles = getFloatingTranscriptBubbles(
+      Array.from({ length: segmentCount }, (_, index) =>
+        createSegment({
+          id: `segment-${index}`,
+          key: {
+            channel: "RemoteParty",
+            speaker_index: 0,
+            speaker_human_id: null,
+          },
+          start_ms: index * 100,
+          text: `segment ${index}`,
+          words: [{ text: `segment ${index}` }],
+        }),
+      ),
+    );
+
+    expect(bubbles).toHaveLength(LIVE_TRANSCRIPT_PREVIEW_SEGMENT_LIMIT);
+    expect(bubbles[0]?.id).toBe("segment-5");
+    expect(bubbles[bubbles.length - 1]?.id).toBe(`segment-${segmentCount - 1}`);
+  });
+
   it("labels diarized direct-mic bubbles as self", () => {
     const bubbles = getFloatingTranscriptBubbles([
       createSegment({
@@ -397,6 +421,53 @@ describe("getFloatingTranscriptBubbles", () => {
         overlapsPrevious: true,
         overlapsNext: false,
       },
+    ]);
+  });
+
+  it("finds non-adjacent overlaps without rescanning the transcript", () => {
+    const bubbles = getFloatingTranscriptBubbles([
+      createSegment({
+        id: "long-you",
+        key: {
+          channel: "DirectMic",
+          speaker_index: null,
+          speaker_human_id: null,
+        },
+        start_ms: 0,
+        end_ms: 2000,
+        text: "long local segment",
+        words: [{ text: "long local segment" }],
+      }),
+      createSegment({
+        id: "short-you",
+        key: {
+          channel: "DirectMic",
+          speaker_index: null,
+          speaker_human_id: null,
+        },
+        start_ms: 100,
+        end_ms: 500,
+        text: "short local segment",
+        words: [{ text: "short local segment" }],
+      }),
+      createSegment({
+        id: "remote",
+        key: {
+          channel: "RemoteParty",
+          speaker_index: 0,
+          speaker_human_id: null,
+        },
+        start_ms: 1000,
+        end_ms: 1500,
+        text: "remote segment",
+        words: [{ text: "remote segment" }],
+      }),
+    ]);
+
+    expect(bubbles).toMatchObject([
+      { id: "long-you", overlapsNext: true },
+      { id: "short-you", overlapsNext: false },
+      { id: "remote", overlapsPrevious: true },
     ]);
   });
 });
@@ -586,7 +657,7 @@ describe("shouldShowFloatingLiveCaptionToggle", () => {
   it("shows for active live transcription", () => {
     expect(
       shouldShowFloatingLiveCaptionToggle({
-        provider: "hyprnote",
+        provider: "anarlog",
         model: "cloud",
         liveTranscriptionActive: true,
       }),
@@ -596,7 +667,7 @@ describe("shouldShowFloatingLiveCaptionToggle", () => {
   it("shows for local realtime transcription", () => {
     expect(
       shouldShowFloatingLiveCaptionToggle({
-        provider: "hyprnote",
+        provider: "anarlog",
         model: "soniqo-parakeet-streaming",
         liveTranscriptionActive: true,
       }),
@@ -606,7 +677,7 @@ describe("shouldShowFloatingLiveCaptionToggle", () => {
   it("hides before live transcription is active", () => {
     expect(
       shouldShowFloatingLiveCaptionToggle({
-        provider: "hyprnote",
+        provider: "anarlog",
         model: "cloud",
         liveTranscriptionActive: false,
       }),

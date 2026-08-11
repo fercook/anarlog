@@ -4,7 +4,10 @@ import { z } from "zod";
 import { CONTEXT_ENTITY_SOURCES } from "~/chat/context/entities";
 import type { ContextRef } from "~/chat/context/entities";
 
+export type ChatScope = "general" | "automations";
+
 const messageMetadataSchema = z.object({
+  chatScope: z.enum(["general", "automations"]).optional(),
   createdAt: z.number().optional(),
   contextRefs: z
     .array(
@@ -33,6 +36,18 @@ const messageMetadataSchema = z.object({
 });
 
 type MessageMetadata = z.infer<typeof messageMetadataSchema>;
-export type HyprUIMessage = UIMessage<
+export type AnlgUIMessage = UIMessage<
   MessageMetadata & { contextRefs?: ContextRef[] }
 >;
+
+export type ChatSendOptions = {
+  chatGroupId?: string;
+  beforeSend?: (
+    trackCompletion: (completion: Promise<unknown>) => void,
+  ) => void | Promise<void>;
+};
+
+export type ChatMessageSender = (
+  message: AnlgUIMessage,
+  options?: ChatSendOptions,
+) => void;

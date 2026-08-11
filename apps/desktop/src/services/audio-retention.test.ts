@@ -1,62 +1,66 @@
-import { createMergeableStore } from "tinybase/with-schemas";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import { SCHEMA as MAIN_SCHEMA } from "@hypr/store";
+const mocks = vi.hoisted(() => ({
+  cleanupDeletedSessionAudio: vi.fn(),
+  deleteLocalSessionAudio: vi.fn(),
+  execute: vi.fn(),
+  getSessionMode: vi.fn(),
+  live: { loading: false, sessionId: null as string | null },
+}));
+
+vi.mock("~/session/attachments", () => ({
+  cleanupDeletedSessionAudio: mocks.cleanupDeletedSessionAudio,
+  deleteLocalSessionAudio: mocks.deleteLocalSessionAudio,
+}));
+
+vi.mock("~/db", () => ({
+  liveQueryClient: { execute: mocks.execute },
+}));
+
+vi.mock("~/store/zustand/listener/instance", () => ({
+  listenerStore: {
+    getState: () => ({
+      getSessionMode: mocks.getSessionMode,
+      live: mocks.live,
+    }),
+  },
+}));
 
 import {
   cleanupExpiredAudio,
   deleteProcessedAudioForRetention,
   normalizeAudioRetention,
   sessionAudioExpired,
+  subscribeToSessionAudioRetention,
 } from "./audio-retention";
 
-import type * as main from "~/store/tinybase/store/main";
-import { SCHEMA as SETTINGS_SCHEMA } from "~/store/tinybase/store/settings";
-import type * as settings from "~/store/tinybase/store/settings";
-
-const { audioDeleteMock, audioDeleteOrphanedExpiredMock, getSessionModeMock } =
-  vi.hoisted(() => ({
-    audioDeleteMock: vi.fn(),
-    audioDeleteOrphanedExpiredMock: vi.fn(),
-    getSessionModeMock: vi.fn(),
-  }));
-
-vi.mock("@hypr/plugin-fs-sync", () => ({
-  commands: {
-    audioDelete: audioDeleteMock,
-    audioDeleteOrphanedExpired: audioDeleteOrphanedExpiredMock,
-  },
-}));
-
-vi.mock("~/store/zustand/listener/instance", () => ({
-  listenerStore: {
-    getState: () => ({
-      getSessionMode: getSessionModeMock,
-    }),
-  },
-}));
-
-function createMainStore() {
-  return createMergeableStore()
-    .setTablesSchema(MAIN_SCHEMA.table)
-    .setValuesSchema(MAIN_SCHEMA.value) as main.Store;
-}
-
-function createSettingsStore() {
-  return createMergeableStore()
-    .setTablesSchema(SETTINGS_SCHEMA.table)
-    .setValuesSchema(SETTINGS_SCHEMA.value) as settings.Store;
+function mockCleanupRows(
+  sessions: Array<{
+    id: string;
+    created_at: string;
+    has_words: number;
+    transcript_processing?: number;
+  }>,
+  logicallyDeleted: Array<{ session_id: string }> = [],
+) {
+  mocks.execute.mockImplementation((sql: string) =>
+    Promise.resolve(
+      sql.includes("SELECT DISTINCT attachment.session_id")
+        ? logicallyDeleted
+        : sessions,
+    ),
+  );
 }
 
 describe("audio retention", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    audioDeleteMock.mockResolvedValue({ status: "ok", data: null });
-    audioDeleteOrphanedExpiredMock.mockResolvedValue({
-      status: "ok",
-      data: [],
-    });
-    getSessionModeMock.mockReturnValue("inactive");
+    mocks.cleanupDeletedSessionAudio.mockResolvedValue(true);
+    mocks.deleteLocalSessionAudio.mockResolvedValue(true);
+    mocks.getSessionMode.mockReturnValue("inactive");
+    mocks.live.loading = false;
+    mocks.live.sessionId = null;
+    mockCleanupRows([]);
   });
 
   test("normalizes current and legacy values", () => {
@@ -69,286 +73,219 @@ describe("audio retention", () => {
     expect(normalizeAudioRetention("invalid", undefined)).toBeUndefined();
   });
 
-  test("expires immediately when retention is none", () => {
-    expect(sessionAudioExpired("not-a-date", "none")).toBe(true);
-  });
-
-  test("never expires when retention is forever", () => {
-    expect(sessionAudioExpired("2026-01-01T00:00:00.000Z", "forever")).toBe(
-      false,
-    );
-    expect(sessionAudioExpired("not-a-date", "forever")).toBe(false);
-  });
-
-  test("expires after the selected retention window", () => {
+  test("applies each retention window", () => {
     const now = Date.parse("2026-05-13T00:00:00.000Z");
 
+    expect(sessionAudioExpired("not-a-date", "none", now)).toBe(true);
+    expect(
+      sessionAudioExpired("2026-01-01T00:00:00.000Z", "forever", now),
+    ).toBe(false);
     expect(sessionAudioExpired("2026-05-11T23:59:59.999Z", "oneDay", now)).toBe(
       true,
     );
     expect(sessionAudioExpired("2026-05-12T00:00:00.001Z", "oneDay", now)).toBe(
       false,
     );
-    expect(
-      sessionAudioExpired("2026-05-09T23:59:59.999Z", "threeDays", now),
-    ).toBe(true);
-    expect(
-      sessionAudioExpired("2026-05-10T00:00:00.001Z", "threeDays", now),
-    ).toBe(false);
-    expect(
-      sessionAudioExpired("2026-05-05T23:59:59.999Z", "oneWeek", now),
-    ).toBe(true);
-    expect(
-      sessionAudioExpired("2026-05-06T00:00:00.001Z", "oneWeek", now),
-    ).toBe(false);
-    expect(
-      sessionAudioExpired("2026-04-12T23:59:59.999Z", "oneMonth", now),
-    ).toBe(true);
-    expect(
-      sessionAudioExpired("2026-04-13T00:00:00.001Z", "oneMonth", now),
-    ).toBe(false);
+    expect(sessionAudioExpired("not-a-date", "oneDay", now)).toBe(false);
   });
 
-  test("does not expire sessions with invalid creation dates", () => {
-    expect(sessionAudioExpired(null, "oneDay")).toBe(false);
-    expect(sessionAudioExpired("not-a-date", "oneDay")).toBe(false);
-  });
-
-  test("deletes expired inactive audio without deleting orphaned audio", async () => {
-    const now = Date.parse("2026-05-13T00:00:00.000Z");
-    const store = createMainStore();
-    const settingsStore = createSettingsStore();
-
-    settingsStore.setValue("audio_retention", "oneDay");
-    store.setRow("sessions", "expired", {
-      user_id: "user",
-      created_at: "2026-05-11T23:59:59.999Z",
-      title: "",
-      raw_md: "",
-    });
-    store.setRow("sessions", "fresh", {
-      user_id: "user",
-      created_at: "2026-05-12T00:00:00.001Z",
-      title: "",
-      raw_md: "",
-    });
-    store.setRow("sessions", "active", {
-      user_id: "user",
-      created_at: "2026-05-11T23:59:59.999Z",
-      title: "",
-      raw_md: "",
-    });
-
-    getSessionModeMock.mockImplementation((sessionId) =>
+  test("deletes only expired inactive SQLite sessions", async () => {
+    mockCleanupRows([
+      {
+        id: "expired",
+        created_at: "2026-05-11T23:59:59.999Z",
+        has_words: 1,
+      },
+      {
+        id: "fresh",
+        created_at: "2026-05-12T00:00:00.001Z",
+        has_words: 1,
+      },
+      {
+        id: "active",
+        created_at: "2026-05-11T23:59:59.999Z",
+        has_words: 1,
+      },
+    ]);
+    mocks.getSessionMode.mockImplementation((sessionId) =>
       sessionId === "active" ? "active" : "inactive",
     );
-    const deleted = await cleanupExpiredAudio(store, settingsStore, now);
 
-    expect(audioDeleteMock).toHaveBeenCalledTimes(1);
-    expect(audioDeleteMock).toHaveBeenCalledWith("expired");
-    expect(audioDeleteOrphanedExpiredMock).not.toHaveBeenCalled();
+    const deleted = await cleanupExpiredAudio(
+      "oneDay",
+      Date.parse("2026-05-13T00:00:00.000Z"),
+    );
+
+    expect(mocks.deleteLocalSessionAudio).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteLocalSessionAudio).toHaveBeenCalledWith(
+      "expired",
+      expect.any(Function),
+    );
     expect(deleted).toEqual(["expired"]);
   });
 
-  test("keeps unsaved audio when retention is none until transcript words exist", async () => {
-    const now = Date.parse("2026-05-13T00:00:00.000Z");
-    const store = createMainStore();
-    const settingsStore = createSettingsStore();
+  test("retention none keeps audio until transcript words exist", async () => {
+    mockCleanupRows([
+      {
+        id: "unprocessed",
+        created_at: "2026-05-13T00:00:00.000Z",
+        has_words: 0,
+      },
+      {
+        id: "processed",
+        created_at: "2026-05-13T00:00:00.000Z",
+        has_words: 1,
+      },
+    ]);
 
-    settingsStore.setValue("audio_retention", "none");
-    store.setRow("sessions", "unprocessed", {
-      user_id: "user",
-      created_at: "2026-05-13T00:00:00.000Z",
-      title: "",
-      raw_md: "",
-    });
-    store.setRow("sessions", "processed", {
-      user_id: "user",
-      created_at: "2026-05-13T00:00:00.000Z",
-      title: "",
-      raw_md: "",
-    });
-    store.setRow("transcripts", "processed-transcript", {
-      user_id: "user",
-      created_at: "2026-05-13T00:00:00.000Z",
-      session_id: "processed",
-      started_at: now,
-      words: JSON.stringify([{ text: " saved" }]),
-      speaker_hints: "[]",
-      memo_md: "",
-    });
+    await expect(
+      cleanupExpiredAudio("none", Date.parse("2026-05-13T00:00:00.000Z")),
+    ).resolves.toEqual(["processed"]);
+    expect(mocks.deleteLocalSessionAudio).toHaveBeenCalledWith(
+      "processed",
+      expect.any(Function),
+    );
+  });
 
-    const deleted = await cleanupExpiredAudio(store, settingsStore, now);
+  test("keeps source audio while transcription is still processing", async () => {
+    mockCleanupRows([
+      {
+        id: "partial",
+        created_at: "2026-05-01T00:00:00.000Z",
+        has_words: 1,
+        transcript_processing: 1,
+      },
+    ]);
 
-    expect(audioDeleteMock).toHaveBeenCalledTimes(1);
-    expect(audioDeleteMock).toHaveBeenCalledWith("processed");
-    expect(audioDeleteOrphanedExpiredMock).not.toHaveBeenCalled();
-    expect(deleted).toEqual(["processed"]);
+    await expect(
+      cleanupExpiredAudio("none", Date.parse("2026-05-13T00:00:00.000Z")),
+    ).resolves.toEqual([]);
+    expect(mocks.deleteLocalSessionAudio).not.toHaveBeenCalled();
   });
 
   test("deletes processed audio immediately when retention is none", async () => {
-    const now = Date.parse("2026-05-13T00:00:00.000Z");
-    const store = createMainStore();
-    const settingsStore = createSettingsStore();
+    mocks.execute.mockResolvedValueOnce([{ has_words: 1 }]);
+    const listener = vi.fn();
+    const unsubscribe = subscribeToSessionAudioRetention(listener);
 
-    settingsStore.setValue("audio_retention", "none");
-    store.setRow("sessions", "processed", {
-      user_id: "user",
-      created_at: "2026-05-13T00:00:00.000Z",
-      title: "",
-      raw_md: "",
-    });
-    store.setRow("transcripts", "processed-transcript", {
-      user_id: "user",
-      created_at: "2026-05-13T00:00:00.000Z",
-      session_id: "processed",
-      started_at: now,
-      words: JSON.stringify([{ text: " saved" }]),
-      speaker_hints: "[]",
-      memo_md: "",
-    });
-
-    const deleted = await deleteProcessedAudioForRetention(
-      store,
-      settingsStore,
+    await expect(
+      deleteProcessedAudioForRetention("none", "processed"),
+    ).resolves.toBe(true);
+    expect(mocks.deleteLocalSessionAudio).toHaveBeenCalledWith(
       "processed",
+      expect.any(Function),
     );
-
-    expect(deleted).toBe(true);
-    expect(audioDeleteMock).toHaveBeenCalledTimes(1);
-    expect(audioDeleteMock).toHaveBeenCalledWith("processed");
+    expect(listener).toHaveBeenNthCalledWith(1, {
+      phase: "deleting",
+      sessionId: "processed",
+    });
+    expect(listener).toHaveBeenNthCalledWith(2, {
+      phase: "deleted",
+      sessionId: "processed",
+    });
+    unsubscribe();
   });
 
-  test("does not delete unprocessed audio immediately when retention is none", async () => {
-    const store = createMainStore();
-    const settingsStore = createSettingsStore();
+  test("keeps unprocessed audio when retention is none", async () => {
+    mocks.execute.mockResolvedValueOnce([{ has_words: 0 }]);
 
-    settingsStore.setValue("audio_retention", "none");
-    store.setRow("sessions", "unprocessed", {
-      user_id: "user",
-      created_at: "2026-05-13T00:00:00.000Z",
-      title: "",
-      raw_md: "",
-    });
+    await expect(
+      deleteProcessedAudioForRetention("none", "unprocessed"),
+    ).resolves.toBe(false);
+    expect(mocks.deleteLocalSessionAudio).not.toHaveBeenCalled();
+  });
 
-    const deleted = await deleteProcessedAudioForRetention(
-      store,
-      settingsStore,
-      "unprocessed",
+  test("keeps partially persisted audio when retention is none", async () => {
+    mocks.execute.mockResolvedValueOnce([
+      { has_words: 1, transcript_processing: 1 },
+    ]);
+
+    await expect(
+      deleteProcessedAudioForRetention("none", "partial"),
+    ).resolves.toBe(false);
+    expect(mocks.deleteLocalSessionAudio).not.toHaveBeenCalled();
+  });
+
+  test("skips immediate deletion for retained audio", async () => {
+    await expect(
+      deleteProcessedAudioForRetention("oneDay", "processed"),
+    ).resolves.toBe(false);
+    expect(mocks.execute).not.toHaveBeenCalled();
+    expect(mocks.deleteLocalSessionAudio).not.toHaveBeenCalled();
+  });
+
+  test("only scans logical deletions when retention is forever", async () => {
+    await expect(cleanupExpiredAudio("forever")).resolves.toEqual([]);
+    expect(mocks.execute).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteLocalSessionAudio).not.toHaveBeenCalled();
+  });
+
+  test("does not report failed audio deletions as deleted", async () => {
+    mockCleanupRows([
+      {
+        id: "expired",
+        created_at: "2026-05-01T00:00:00.000Z",
+        has_words: 1,
+      },
+    ]);
+    mocks.deleteLocalSessionAudio.mockRejectedValueOnce(
+      new Error("disk failure"),
     );
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
 
-    expect(deleted).toBe(false);
-    expect(audioDeleteMock).not.toHaveBeenCalled();
+    await expect(
+      cleanupExpiredAudio("oneDay", Date.parse("2026-05-13T00:00:00.000Z")),
+    ).resolves.toEqual([]);
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 
-  test("does not delete processed audio immediately when retention is not none", async () => {
-    const now = Date.parse("2026-05-13T00:00:00.000Z");
-    const store = createMainStore();
-    const settingsStore = createSettingsStore();
+  test("does not report a device without local audio as deleted", async () => {
+    mockCleanupRows([
+      {
+        id: "remote-only",
+        created_at: "2026-05-01T00:00:00.000Z",
+        has_words: 1,
+      },
+    ]);
+    mocks.deleteLocalSessionAudio.mockResolvedValueOnce(false);
 
-    settingsStore.setValue("audio_retention", "oneDay");
-    store.setRow("sessions", "processed", {
-      user_id: "user",
-      created_at: "2026-05-13T00:00:00.000Z",
-      title: "",
-      raw_md: "",
-    });
-    store.setRow("transcripts", "processed-transcript", {
-      user_id: "user",
-      created_at: "2026-05-13T00:00:00.000Z",
-      session_id: "processed",
-      started_at: now,
-      words: JSON.stringify([{ text: " saved" }]),
-      speaker_hints: "[]",
-      memo_md: "",
-    });
+    await expect(
+      cleanupExpiredAudio("oneDay", Date.parse("2026-05-13T00:00:00.000Z")),
+    ).resolves.toEqual([]);
+  });
 
-    const deleted = await deleteProcessedAudioForRetention(
-      store,
-      settingsStore,
-      "processed",
+  test("retries local cleanup for logically deleted audio", async () => {
+    mockCleanupRows([], [{ session_id: "deleted-session" }]);
+
+    await expect(cleanupExpiredAudio("forever")).resolves.toEqual([
+      "deleted-session",
+    ]);
+    expect(mocks.cleanupDeletedSessionAudio).toHaveBeenCalledWith(
+      "deleted-session",
+      expect.any(Function),
     );
-
-    expect(deleted).toBe(false);
-    expect(audioDeleteMock).not.toHaveBeenCalled();
+    expect(mocks.execute.mock.calls[0]![0]).toContain(
+      "COALESCE(local.availability, 'present') != 'absent'",
+    );
   });
 
-  test("does not delete session or orphaned audio when retention is forever", async () => {
-    const now = Date.parse("2026-05-13T00:00:00.000Z");
-    const store = createMainStore();
-    const settingsStore = createSettingsStore();
+  test("does not clean a remote tombstone while the session is recording", async () => {
+    mockCleanupRows([], [{ session_id: "active-session" }]);
+    mocks.getSessionMode.mockReturnValue("active");
 
-    settingsStore.setValue("audio_retention", "forever");
-    store.setRow("sessions", "old", {
-      user_id: "user",
-      created_at: "2026-01-01T00:00:00.000Z",
-      title: "",
-      raw_md: "",
-    });
-
-    const deleted = await cleanupExpiredAudio(store, settingsStore, now);
-
-    expect(audioDeleteMock).not.toHaveBeenCalled();
-    expect(audioDeleteOrphanedExpiredMock).not.toHaveBeenCalled();
-    expect(deleted).toEqual([]);
+    await expect(cleanupExpiredAudio("forever")).resolves.toEqual([]);
+    expect(mocks.cleanupDeletedSessionAudio).not.toHaveBeenCalled();
   });
 
-  test("uses legacy save_recordings when audio_retention is missing", async () => {
-    const now = Date.parse("2026-05-13T00:00:00.000Z");
-    const store = createMainStore();
-    const settingsStore = createSettingsStore();
+  test("does not clean audio while capture startup is loading", async () => {
+    mockCleanupRows([], [{ session_id: "starting-session" }]);
+    mocks.live.sessionId = "starting-session";
+    mocks.live.loading = true;
 
-    settingsStore.setValue("save_recordings", false);
-    store.setRow("sessions", "processed", {
-      user_id: "user",
-      created_at: "2026-05-13T00:00:00.000Z",
-      title: "",
-      raw_md: "",
-    });
-    store.setRow("transcripts", "processed-transcript", {
-      user_id: "user",
-      created_at: "2026-05-13T00:00:00.000Z",
-      session_id: "processed",
-      started_at: now,
-      words: JSON.stringify([{ text: " saved" }]),
-      speaker_hints: "[]",
-      memo_md: "",
-    });
-
-    const deleted = await cleanupExpiredAudio(store, settingsStore, now);
-
-    expect(audioDeleteMock).toHaveBeenCalledTimes(1);
-    expect(audioDeleteMock).toHaveBeenCalledWith("processed");
-    expect(deleted).toEqual(["processed"]);
-  });
-
-  test("prefers explicit audio_retention over legacy save_recordings", async () => {
-    const now = Date.parse("2026-05-13T00:00:00.000Z");
-    const store = createMainStore();
-    const settingsStore = createSettingsStore();
-
-    settingsStore.setValue("save_recordings", false);
-    settingsStore.setValue("audio_retention", "oneMonth");
-    store.setRow("sessions", "fresh", {
-      user_id: "user",
-      created_at: "2026-05-01T00:00:00.000Z",
-      title: "",
-      raw_md: "",
-    });
-    store.setRow("transcripts", "fresh-transcript", {
-      user_id: "user",
-      created_at: "2026-05-13T00:00:00.000Z",
-      session_id: "fresh",
-      started_at: now,
-      words: JSON.stringify([{ text: " saved" }]),
-      speaker_hints: "[]",
-      memo_md: "",
-    });
-
-    const deleted = await cleanupExpiredAudio(store, settingsStore, now);
-
-    expect(audioDeleteMock).not.toHaveBeenCalled();
-    expect(audioDeleteOrphanedExpiredMock).not.toHaveBeenCalled();
-    expect(deleted).toEqual([]);
+    await expect(cleanupExpiredAudio("forever")).resolves.toEqual([]);
+    expect(mocks.cleanupDeletedSessionAudio).not.toHaveBeenCalled();
   });
 });

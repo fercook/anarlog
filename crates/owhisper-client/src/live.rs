@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use futures_util::{Stream, StreamExt};
 
-use hypr_ws_client::client::{
+use anlg_ws_client::client::{
     ClientRequestBuilder, Message, Utf8Bytes, WebSocketClient, WebSocketHandle, WebSocketIO,
 };
 use owhisper_interface::ListenParams;
@@ -12,7 +12,7 @@ use owhisper_interface::stream::StreamResponse;
 use owhisper_interface::{ControlMessage, MixedMessage};
 
 use crate::{
-    DeepgramAdapter, RealtimeSttAdapter, append_provider_param, is_hyprnote_proxy,
+    DeepgramAdapter, RealtimeSttAdapter, append_provider_param, is_anarlog_proxy,
     normalize_listen_params,
 };
 
@@ -21,7 +21,7 @@ pub struct ListenClientBuilder<A: RealtimeSttAdapter = DeepgramAdapter> {
     pub(crate) api_key: Option<String>,
     pub(crate) params: Option<ListenParams>,
     pub(crate) extra_headers: Vec<(String, String)>,
-    pub(crate) connect_policy: Option<hypr_ws_client::client::WebSocketConnectPolicy>,
+    pub(crate) connect_policy: Option<anlg_ws_client::client::WebSocketConnectPolicy>,
     pub(crate) _marker: PhantomData<A>,
 }
 
@@ -61,7 +61,7 @@ impl<A: RealtimeSttAdapter> ListenClientBuilder<A> {
 
     pub fn connect_policy(
         mut self,
-        policy: hypr_ws_client::client::WebSocketConnectPolicy,
+        policy: anlg_ws_client::client::WebSocketConnectPolicy,
     ) -> Self {
         self.connect_policy = Some(policy);
         self
@@ -91,18 +91,23 @@ impl<A: RealtimeSttAdapter> ListenClientBuilder<A> {
         adapter: &A,
         params: &ListenParams,
         channels: u8,
-    ) -> hypr_ws_client::client::ClientRequestBuilder {
+    ) -> Result<anlg_ws_client::client::ClientRequestBuilder, crate::Error> {
         let original_api_base = self.get_api_base();
         let api_base = append_provider_param(original_api_base, adapter.provider_name());
         let url = adapter
             .build_ws_url_with_api_key(&api_base, params, channels, self.api_key.as_deref())
             .await
             .unwrap_or_else(|| adapter.build_ws_url(&api_base, params, channels));
-        let uri = url.to_string().parse().unwrap();
+        let uri = url.to_string().parse().map_err(|error| {
+            crate::Error::provider_configuration(
+                adapter.provider_name(),
+                format!("realtime endpoint cannot be used as a WebSocket URI: {error}"),
+            )
+        })?;
 
-        let mut request = hypr_ws_client::client::ClientRequestBuilder::new(uri);
+        let mut request = anlg_ws_client::client::ClientRequestBuilder::new(uri);
 
-        if is_hyprnote_proxy(original_api_base) {
+        if is_anarlog_proxy(original_api_base) {
             if let Some(api_key) = self.api_key.as_deref() {
                 request = request.with_header("Authorization", format!("Bearer {}", api_key));
             }
@@ -115,28 +120,28 @@ impl<A: RealtimeSttAdapter> ListenClientBuilder<A> {
             request = request.with_header(header_name, header_value);
         }
 
-        request
+        Ok(request)
     }
 
-    pub async fn build_with_channels(self, channels: u8) -> ListenClient<A> {
+    pub async fn build_with_channels(self, channels: u8) -> Result<ListenClient<A>, crate::Error> {
         let adapter = A::default();
         let params = self.normalized_params();
-        let request = self.build_request(&adapter, &params, channels).await;
+        let request = self.build_request(&adapter, &params, channels).await?;
         let initial_message = adapter.initial_message(self.api_key.as_deref(), &params, channels);
 
-        ListenClient {
+        Ok(ListenClient {
             adapter,
             request,
             initial_message,
             connect_policy: self.connect_policy,
-        }
+        })
     }
 
-    pub async fn build_single(self) -> ListenClient<A> {
+    pub async fn build_single(self) -> Result<ListenClient<A>, crate::Error> {
         self.build_with_channels(1).await
     }
 
-    pub async fn build_dual(self) -> ListenClientDual<A> {
+    pub async fn build_dual(self) -> Result<ListenClientDual<A>, crate::Error> {
         let adapter = A::default();
         let channels = if adapter.supports_native_multichannel() {
             2
@@ -144,15 +149,15 @@ impl<A: RealtimeSttAdapter> ListenClientBuilder<A> {
             1
         };
         let params = self.normalized_params();
-        let request = self.build_request(&adapter, &params, channels).await;
+        let request = self.build_request(&adapter, &params, channels).await?;
         let initial_message = adapter.initial_message(self.api_key.as_deref(), &params, channels);
 
-        ListenClientDual {
+        Ok(ListenClientDual {
             adapter,
             request,
             initial_message,
             connect_policy: self.connect_policy,
-        }
+        })
     }
 }
 
@@ -164,7 +169,7 @@ pub struct ListenClient<A: RealtimeSttAdapter = DeepgramAdapter> {
     pub(crate) adapter: A,
     pub(crate) request: ClientRequestBuilder,
     pub(crate) initial_message: Option<Message>,
-    pub(crate) connect_policy: Option<hypr_ws_client::client::WebSocketConnectPolicy>,
+    pub(crate) connect_policy: Option<anlg_ws_client::client::WebSocketConnectPolicy>,
 }
 
 #[derive(Clone)]
@@ -172,7 +177,7 @@ pub struct ListenClientDual<A: RealtimeSttAdapter> {
     pub(crate) adapter: A,
     pub(crate) request: ClientRequestBuilder,
     pub(crate) initial_message: Option<Message>,
-    pub(crate) connect_policy: Option<hypr_ws_client::client::WebSocketConnectPolicy>,
+    pub(crate) connect_policy: Option<anlg_ws_client::client::WebSocketConnectPolicy>,
 }
 
 pub struct SingleHandle {
@@ -282,7 +287,7 @@ impl WebSocketIO for ListenClientIO {
         }
     }
 
-    fn from_message(msg: Message) -> Result<Option<Self::Output>, hypr_ws_client::Error> {
+    fn from_message(msg: Message) -> Result<Option<Self::Output>, anlg_ws_client::Error> {
         Ok(match msg {
             Message::Text(text) => Some(text.to_string()),
             _ => None,
@@ -317,7 +322,7 @@ impl WebSocketIO for ListenClientDualIO {
         }
     }
 
-    fn from_message(msg: Message) -> Result<Option<Self::Output>, hypr_ws_client::Error> {
+    fn from_message(msg: Message) -> Result<Option<Self::Output>, anlg_ws_client::Error> {
         Ok(match msg {
             Message::Text(text) => Some(text.to_string()),
             _ => None,
@@ -338,10 +343,10 @@ impl<A: RealtimeSttAdapter> ListenClient<A> {
         audio_stream: impl Stream<Item = ListenClientInput> + Send + Unpin + 'static,
     ) -> Result<
         (
-            impl Stream<Item = Result<StreamResponse, hypr_ws_client::Error>>,
+            impl Stream<Item = Result<StreamResponse, anlg_ws_client::Error>>,
             SingleHandle,
         ),
-        hypr_ws_client::Error,
+        anlg_ws_client::Error,
     > {
         let finalize_text = extract_finalize_text(&self.adapter);
         let ws =
@@ -363,7 +368,7 @@ impl<A: RealtimeSttAdapter> ListenClient<A> {
         let adapter = self.adapter;
         let mapped_stream = raw_stream.flat_map(move |result| {
             let adapter = adapter.clone();
-            let responses: Vec<Result<StreamResponse, hypr_ws_client::Error>> = match result {
+            let responses: Vec<Result<StreamResponse, anlg_ws_client::Error>> = match result {
                 Ok(raw) => adapter.parse_response(&raw).into_iter().map(Ok).collect(),
                 Err(e) => vec![Err(e)],
             };
@@ -379,14 +384,14 @@ impl<A: RealtimeSttAdapter> ListenClient<A> {
 }
 
 type DualOutputStream =
-    Pin<Box<dyn Stream<Item = Result<StreamResponse, hypr_ws_client::Error>> + Send>>;
+    Pin<Box<dyn Stream<Item = Result<StreamResponse, anlg_ws_client::Error>> + Send>>;
 
 impl<A: RealtimeSttAdapter> ListenClientDual<A> {
     #[allow(clippy::wrong_self_convention)]
     pub async fn from_realtime_audio(
         self,
         stream: impl Stream<Item = ListenClientDualInput> + Send + Unpin + 'static,
-    ) -> Result<(DualOutputStream, DualHandle), hypr_ws_client::Error> {
+    ) -> Result<(DualOutputStream, DualHandle), anlg_ws_client::Error> {
         if self.adapter.supports_native_multichannel() {
             self.from_realtime_audio_native(stream).await
         } else {
@@ -398,7 +403,7 @@ impl<A: RealtimeSttAdapter> ListenClientDual<A> {
     async fn from_realtime_audio_native(
         self,
         stream: impl Stream<Item = ListenClientDualInput> + Send + Unpin + 'static,
-    ) -> Result<(DualOutputStream, DualHandle), hypr_ws_client::Error> {
+    ) -> Result<(DualOutputStream, DualHandle), anlg_ws_client::Error> {
         let finalize_text = extract_finalize_text(&self.adapter);
         let ws =
             websocket_client_with_keep_alive(&self.request, &self.adapter, self.connect_policy);
@@ -421,7 +426,7 @@ impl<A: RealtimeSttAdapter> ListenClientDual<A> {
         let adapter = self.adapter;
         let mapped_stream = raw_stream.flat_map(move |result| {
             let adapter = adapter.clone();
-            let responses: Vec<Result<StreamResponse, hypr_ws_client::Error>> = match result {
+            let responses: Vec<Result<StreamResponse, anlg_ws_client::Error>> = match result {
                 Ok(raw) => adapter.parse_response(&raw).into_iter().map(Ok).collect(),
                 Err(e) => vec![Err(e)],
             };
@@ -439,18 +444,20 @@ impl<A: RealtimeSttAdapter> ListenClientDual<A> {
     async fn from_realtime_audio_split(
         self,
         stream: impl Stream<Item = ListenClientDualInput> + Send + Unpin + 'static,
-    ) -> Result<(DualOutputStream, DualHandle), hypr_ws_client::Error> {
+    ) -> Result<(DualOutputStream, DualHandle), anlg_ws_client::Error> {
         let finalize_text = extract_finalize_text(&self.adapter);
+        let mic_adapter = self.adapter.fork_session();
+        let spk_adapter = self.adapter.fork_session();
         let (mic_tx, mic_rx) = tokio::sync::mpsc::channel::<TransformedInput>(32);
         let (spk_tx, spk_rx) = tokio::sync::mpsc::channel::<TransformedInput>(32);
 
         let mic_ws = websocket_client_with_keep_alive(
             &self.request,
-            &self.adapter,
+            &mic_adapter,
             self.connect_policy.clone(),
         );
         let spk_ws =
-            websocket_client_with_keep_alive(&self.request, &self.adapter, self.connect_policy);
+            websocket_client_with_keep_alive(&self.request, &spk_adapter, self.connect_policy);
 
         let mic_outbound = tokio_stream::wrappers::ReceiverStream::new(mic_rx);
         let spk_outbound = tokio_stream::wrappers::ReceiverStream::new(spk_rx);
@@ -467,15 +474,15 @@ impl<A: RealtimeSttAdapter> ListenClientDual<A> {
             stream,
             mic_tx,
             spk_tx,
-            self.adapter.clone(),
+            mic_adapter.clone(),
+            spk_adapter.clone(),
         ));
 
-        let adapter = self.adapter.clone();
         let mic_stream = mic_raw.flat_map({
-            let adapter = adapter.clone();
+            let adapter = mic_adapter;
             move |result| {
                 let adapter = adapter.clone();
-                let responses: Vec<Result<StreamResponse, hypr_ws_client::Error>> = match result {
+                let responses: Vec<Result<StreamResponse, anlg_ws_client::Error>> = match result {
                     Ok(raw) => adapter.parse_response(&raw).into_iter().map(Ok).collect(),
                     Err(e) => vec![Err(e)],
                 };
@@ -484,10 +491,10 @@ impl<A: RealtimeSttAdapter> ListenClientDual<A> {
         });
 
         let spk_stream = spk_raw.flat_map({
-            let adapter = adapter.clone();
+            let adapter = spk_adapter;
             move |result| {
                 let adapter = adapter.clone();
-                let responses: Vec<Result<StreamResponse, hypr_ws_client::Error>> = match result {
+                let responses: Vec<Result<StreamResponse, anlg_ws_client::Error>> = match result {
                     Ok(raw) => adapter.parse_response(&raw).into_iter().map(Ok).collect(),
                     Err(e) => vec![Err(e)],
                 };
@@ -512,13 +519,14 @@ async fn forward_dual_to_single<A: RealtimeSttAdapter>(
     mut stream: impl Stream<Item = ListenClientDualInput> + Send + Unpin + 'static,
     mic_tx: tokio::sync::mpsc::Sender<TransformedInput>,
     spk_tx: tokio::sync::mpsc::Sender<TransformedInput>,
-    adapter: A,
+    mic_adapter: A,
+    spk_adapter: A,
 ) {
     while let Some(msg) = stream.next().await {
         match msg {
             MixedMessage::Audio((mic, spk)) => {
-                let mic_msg = adapter.audio_to_message(mic);
-                let spk_msg = adapter.audio_to_message(spk);
+                let mic_msg = mic_adapter.audio_to_message(mic);
+                let spk_msg = spk_adapter.audio_to_message(spk);
                 if mic_tx.send(MixedMessage::Audio(mic_msg)).await.is_err() {
                     break;
                 }
@@ -545,10 +553,10 @@ async fn forward_dual_to_single<A: RealtimeSttAdapter>(
 fn merge_streams_with_channel_remap<S1, S2>(
     mic_stream: S1,
     spk_stream: S2,
-) -> impl Stream<Item = Result<StreamResponse, hypr_ws_client::Error>> + Send
+) -> impl Stream<Item = Result<StreamResponse, anlg_ws_client::Error>> + Send
 where
-    S1: Stream<Item = Result<StreamResponse, hypr_ws_client::Error>> + Send + 'static,
-    S2: Stream<Item = Result<StreamResponse, hypr_ws_client::Error>> + Send + 'static,
+    S1: Stream<Item = Result<StreamResponse, anlg_ws_client::Error>> + Send + 'static,
+    S2: Stream<Item = Result<StreamResponse, anlg_ws_client::Error>> + Send + 'static,
 {
     let mic_mapped = mic_stream.map(|result| {
         result.map(|mut response| {
@@ -570,7 +578,7 @@ where
 fn websocket_client_with_keep_alive<A: RealtimeSttAdapter>(
     request: &ClientRequestBuilder,
     adapter: &A,
-    connect_policy: Option<hypr_ws_client::client::WebSocketConnectPolicy>,
+    connect_policy: Option<anlg_ws_client::client::WebSocketConnectPolicy>,
 ) -> WebSocketClient {
     let mut client = WebSocketClient::new(request.clone());
 
@@ -593,242 +601,4 @@ fn extract_finalize_text<A: RealtimeSttAdapter>(adapter: &A) -> Utf8Bytes {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use bytes::Bytes;
-    use hypr_ws_client::client::Message;
-
-    use super::{ListenClientDualInput, TransformedInput, forward_dual_to_single};
-    use crate::test_utils::{run_dual_test, run_single_test};
-    use crate::{
-        AssemblyAIAdapter, DeepgramAdapter, ListenClient, RealtimeSttAdapter, SonioxAdapter,
-    };
-
-    #[derive(Clone, Default)]
-    struct TestAdapter;
-
-    impl RealtimeSttAdapter for TestAdapter {
-        fn provider_name(&self) -> &'static str {
-            "test"
-        }
-
-        fn is_supported_languages(
-            &self,
-            _languages: &[hypr_language::Language],
-            _model: Option<&str>,
-        ) -> bool {
-            true
-        }
-
-        fn supports_native_multichannel(&self) -> bool {
-            false
-        }
-
-        fn build_ws_url(
-            &self,
-            _api_base: &str,
-            _params: &owhisper_interface::ListenParams,
-            _channels: u8,
-        ) -> url::Url {
-            "ws://localhost".parse().expect("invalid test url")
-        }
-
-        fn build_auth_header(&self, _api_key: Option<&str>) -> Option<(&'static str, String)> {
-            None
-        }
-
-        fn keep_alive_message(&self) -> Option<Message> {
-            None
-        }
-
-        fn finalize_message(&self) -> Message {
-            Message::Text("finalize".into())
-        }
-
-        fn parse_response(&self, _raw: &str) -> Vec<owhisper_interface::stream::StreamResponse> {
-            Vec::new()
-        }
-    }
-
-    fn proxy_base() -> String {
-        std::env::var("PROXY_URL").unwrap_or_else(|_| "localhost:3001".to_string())
-    }
-
-    #[tokio::test]
-    async fn forward_dual_to_single_forwards_all_audio_without_dropping() {
-        let stream = futures_util::stream::iter(vec![
-            ListenClientDualInput::Audio((
-                Bytes::from_static(b"mic-1"),
-                Bytes::from_static(b"spk-1"),
-            )),
-            ListenClientDualInput::Audio((
-                Bytes::from_static(b"mic-2"),
-                Bytes::from_static(b"spk-2"),
-            )),
-        ]);
-        let (mic_tx, mut mic_rx) = tokio::sync::mpsc::channel(1);
-        let (spk_tx, mut spk_rx) = tokio::sync::mpsc::channel(1);
-
-        let task = tokio::spawn(forward_dual_to_single(stream, mic_tx, spk_tx, TestAdapter));
-
-        let Some(TransformedInput::Audio(Message::Binary(first_mic))) = mic_rx.recv().await else {
-            panic!("missing first mic frame");
-        };
-        let Some(TransformedInput::Audio(Message::Binary(first_spk))) = spk_rx.recv().await else {
-            panic!("missing first speaker frame");
-        };
-        let Some(TransformedInput::Audio(Message::Binary(second_mic))) =
-            tokio::time::timeout(Duration::from_secs(1), mic_rx.recv())
-                .await
-                .expect("timed out waiting for second mic frame")
-        else {
-            panic!("missing second mic frame");
-        };
-        let Some(TransformedInput::Audio(Message::Binary(second_spk))) =
-            tokio::time::timeout(Duration::from_secs(1), spk_rx.recv())
-                .await
-                .expect("timed out waiting for second speaker frame")
-        else {
-            panic!("missing second speaker frame");
-        };
-
-        assert_eq!(first_mic.as_ref(), b"mic-1");
-        assert_eq!(first_spk.as_ref(), b"spk-1");
-        assert_eq!(second_mic.as_ref(), b"mic-2");
-        assert_eq!(second_spk.as_ref(), b"spk-2");
-
-        let _: () = task.await.expect("forward task panicked");
-    }
-
-    #[tokio::test]
-    async fn build_single_normalizes_languages_before_initial_message() {
-        let client = ListenClient::builder()
-            .adapter::<SonioxAdapter>()
-            .api_base("https://api.soniox.com")
-            .params(owhisper_interface::ListenParams {
-                languages: vec![
-                    "en-US".parse().unwrap(),
-                    "en-GB".parse().unwrap(),
-                    hypr_language::ISO639::En.into(),
-                    "ko-KR".parse().unwrap(),
-                ],
-                ..Default::default()
-            })
-            .build_single()
-            .await;
-
-        let msg = client.initial_message.expect("missing initial message");
-        let Message::Text(text) = msg else {
-            panic!("expected text message");
-        };
-        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
-        let hints = json["language_hints"].as_array().unwrap();
-
-        assert_eq!(hints.len(), 2);
-        assert_eq!(hints[0].as_str().unwrap(), "en");
-        assert_eq!(hints[1].as_str().unwrap(), "ko");
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_proxy_deepgram_single() {
-        let client = ListenClient::builder()
-            .adapter::<DeepgramAdapter>()
-            .api_base(&format!("http://{}", proxy_base()))
-            .params(owhisper_interface::ListenParams {
-                model: Some("nova-3".to_string()),
-                languages: vec![hypr_language::ISO639::En.into()],
-                ..Default::default()
-            })
-            .build_single()
-            .await;
-
-        run_single_test(client, "proxy-deepgram").await;
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_proxy_deepgram_dual() {
-        let client = ListenClient::builder()
-            .adapter::<DeepgramAdapter>()
-            .api_base(&format!("http://{}", proxy_base()))
-            .params(owhisper_interface::ListenParams {
-                model: Some("nova-3".to_string()),
-                languages: vec![hypr_language::ISO639::En.into()],
-                ..Default::default()
-            })
-            .build_dual()
-            .await;
-
-        run_dual_test(client, "proxy-deepgram").await;
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_proxy_soniox_single() {
-        let client = ListenClient::builder()
-            .adapter::<SonioxAdapter>()
-            .api_base(&format!("http://{}", proxy_base()))
-            .params(owhisper_interface::ListenParams {
-                model: Some("stt-v3".to_string()),
-                languages: vec![hypr_language::ISO639::En.into()],
-                ..Default::default()
-            })
-            .build_single()
-            .await;
-
-        run_single_test(client, "proxy-soniox").await;
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_proxy_soniox_dual() {
-        let client = ListenClient::builder()
-            .adapter::<SonioxAdapter>()
-            .api_base(&format!("http://{}", proxy_base()))
-            .params(owhisper_interface::ListenParams {
-                model: Some("stt-v3".to_string()),
-                languages: vec![hypr_language::ISO639::En.into()],
-                ..Default::default()
-            })
-            .build_dual()
-            .await;
-
-        run_dual_test(client, "proxy-soniox").await;
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_proxy_assemblyai_single() {
-        let client = ListenClient::builder()
-            .adapter::<AssemblyAIAdapter>()
-            .api_base(&format!("http://{}", proxy_base()))
-            .params(owhisper_interface::ListenParams {
-                model: Some("u3-rt-pro".to_string()),
-                languages: vec![hypr_language::ISO639::En.into()],
-                ..Default::default()
-            })
-            .build_single()
-            .await;
-
-        run_single_test(client, "proxy-assemblyai").await;
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn test_proxy_assemblyai_dual() {
-        let client = ListenClient::builder()
-            .adapter::<AssemblyAIAdapter>()
-            .api_base(&format!("http://{}", proxy_base()))
-            .params(owhisper_interface::ListenParams {
-                model: Some("u3-rt-pro".to_string()),
-                languages: vec![hypr_language::ISO639::En.into()],
-                ..Default::default()
-            })
-            .build_dual()
-            .await;
-
-        run_dual_test(client, "proxy-assemblyai").await;
-    }
-}
+mod tests;

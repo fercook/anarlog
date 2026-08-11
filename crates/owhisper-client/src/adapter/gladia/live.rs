@@ -2,8 +2,9 @@
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
-use hypr_ws_client::client::Message;
+use anlg_ws_client::client::Message;
 use owhisper_interface::ListenParams;
 use owhisper_interface::stream::{Alternatives, Channel, Metadata, StreamResponse};
 use serde::{Deserialize, Serialize};
@@ -14,34 +15,74 @@ use crate::adapter::parsing::WordBuilder;
 
 struct SessionChannels;
 
+struct SessionChannelEntry {
+    channels: u8,
+    inserted_at: Instant,
+}
+
+const SESSION_CHANNEL_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const MAX_SESSION_CHANNELS: usize = 64;
+
 impl SessionChannels {
-    fn store() -> &'static Mutex<HashMap<String, u8>> {
-        static SESSION_CHANNELS: OnceLock<Mutex<HashMap<String, u8>>> = OnceLock::new();
+    fn store() -> &'static Mutex<HashMap<String, SessionChannelEntry>> {
+        static SESSION_CHANNELS: OnceLock<Mutex<HashMap<String, SessionChannelEntry>>> =
+            OnceLock::new();
         SESSION_CHANNELS.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
     fn insert(session_id: String, channels: u8) {
         if let Ok(mut map) = Self::store().lock() {
-            map.insert(session_id, channels);
+            Self::prune(&mut map);
+            if !map.contains_key(&session_id)
+                && map.len() >= MAX_SESSION_CHANNELS
+                && let Some(oldest) = map
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.inserted_at)
+                    .map(|(id, _)| id.clone())
+            {
+                map.remove(&oldest);
+            }
+            map.insert(
+                session_id,
+                SessionChannelEntry {
+                    channels,
+                    inserted_at: Instant::now(),
+                },
+            );
         }
     }
 
     fn get(session_id: &str) -> Option<u8> {
-        Self::store()
-            .lock()
-            .ok()
-            .and_then(|map| map.get(session_id).copied())
+        let mut map = Self::store().lock().ok()?;
+        Self::prune(&mut map);
+        map.get(session_id).map(|entry| entry.channels)
     }
 
     fn remove(session_id: &str) -> Option<u8> {
         Self::store()
             .lock()
             .ok()
-            .and_then(|mut map| map.remove(session_id))
+            .and_then(|mut map| map.remove(session_id).map(|entry| entry.channels))
+    }
+
+    #[cfg(test)]
+    fn clear() {
+        if let Ok(mut map) = Self::store().lock() {
+            map.clear();
+        }
     }
 
     fn get_or_infer(session_id: &str, channel_idx: i32) -> u8 {
         Self::get(session_id).unwrap_or_else(|| (channel_idx + 1).max(1) as u8)
+    }
+
+    fn prune(map: &mut HashMap<String, SessionChannelEntry>) {
+        map.retain(|_, entry| entry.inserted_at.elapsed() < SESSION_CHANNEL_TTL);
+    }
+
+    #[cfg(test)]
+    fn len() -> usize {
+        Self::store().lock().map(|map| map.len()).unwrap_or(0)
     }
 }
 
@@ -52,10 +93,10 @@ impl RealtimeSttAdapter for GladiaAdapter {
 
     fn is_supported_languages(
         &self,
-        languages: &[hypr_language::Language],
-        _model: Option<&str>,
+        languages: &[anlg_language::Language],
+        model: Option<&str>,
     ) -> bool {
-        GladiaAdapter::is_supported_languages_live(languages)
+        GladiaAdapter::is_supported_languages_live(languages, model)
     }
 
     fn supports_native_multichannel(&self) -> bool {
@@ -111,7 +152,7 @@ impl RealtimeSttAdapter for GladiaAdapter {
                 None
             } else {
                 Some(LanguageConfig {
-                    code_switching: languages.len() > 1,
+                    code_switching: false,
                     languages,
                 })
             };
@@ -184,16 +225,16 @@ impl RealtimeSttAdapter for GladiaAdapter {
                 } => {
                     tracing::error!(
                         error = %message,
-                        hyprnote.validation.errors = ?validation_errors,
+                        anarlog.validation.errors = ?validation_errors,
                         "gladia_init_failed"
                     );
                     return None;
                 }
             };
 
+            let url = url::Url::parse(&url).ok()?;
             SessionChannels::insert(id, channels);
-
-            url::Url::parse(&url).ok()
+            Some(url)
         }
     }
 
@@ -224,7 +265,7 @@ impl RealtimeSttAdapter for GladiaAdapter {
             Err(e) => {
                 tracing::warn!(
                     error = ?e,
-                    hyprnote.payload.size_bytes = raw.len() as u64,
+                    anarlog.payload.size_bytes = raw.len() as u64,
                     "gladia_json_parse_failed"
                 );
                 return vec![];
@@ -234,20 +275,20 @@ impl RealtimeSttAdapter for GladiaAdapter {
         match msg {
             GladiaMessage::Transcript(transcript) => Self::parse_transcript(transcript),
             GladiaMessage::StartSession { id } => {
-                tracing::debug!(hyprnote.stt.provider_session.id = %id, "gladia_session_started");
+                tracing::debug!(anarlog.stt.provider_session.id = %id, "gladia_session_started");
                 vec![]
             }
             GladiaMessage::EndSession { id } => {
                 let channels = SessionChannels::remove(&id).unwrap_or_else(|| {
                     tracing::warn!(
-                        hyprnote.stt.provider_session.id = %id,
+                        anarlog.stt.provider_session.id = %id,
                         "gladia_session_channels_not_found"
                     );
                     1
                 });
                 tracing::debug!(
-                    hyprnote.stt.provider_session.id = %id,
-                    hyprnote.audio.channel_count = channels,
+                    anarlog.stt.provider_session.id = %id,
+                    anarlog.audio.channel_count = channels,
                     "gladia_session_ended"
                 );
                 vec![StreamResponse::TerminalResponse {
@@ -261,7 +302,14 @@ impl RealtimeSttAdapter for GladiaAdapter {
             GladiaMessage::SpeechEnd { .. } => vec![],
             GladiaMessage::StartRecording { .. } => vec![],
             GladiaMessage::EndRecording { .. } => vec![],
-            GladiaMessage::Error { message, code } => {
+            GladiaMessage::Error {
+                message,
+                code,
+                session_id,
+            } => {
+                if let Some(session_id) = session_id {
+                    SessionChannels::remove(&session_id);
+                }
                 tracing::error!(error = %message, error.code = ?code, "gladia_error");
                 vec![StreamResponse::ErrorResponse {
                     error_code: code,
@@ -271,7 +319,7 @@ impl RealtimeSttAdapter for GladiaAdapter {
             }
             GladiaMessage::Unknown => {
                 tracing::debug!(
-                    hyprnote.payload.size_bytes = raw.len() as u64,
+                    anarlog.payload.size_bytes = raw.len() as u64,
                     "gladia_unknown_message"
                 );
                 vec![]
@@ -300,6 +348,10 @@ struct GladiaConfig<'a> {
     realtime_processing: Option<RealtimeProcessing>,
 }
 
+// `languages` is a candidate set Gladia detects within; `code_switching` additionally lets it
+// switch language mid-audio. Configured languages describe the user, not one meeting, so leave
+// switching off — otherwise a monolingual German meeting is decoded by the code-switching path
+// and loses accuracy against detecting German once and locking to it.
 #[derive(Serialize, Debug, PartialEq)]
 struct LanguageConfig {
     languages: Vec<String>,
@@ -319,7 +371,7 @@ impl GladiaAdapter {
             None
         } else {
             Some(LanguageConfig {
-                code_switching: languages.len() > 1,
+                code_switching: false,
                 languages,
             })
         }
@@ -418,6 +470,8 @@ enum GladiaMessage {
         message: String,
         #[serde(default)]
         code: Option<i32>,
+        #[serde(default, alias = "id")]
+        session_id: Option<String>,
     },
     #[serde(other)]
     Unknown,
@@ -525,10 +579,11 @@ impl GladiaAdapter {
 
 #[cfg(test)]
 mod tests {
-    use hypr_language::ISO639;
+    use anlg_language::ISO639;
 
-    use super::{GladiaAdapter, LanguageConfig};
+    use super::{GladiaAdapter, LanguageConfig, MAX_SESSION_CHANNELS, SessionChannels};
     use crate::ListenClient;
+    use crate::RealtimeSttAdapter;
     use crate::test_utils::{UrlTestCase, run_dual_test, run_single_test, run_url_test_cases};
 
     const API_BASE: &str = "https://api.gladia.io";
@@ -551,7 +606,7 @@ mod tests {
     #[test]
     fn test_build_language_config_single_language() {
         let params = owhisper_interface::ListenParams {
-            languages: vec![hypr_language::ISO639::En.into()],
+            languages: vec![anlg_language::ISO639::En.into()],
             ..Default::default()
         };
 
@@ -568,8 +623,8 @@ mod tests {
     fn test_build_language_config_multi_language() {
         let params = owhisper_interface::ListenParams {
             languages: vec![
-                hypr_language::ISO639::En.into(),
-                hypr_language::ISO639::Es.into(),
+                anlg_language::ISO639::En.into(),
+                anlg_language::ISO639::Es.into(),
             ],
             ..Default::default()
         };
@@ -578,8 +633,8 @@ mod tests {
 
         assert_eq!(config.languages, vec!["en", "es"]);
         assert!(
-            config.code_switching,
-            "Multi language should have code_switching=true"
+            !config.code_switching,
+            "Multi language should detect within the candidates, not code-switch"
         );
     }
 
@@ -587,9 +642,9 @@ mod tests {
     fn test_build_language_config_three_languages() {
         let params = owhisper_interface::ListenParams {
             languages: vec![
-                hypr_language::ISO639::En.into(),
-                hypr_language::ISO639::Ko.into(),
-                hypr_language::ISO639::Ja.into(),
+                anlg_language::ISO639::En.into(),
+                anlg_language::ISO639::Ko.into(),
+                anlg_language::ISO639::Ja.into(),
             ],
             ..Default::default()
         };
@@ -598,8 +653,8 @@ mod tests {
 
         assert_eq!(config.languages, vec!["en", "ko", "ja"]);
         assert!(
-            config.code_switching,
-            "Three languages should have code_switching=true"
+            !config.code_switching,
+            "Three languages should detect within the candidates, not code-switch"
         );
     }
 
@@ -619,12 +674,36 @@ mod tests {
     fn test_build_language_config_serialization() {
         let config = LanguageConfig {
             languages: vec!["en".to_string(), "fr".to_string()],
-            code_switching: true,
+            code_switching: false,
         };
 
         let json = serde_json::to_string(&config).unwrap();
-        assert!(json.contains("\"code_switching\":true"));
+        assert!(json.contains("\"code_switching\":false"));
         assert!(json.contains("\"languages\":[\"en\",\"fr\"]"));
+    }
+
+    #[test]
+    fn session_channels_clean_up_terminal_messages_and_stay_bounded() {
+        SessionChannels::clear();
+        SessionChannels::insert("session-1".to_string(), 2);
+        SessionChannels::insert("session-2".to_string(), 1);
+
+        GladiaAdapter
+            .parse_response(r#"{"type":"error","message":"closed","session_id":"session-1"}"#);
+        assert_eq!(SessionChannels::get("session-1"), None);
+        assert_eq!(SessionChannels::get("session-2"), Some(1));
+
+        GladiaAdapter.parse_response(r#"{"type":"end_session","id":"session-2"}"#);
+        assert_eq!(SessionChannels::len(), 0);
+
+        for index in 0..=MAX_SESSION_CHANNELS {
+            SessionChannels::insert(format!("session-{index}"), 2);
+        }
+        assert_eq!(SessionChannels::len(), MAX_SESSION_CHANNELS);
+
+        GladiaAdapter.parse_response(r#"{"type":"error","message":"closed"}"#);
+        assert_eq!(SessionChannels::len(), MAX_SESSION_CHANNELS);
+        SessionChannels::clear();
     }
 
     macro_rules! single_test {
@@ -638,7 +717,8 @@ mod tests {
                     .api_key(std::env::var("GLADIA_API_KEY").expect("GLADIA_API_KEY not set"))
                     .params($params)
                     .build_single()
-                    .await;
+                    .await
+                    .unwrap();
                 run_single_test(client, "gladia").await;
             }
         };
@@ -647,7 +727,7 @@ mod tests {
     single_test!(
         test_build_single,
         owhisper_interface::ListenParams {
-            languages: vec![hypr_language::ISO639::En.into()],
+            languages: vec![anlg_language::ISO639::En.into()],
             ..Default::default()
         }
     );
@@ -655,8 +735,8 @@ mod tests {
     single_test!(
         test_single_with_keywords,
         owhisper_interface::ListenParams {
-            languages: vec![hypr_language::ISO639::En.into()],
-            keywords: vec!["Hyprnote".to_string(), "transcription".to_string()],
+            languages: vec![anlg_language::ISO639::En.into()],
+            keywords: vec!["Anarlog".to_string(), "transcription".to_string()],
             ..Default::default()
         }
     );
@@ -665,8 +745,8 @@ mod tests {
         test_single_multi_lang_1,
         owhisper_interface::ListenParams {
             languages: vec![
-                hypr_language::ISO639::En.into(),
-                hypr_language::ISO639::Es.into(),
+                anlg_language::ISO639::En.into(),
+                anlg_language::ISO639::Es.into(),
             ],
             ..Default::default()
         }
@@ -676,8 +756,8 @@ mod tests {
         test_single_multi_lang_2,
         owhisper_interface::ListenParams {
             languages: vec![
-                hypr_language::ISO639::En.into(),
-                hypr_language::ISO639::Ko.into(),
+                anlg_language::ISO639::En.into(),
+                anlg_language::ISO639::Ko.into(),
             ],
             ..Default::default()
         }
@@ -691,11 +771,12 @@ mod tests {
             .api_base("https://api.gladia.io")
             .api_key(std::env::var("GLADIA_API_KEY").expect("GLADIA_API_KEY not set"))
             .params(owhisper_interface::ListenParams {
-                languages: vec![hypr_language::ISO639::En.into()],
+                languages: vec![anlg_language::ISO639::En.into()],
                 ..Default::default()
             })
             .build_dual()
-            .await;
+            .await
+            .unwrap();
 
         run_dual_test(client, "gladia").await;
     }

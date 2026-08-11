@@ -6,7 +6,7 @@ import {
   commands as localSttCommands,
   events as localSttEvents,
   type LocalModel,
-} from "@hypr/plugin-local-stt";
+} from "@anlg/plugin-local-stt";
 
 export const localSttKeys = {
   all: ["local-stt"] as const,
@@ -67,6 +67,7 @@ export function useLocalModelDownload(
 
   const isDownloaded = useQuery(localSttQueries.isDownloaded(model));
   const isDownloading = useQuery(localSttQueries.isDownloading(model));
+  const refetchDownloaded = isDownloaded.refetch;
 
   const showProgress =
     !isDownloaded.data && (isStarting || (isDownloading.data ?? false));
@@ -131,10 +132,10 @@ export function useLocalModelDownload(
   const handleDelete = useCallback(() => {
     void localSttCommands.deleteModel(model).then((result) => {
       if (result.status === "ok") {
-        void isDownloaded.refetch();
+        void refetchDownloaded();
       }
     });
-  }, [model, isDownloaded]);
+  }, [model, refetchDownloaded]);
 
   return {
     progress,

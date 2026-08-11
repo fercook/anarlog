@@ -14,10 +14,10 @@ tauri-plugin = { workspace = true, features = ["build"] }
 specta-typescript = { workspace = true }
 
 [dependencies]
-hypr-detect = { workspace = true }
-hypr-host = { workspace = true }
-hypr-intercept = { workspace = true }
-hypr-notification = { workspace = true, features = ["legacy"] }
+anlg-detect = { workspace = true }
+anlg-host = { workspace = true }
+anlg-intercept = { workspace = true }
+anlg-notification = { workspace = true, features = ["legacy"] }
 
 tauri-plugin-analytics = { workspace = true }
 tauri-plugin-dialog = { workspace = true }
@@ -37,3 +37,7 @@ tauri-specta = { workspace = true, features = ["derive", "typescript"] }
 apalis = { workspace = true }
 apalis-cron = { workspace = true }
 chrono = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+notify-rust = { workspace = true }
+windows = { workspace = true, features = ["UI_Notifications"] }

@@ -2,9 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import React, { useEffect, useRef } from "react";
 
-import { commands as fsSyncCommands } from "@hypr/plugin-fs-sync";
+import { commands as fsSyncCommands } from "@anlg/plugin-fs-sync";
 
-import { CaretPositionProvider } from "./components/caret-position-context";
 import { FloatingActionButton } from "./components/floating";
 import {
   NoteInput,
@@ -24,12 +23,19 @@ import {
   useHasTranscript,
 } from "./components/shared";
 import { useAutoEnhance } from "./hooks/useAutoEnhance";
-import { useEnsureDefaultSummaryFromState } from "./hooks/useEnhancedNotes";
+import {
+  useEnhancedNotes,
+  useEnsureDefaultSummaryFromState,
+} from "./hooks/useEnhancedNotes";
 import { shouldShowSessionTopAudioPlayer } from "./top-audio-player";
+import { getSessionEvent } from "./utils";
 
 import * as AudioPlayer from "~/audio-player";
-import { hydrateSessionContent } from "~/store/tinybase/persister/session/hydrate";
-import * as main from "~/store/tinybase/store/main";
+import {
+  isCanonicalSessionImportLocked,
+  subscribeCanonicalSessionImportLocks,
+} from "~/session-sharing/editor-activity";
+import { useSession } from "~/session/queries";
 import { type Tab, useTabs } from "~/store/zustand/tabs";
 import { useListener } from "~/stt/contexts";
 import { consumePendingUpload } from "~/stt/pending-upload";
@@ -37,13 +43,31 @@ import { useStartListening } from "~/stt/useStartListening";
 import { useSTTConnection } from "~/stt/useSTTConnection";
 import { useUploadFile } from "~/stt/useUploadFile";
 
-const hydratedSessionIds = new Set<string>();
-
 export function TabContentNote({
   standaloneWindow = false,
   tab,
 }: {
   standaloneWindow?: boolean;
+  tab: Extract<Tab, { type: "sessions" }>;
+}) {
+  const importLocked = React.useSyncExternalStore(
+    subscribeCanonicalSessionImportLocks,
+    () => isCanonicalSessionImportLocked(tab.id),
+    () => isCanonicalSessionImportLocked(tab.id),
+  );
+
+  if (importLocked) return <SessionContentLoading />;
+
+  return (
+    <UnlockedTabContentNote tab={tab} standaloneWindow={standaloneWindow} />
+  );
+}
+
+function UnlockedTabContentNote({
+  standaloneWindow,
+  tab,
+}: {
+  standaloneWindow: boolean;
   tab: Extract<Tab, { type: "sessions" }>;
 }) {
   const sessionMode = useListener((state) => state.getSessionMode(tab.id));
@@ -63,7 +87,7 @@ export function TabContentNote({
   const audioUrl = audioUrlQuery.data;
 
   return (
-    <CaretPositionProvider>
+    <>
       {tab.state.autoStart && !standaloneWindow ? (
         <AutoStartListening tab={tab} />
       ) : null}
@@ -77,7 +101,7 @@ export function TabContentNote({
           />
         </AudioPlayer.Provider>
       </SearchProvider>
-    </CaretPositionProvider>
+    </>
   );
 }
 
@@ -136,6 +160,9 @@ function TabContentNoteInner({
   const noteInputRef = React.useRef<NoteInputHandle>(null);
 
   const sessionId = tab.id;
+  const [editingTranscriptSessionId, setEditingTranscriptSessionId] =
+    React.useState<string | null>(null);
+  const transcriptEditMode = editingTranscriptSessionId === sessionId;
   usePendingUpload(sessionId);
 
   const hasTranscript = useHasTranscript(sessionId);
@@ -152,19 +179,16 @@ function TabContentNoteInner({
     hasTranscript,
     sessionMode,
   });
-  const enhancedNoteIds =
-    main.UI.useSliceRowIds(
-      main.INDEXES.enhancedNotesBySession,
-      sessionId,
-      main.STORE_ID,
-    ) ?? [];
-  const firstEnhancedNoteId = enhancedNoteIds[0];
-  const contentHydrated = useHydrateSessionContent(sessionId);
+  const enhancedNoteIds = useEnhancedNotes(sessionId);
+  const session = useSession(sessionId);
+  const sessionEvent = session ? getSessionEvent(session) : null;
+  const contentHydrated = session !== null;
   useEnsureDefaultSummaryFromState({
     batchError: Boolean(batchError),
     enabled: contentHydrated,
     enhancedNoteCount: enhancedNoteIds.length,
     hasTranscript,
+    memoTemplateId: session?.raw_template_id,
     sessionId,
     sessionMode,
   });
@@ -185,15 +209,10 @@ function TabContentNoteInner({
     return computeCurrentNoteTab(
       tab.state.view ?? null,
       isLiveSessionActive,
-      firstEnhancedNoteId,
+      enhancedNoteIds,
       canShowTranscript,
     );
-  }, [
-    tab.state.view,
-    isLiveSessionActive,
-    firstEnhancedNoteId,
-    canShowTranscript,
-  ]);
+  }, [tab.state.view, isLiveSessionActive, enhancedNoteIds, canShowTranscript]);
   useAutoFocusTitle({ sessionId, noteInputRef });
 
   const showTopAudioPlayer = shouldShowSessionTopAudioPlayer({
@@ -205,10 +224,23 @@ function TabContentNoteInner({
 
   const handleTabChange = React.useCallback(
     (view: typeof currentView) => {
+      if (view.type !== "transcript") {
+        blurActiveTranscriptEditor();
+        setEditingTranscriptSessionId(null);
+      }
       noteInputRef.current?.prepareForTabChange();
       updateSessionTabState(tab, { ...tab.state, view });
     },
     [tab, updateSessionTabState],
+  );
+  const handleTranscriptEditModeChange = React.useCallback(
+    (editMode: boolean) => {
+      if (!editMode) {
+        blurActiveTranscriptEditor();
+      }
+      setEditingTranscriptSessionId(editMode ? sessionId : null);
+    },
+    [sessionId],
   );
   return (
     <>
@@ -218,6 +250,8 @@ function TabContentNoteInner({
             sessionId={sessionId}
             currentView={currentView}
             standaloneWindow={standaloneWindow}
+            transcriptEditMode={transcriptEditMode}
+            onTranscriptEditModeChange={handleTranscriptEditModeChange}
             title={
               <NoteInputHeader
                 sessionId={sessionId}
@@ -251,14 +285,19 @@ function TabContentNoteInner({
             </div>
           ) : null}
           <div className="min-h-0 flex-1">
-            {contentHydrated ? (
+            {session ? (
               <NoteInput
                 ref={noteInputRef}
                 tab={tab}
+                rawMd={session.raw_md}
+                sessionTitle={session.title}
+                eventTitle={sessionEvent?.title}
+                eventDescription={sessionEvent?.description}
                 editorTabs={editorTabs}
                 currentTab={currentView}
                 handleTabChange={handleTabChange}
                 sessionMode={sessionMode}
+                transcriptEditMode={transcriptEditMode}
                 hideHeader
               />
             ) : (
@@ -271,49 +310,14 @@ function TabContentNoteInner({
   );
 }
 
-function useHydrateSessionContent(sessionId: string): boolean {
-  const store = main.UI.useStore(main.STORE_ID);
-  const [retryAttempt, setRetryAttempt] = React.useState(0);
-  const [hydrated, setHydrated] = React.useState(() =>
-    hydratedSessionIds.has(sessionId),
-  );
-
-  useEffect(() => {
-    if (hydratedSessionIds.has(sessionId)) {
-      setHydrated(true);
-      return;
-    }
-
-    if (!store) {
-      setHydrated(false);
-      return;
-    }
-
-    let active = true;
-    setHydrated(false);
-
-    void hydrateSessionContent(store, sessionId).then((success) => {
-      if (success) {
-        hydratedSessionIds.add(sessionId);
-      }
-      if (active) {
-        setHydrated(success);
-        if (!success) {
-          window.setTimeout(() => {
-            if (active) {
-              setRetryAttempt((attempt) => attempt + 1);
-            }
-          }, 1000);
-        }
-      }
-    });
-
-    return () => {
-      active = false;
-    };
-  }, [store, sessionId, retryAttempt]);
-
-  return hydrated;
+function blurActiveTranscriptEditor() {
+  const activeElement = document.activeElement;
+  if (
+    activeElement instanceof HTMLElement &&
+    activeElement.matches("[data-transcript-editor]")
+  ) {
+    activeElement.blur();
+  }
 }
 
 function SessionContentLoading() {
@@ -347,7 +351,7 @@ function useAutoFocusTitle({
   noteInputRef: React.RefObject<NoteInputHandle | null>;
 }) {
   const autoFocusedSessionRef = useRef<string | null>(null);
-  const title = main.UI.useCell("sessions", sessionId, "title", main.STORE_ID);
+  const title = useSession(sessionId)?.title;
 
   useEffect(() => {
     if (autoFocusedSessionRef.current === sessionId) return;

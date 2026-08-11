@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OverflowButton } from "./index";
@@ -9,26 +15,38 @@ import type { EditorView } from "~/store/zustand/tabs/schema";
 const {
   uploadAudioMock,
   uploadTranscriptMock,
+  regenerateTranscriptMock,
+  audioExists,
+  audioExistsResolved,
   currentNoteContent,
+  exportModalMock,
   useHasTranscriptMock,
   useListenerMock,
   useConfigValueMock,
-  useMeetingFloatMainStoreMock,
-  mainStoreMock,
+  platformMock,
   windowShowMock,
 } = vi.hoisted(() => ({
   uploadAudioMock: vi.fn(),
   uploadTranscriptMock: vi.fn(),
+  regenerateTranscriptMock: vi.fn(),
+  audioExists: { value: false },
+  audioExistsResolved: { value: true },
   currentNoteContent: { value: "" },
+  exportModalMock: vi.fn(
+    (_props: { open: boolean; onOpenChange: (open: boolean) => void }) => null,
+  ),
   useHasTranscriptMock: vi.fn(),
   useListenerMock: vi.fn(),
   useConfigValueMock: vi.fn(),
-  useMeetingFloatMainStoreMock: vi.fn(),
-  mainStoreMock: { getCell: vi.fn() },
+  platformMock: vi.fn(() => "macos"),
   windowShowMock: vi.fn(() => Promise.resolve({ status: "ok", data: null })),
 }));
 
-vi.mock("@hypr/ui/components/ui/button", () => ({
+vi.mock("@tauri-apps/plugin-os", () => ({
+  platform: platformMock,
+}));
+
+vi.mock("@anlg/ui/components/ui/button", () => ({
   Button: ({
     children,
     ...props
@@ -37,7 +55,7 @@ vi.mock("@hypr/ui/components/ui/button", () => ({
   ),
 }));
 
-vi.mock("@hypr/ui/components/ui/dropdown-menu", () => ({
+vi.mock("@anlg/ui/components/ui/dropdown-menu", () => ({
   AppFloatingPanel: ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   ),
@@ -66,45 +84,45 @@ vi.mock("./delete", () => ({
 }));
 
 vi.mock("./export-modal", () => ({
-  ExportModal: () => null,
+  ExportModal: exportModalMock,
 }));
 
 vi.mock("./listening", () => ({
-  Listening: () => <button type="button">Resume listening</button>,
+  Listening: ({ resume }: { resume: boolean }) => (
+    <button type="button">
+      {resume ? "Resume listening" : "Start listening"}
+    </button>
+  ),
 }));
 
 vi.mock("./misc", () => ({
-  ShowInFinder: () => <button type="button">Show in Finder</button>,
+  ShowInFolder: () => <button type="button">Show in folder</button>,
 }));
 
 vi.mock("~/meeting-float/host", () => ({
   openFloatingMeetingPanel: vi.fn(),
 }));
 
-vi.mock("~/meeting-float/hooks", () => ({
-  useMeetingFloatMainStore: useMeetingFloatMainStoreMock,
+vi.mock("~/audio-player", () => ({
+  useAudioPlayer: () => ({
+    audioExists: audioExists.value,
+    audioExistsResolved: audioExistsResolved.value,
+  }),
 }));
 
-vi.mock("@hypr/plugin-windows", () => ({
+vi.mock("~/session/components/note-input/transcript/actions", () => ({
+  useRegenerateTranscript: () => regenerateTranscriptMock,
+}));
+
+vi.mock("@anlg/plugin-windows", () => ({
   commands: {
     windowShow: windowShowMock,
   },
 }));
 
 vi.mock("~/session/components/shared", () => ({
-  hasStoredNoteContent: (value: unknown) =>
-    typeof value === "string" && value.trim().length > 0,
+  useCurrentNoteHasContent: () => currentNoteContent.value.trim().length > 0,
   useHasTranscript: useHasTranscriptMock,
-}));
-
-vi.mock("~/store/tinybase/store/main", () => ({
-  STORE_ID: "main",
-  UI: {
-    useCell: (_table: string, _row: string, cell: string) =>
-      cell === "raw_md" || cell === "content"
-        ? currentNoteContent.value
-        : undefined,
-  },
 }));
 
 vi.mock("~/shared/config", () => ({
@@ -129,10 +147,12 @@ describe("OverflowButton", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    audioExists.value = false;
+    audioExistsResolved.value = true;
     currentNoteContent.value = "";
     useHasTranscriptMock.mockReturnValue(true);
     useConfigValueMock.mockReturnValue(false);
-    useMeetingFloatMainStoreMock.mockReturnValue(mainStoreMock);
+    platformMock.mockReturnValue("macos");
     useListenerMock.mockImplementation((selector) =>
       selector({
         getSessionMode: () => "inactive",
@@ -158,7 +178,43 @@ describe("OverflowButton", () => {
     expect(uploadTranscriptMock).toHaveBeenCalledTimes(1);
   });
 
-  it("hides upload actions when the session already has a transcript", () => {
+  it("does not offer re-transcription when recording is missing", () => {
+    render(
+      <OverflowButton
+        sessionId="session-1"
+        currentView={{ type: "enhanced", id: "note-1" } as EditorView}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Upload audio" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Upload transcript" }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Re-transcribe" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Resume listening" }),
+    ).not.toBeNull();
+    expect(uploadAudioMock).not.toHaveBeenCalled();
+  });
+
+  it("hides re-transcription until the audio lookup succeeds", () => {
+    audioExists.value = true;
+    audioExistsResolved.value = false;
+
+    render(
+      <OverflowButton
+        sessionId="session-1"
+        currentView={{ type: "enhanced", id: "note-1" } as EditorView}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Re-transcribe" })).toBeNull();
+  });
+
+  it("hides initial upload actions until the audio lookup succeeds", () => {
+    audioExistsResolved.value = false;
+    useHasTranscriptMock.mockReturnValue(false);
+
     render(
       <OverflowButton
         sessionId="session-1"
@@ -172,15 +228,67 @@ describe("OverflowButton", () => {
     ).toBeNull();
   });
 
-  it("renders one separator when no meeting actions are visible", () => {
+  it.each(["active", "finalizing", "running_batch"])(
+    "hides re-transcription actions while the session is %s",
+    (sessionMode) => {
+      audioExists.value = true;
+      useListenerMock.mockImplementation((selector) =>
+        selector({
+          getSessionMode: () => sessionMode,
+        }),
+      );
+
+      render(
+        <OverflowButton
+          sessionId="session-1"
+          currentView={{ type: "enhanced", id: "note-1" } as EditorView}
+        />,
+      );
+
+      expect(
+        screen.queryByRole("button", {
+          name: "Re-transcribe",
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it("renders one separator when meeting actions are disabled", () => {
+    useHasTranscriptMock.mockReturnValue(false);
+    currentNoteContent.value = "Existing content";
+
     const { container } = render(
       <OverflowButton
+        allowListening={false}
         sessionId="session-1"
         currentView={{ type: "enhanced", id: "note-1" } as EditorView}
       />,
     );
 
     expect(container.querySelectorAll("hr")).toHaveLength(1);
+  });
+
+  it("offers resume and re-transcribe when recorded audio exists", () => {
+    audioExists.value = true;
+    useHasTranscriptMock.mockReturnValue(false);
+
+    render(
+      <OverflowButton
+        sessionId="session-1"
+        currentView={{ type: "enhanced", id: "note-1" } as EditorView}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-transcribe" }));
+
+    expect(
+      screen.getByRole("button", { name: "Resume listening" }),
+    ).not.toBeNull();
+    expect(regenerateTranscriptMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Upload audio" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Upload transcript" }),
+    ).toBeNull();
   });
 
   it("separates visible meeting actions from the static actions", () => {
@@ -209,6 +317,50 @@ describe("OverflowButton", () => {
     );
 
     expect(trigger).not.toBeNull();
+  });
+
+  it("mounts the export modal only after export is selected", () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 0;
+    });
+
+    render(
+      <OverflowButton
+        sessionId="session-1"
+        currentView={{ type: "enhanced", id: "note-1" } as EditorView}
+      />,
+    );
+
+    expect(exportModalMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+
+    expect(exportModalMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the export modal mounted after it closes", async () => {
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 0;
+    });
+
+    render(
+      <OverflowButton
+        sessionId="session-1"
+        currentView={{ type: "enhanced", id: "note-1" } as EditorView}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    exportModalMock.mock.lastCall?.[0].onOpenChange(false);
+
+    await waitFor(() => {
+      expect(exportModalMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ open: false }),
+        undefined,
+      );
+    });
   });
 
   it("hides upload actions when the current note has content", () => {
@@ -272,9 +424,29 @@ describe("OverflowButton", () => {
       expect.objectContaining({
         sessionId: "session-1",
         enabled: true,
-        main: mainStoreMock,
       }),
     );
+  });
+
+  it("hides the unsupported floating panel action outside macOS", () => {
+    platformMock.mockReturnValue("linux");
+    useConfigValueMock.mockReturnValue(true);
+    useListenerMock.mockImplementation((selector) =>
+      selector({
+        getSessionMode: () => "active",
+      }),
+    );
+
+    render(
+      <OverflowButton
+        sessionId="session-1"
+        currentView={{ type: "enhanced", id: "note-1" } as EditorView}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Open floating panel" }),
+    ).toBeNull();
   });
 
   it("opens the current note in a standalone window", () => {

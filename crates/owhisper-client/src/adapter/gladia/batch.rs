@@ -22,10 +22,10 @@ impl BatchSttAdapter for GladiaAdapter {
 
     fn is_supported_languages(
         &self,
-        languages: &[hypr_language::Language],
-        _model: Option<&str>,
+        languages: &[anlg_language::Language],
+        model: Option<&str>,
     ) -> bool {
-        GladiaAdapter::is_supported_languages_batch(languages)
+        GladiaAdapter::is_supported_languages_batch(languages, model)
     }
 
     fn transcribe_file<'a, P: AsRef<Path> + Send + 'a>(
@@ -166,10 +166,6 @@ impl GladiaAdapter {
     ) -> Result<BatchResponse, Error> {
         let base_url = Self::batch_api_url(api_base);
 
-        let file_bytes = tokio::fs::read(&file_path)
-            .await
-            .map_err(|e| Error::AudioProcessing(format!("failed to read file: {}", e)))?;
-
         let file_name = file_path
             .file_name()
             .and_then(|n| n.to_str())
@@ -188,13 +184,13 @@ impl GladiaAdapter {
 
         let mut upload_url = base_url.clone();
         append_path_if_missing(&mut upload_url, "upload");
-        let form = reqwest::multipart::Form::new().part(
-            "audio",
-            reqwest::multipart::Part::bytes(file_bytes)
-                .file_name(file_name)
-                .mime_str(mime_type)
-                .map_err(|e| Error::AudioProcessing(e.to_string()))?,
-        );
+        let file_part = reqwest::multipart::Part::file(&file_path)
+            .await
+            .map_err(|e| Error::AudioProcessing(format!("failed to open file: {e}")))?
+            .file_name(file_name)
+            .mime_str(mime_type)
+            .map_err(|e| Error::AudioProcessing(e.to_string()))?;
+        let form = reqwest::multipart::Form::new().part("audio", file_part);
 
         let upload_response = client
             .post(upload_url.to_string())
@@ -207,7 +203,7 @@ impl GladiaAdapter {
         if !upload_status.is_success() {
             return Err(Error::UnexpectedStatus {
                 status: upload_status,
-                body: upload_response.text().await.unwrap_or_default(),
+                body: crate::adapter::http::error_body(upload_response).await,
             });
         }
 
@@ -221,7 +217,7 @@ impl GladiaAdapter {
 
         let language_config = (!languages.is_empty()).then(|| LanguageConfig {
             languages,
-            code_switching: (params.languages.len() > 1).then_some(true),
+            code_switching: Some(false),
         });
 
         let custom_vocabulary = (!params.keywords.is_empty()).then(|| params.keywords.clone());
@@ -257,7 +253,7 @@ impl GladiaAdapter {
         if !create_status.is_success() {
             return Err(Error::UnexpectedStatus {
                 status: create_status,
-                body: create_response.text().await.unwrap_or_default(),
+                body: crate::adapter::http::error_body(create_response).await,
             });
         }
 
@@ -283,7 +279,7 @@ impl GladiaAdapter {
                 if !poll_status.is_success() {
                     return Err(Error::UnexpectedStatus {
                         status: poll_status,
-                        body: poll_response.text().await.unwrap_or_default(),
+                        body: crate::adapter::http::error_body(poll_response).await,
                     });
                 }
 
@@ -418,7 +414,7 @@ mod tests {
         let adapter = GladiaAdapter::default();
         let params = ListenParams::default();
 
-        let audio_path = std::path::PathBuf::from(hypr_data::english_1::AUDIO_PATH);
+        let audio_path = std::path::PathBuf::from(anlg_data::english_1::AUDIO_PATH);
 
         let result = adapter
             .transcribe_file(&client, "", &api_key, &params, &audio_path)

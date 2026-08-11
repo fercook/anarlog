@@ -25,18 +25,34 @@ pub struct Snapshot {
     pub finalizing_session_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub enum TranscriptionMode {
+    #[default]
     Live,
     Batch,
 }
 
-impl Default for TranscriptionMode {
-    fn default() -> Self {
-        Self::Live
-    }
+pub(crate) fn expected_speakers_per_channel(
+    participant_human_ids: &[String],
+    self_human_id: Option<&str>,
+) -> Option<u32> {
+    let mut remote_participants = participant_human_ids
+        .iter()
+        .filter(|participant| Some(participant.as_str()) != self_human_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    remote_participants.sort();
+    remote_participants.dedup();
+
+    let count = if remote_participants.is_empty() && self_human_id.is_some() {
+        1
+    } else {
+        remote_participants.len()
+    };
+
+    u32::try_from(count).ok().filter(|count| *count > 0)
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -49,6 +65,8 @@ pub enum DegradedError {
     UpstreamUnavailable { message: String },
     #[serde(rename = "connection_timeout")]
     ConnectionTimeout,
+    #[serde(rename = "provider_configuration")]
+    ProviderConfiguration { provider: String, message: String },
     #[serde(rename = "stream_error")]
     StreamError { message: String },
 }

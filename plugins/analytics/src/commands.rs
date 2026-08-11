@@ -2,9 +2,18 @@ use crate::AnalyticsPluginExt;
 
 #[tauri::command]
 #[specta::specta]
+pub(crate) fn event_fire_and_forget<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    payload: anlg_analytics::AnalyticsPayload,
+) {
+    app.analytics().event_fire_and_forget(payload);
+}
+
+#[tauri::command]
+#[specta::specta]
 pub(crate) async fn event<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
-    payload: hypr_analytics::AnalyticsPayload,
+    payload: anlg_analytics::AnalyticsPayload,
 ) -> Result<(), String> {
     app.analytics()
         .event(payload)
@@ -16,7 +25,7 @@ pub(crate) async fn event<R: tauri::Runtime>(
 #[specta::specta]
 pub(crate) async fn set_properties<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
-    payload: hypr_analytics::PropertiesPayload,
+    payload: anlg_analytics::PropertiesPayload,
 ) -> Result<(), String> {
     app.analytics()
         .set_properties(payload)
@@ -48,10 +57,16 @@ pub(crate) async fn is_disabled<R: tauri::Runtime>(
 pub(crate) async fn identify<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     user_id: String,
-    payload: hypr_analytics::PropertiesPayload,
+    payload: anlg_analytics::PropertiesPayload,
 ) -> Result<(), String> {
     app.analytics()
         .identify(user_id, payload)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) fn clear_groups<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    app.analytics().clear_groups();
 }

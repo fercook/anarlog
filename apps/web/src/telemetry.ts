@@ -2,10 +2,12 @@ import { HoneycombWebSDK } from "@honeycombio/opentelemetry-web";
 import { getWebAutoInstrumentations } from "@opentelemetry/auto-instrumentations-web";
 
 import { env } from "./env";
+import { isTelemetryPrivateLocation } from "./lib/auth-route-privacy";
+import { hasGlobalPrivacyControl } from "./lib/global-privacy-control";
 
 declare global {
   interface Window {
-    __hyprWebOtelSdk?: HoneycombWebSDK;
+    __anarlogWebOtelSdk?: HoneycombWebSDK;
   }
 }
 
@@ -49,6 +51,11 @@ function getIgnoredUrls(endpoint: string): RegExp[] {
   }
 
   ignoredUrls.push(buildUrlPrefixPattern(env.VITE_POSTHOG_HOST));
+  ignoredUrls.push(
+    buildUrlPrefixPattern(
+      new URL("/shared-notes/", env.VITE_API_URL).toString(),
+    ),
+  );
 
   return ignoredUrls;
 }
@@ -71,7 +78,11 @@ function getPropagationTargets(): string[] {
 }
 
 export function bootstrapBrowserTelemetry() {
-  if (typeof window === "undefined") {
+  if (
+    typeof window === "undefined" ||
+    hasGlobalPrivacyControl() ||
+    isTelemetryPrivateLocation(window.location.pathname, window.location.search)
+  ) {
     return;
   }
 
@@ -81,7 +92,7 @@ export function bootstrapBrowserTelemetry() {
     return;
   }
 
-  if (window.__hyprWebOtelSdk) {
+  if (window.__anarlogWebOtelSdk) {
     return;
   }
 
@@ -106,7 +117,7 @@ export function bootstrapBrowserTelemetry() {
       "deployment.environment": import.meta.env.DEV
         ? "development"
         : "production",
-      "service.namespace": "hyprnote",
+      "service.namespace": "anarlog",
     },
     sampleRate: env.VITE_OTEL_SAMPLE_RATE,
     serviceName: "web",
@@ -115,5 +126,15 @@ export function bootstrapBrowserTelemetry() {
   });
 
   sdk.start();
-  window.__hyprWebOtelSdk = sdk;
+  window.__anarlogWebOtelSdk = sdk;
+}
+
+export function stopBrowserTelemetry() {
+  if (typeof window === "undefined" || !window.__anarlogWebOtelSdk) {
+    return;
+  }
+
+  const sdk = window.__anarlogWebOtelSdk;
+  window.__anarlogWebOtelSdk = undefined;
+  void sdk.shutdown().catch(() => {});
 }

@@ -13,21 +13,18 @@ import {
   events as localSttEvents,
   type ServerStatus,
   type LocalModel,
-} from "@hypr/plugin-local-stt";
+} from "@anlg/plugin-local-stt";
+import { sonnerToast } from "@anlg/ui/components/ui/toast";
 
 import { useConfigValues } from "~/shared/config";
 import type { DownloadProgress } from "~/sidebar/toast/types";
 import { useTabs } from "~/store/zustand/tabs";
-import {
-  isConfiguredSttModel,
-  isHyprnoteLocalSttModel,
-} from "~/stt/capabilities";
+import { isConfiguredSttModel, isOnDeviceSttModel } from "~/stt/capabilities";
 
 interface NotificationState {
   hasActiveBanner: boolean;
   hasActiveEnhancement: boolean;
   hasActiveDownload: boolean;
-  downloadProgress: number | null;
   downloadingModel: string | null;
   activeDownloads: DownloadProgress[];
   notificationCount: number;
@@ -39,6 +36,8 @@ interface NotificationState {
 const NotificationContext = createContext<NotificationState | null>(null);
 
 const MODEL_DISPLAY_NAMES: Partial<Record<LocalModel, string>> = {
+  "soniqo-parakeet-streaming": "Soniqo Parakeet Streaming",
+  "soniqo-parakeet-batch": "Soniqo Parakeet Batch",
   "am-parakeet-v2": "Parakeet v2",
   "am-parakeet-v3": "Parakeet v3",
   "am-whisper-large-v3": "Whisper Large v3",
@@ -64,10 +63,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     !current_llm_provider ||
     !current_llm_model;
 
-  const sttModel = isHyprnoteLocalSttModel(
-    current_stt_provider,
-    current_stt_model,
-  )
+  const sttModel = isOnDeviceSttModel(current_stt_provider, current_stt_model)
     ? current_stt_model
     : null;
   const isLocalSttModel = !!sttModel;
@@ -95,10 +91,17 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unlisten = localSttEvents.downloadProgressPayload.listen((event) => {
       const { model: eventModel, status } = event.payload;
+      const isFailed = typeof status === "object" && "failed" in status;
+
+      if (isFailed) {
+        const modelName = MODEL_DISPLAY_NAMES[eventModel] ?? eventModel;
+        sonnerToast.error(`Couldn’t download ${modelName}`, {
+          description: status.failed,
+        });
+      }
 
       setActiveDownloads((prev) => {
         const next = new Map(prev);
-        const isFailed = typeof status === "object" && "failed" in status;
         if (isFailed || status === "completed") {
           next.delete(eventModel);
         } else if (typeof status === "object" && "downloading" in status) {
@@ -137,7 +140,6 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     }));
 
     const firstDownload = downloadsArray[0];
-    const downloadProgress = firstDownload?.progress ?? null;
     const downloadingModel = firstDownload?.displayName ?? null;
 
     const notificationCount =
@@ -149,7 +151,6 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       hasActiveBanner,
       hasActiveEnhancement,
       hasActiveDownload,
-      downloadProgress,
       downloadingModel,
       activeDownloads: downloadsArray,
       notificationCount,
@@ -177,7 +178,6 @@ const DEFAULT_NOTIFICATION_STATE: NotificationState = {
   hasActiveBanner: false,
   hasActiveEnhancement: false,
   hasActiveDownload: false,
-  downloadProgress: null,
   downloadingModel: null,
   activeDownloads: [],
   notificationCount: 0,

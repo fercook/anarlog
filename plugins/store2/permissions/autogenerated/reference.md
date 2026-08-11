@@ -5,11 +5,15 @@ Default permissions for the plugin
 #### This default permission set includes the following:
 
 - `allow-save`
+- `allow-delete-secret`
 - `allow-get-bool`
 - `allow-get-number`
+- `allow-get-secret`
 - `allow-get-str`
+- `allow-repair-keychain-access`
 - `allow-set-bool`
 - `allow-set-number`
+- `allow-set-secret`
 - `allow-set-str`
 
 ## Permission Table
@@ -20,6 +24,32 @@ Default permissions for the plugin
 <th>Description</th>
 </tr>
 
+
+<tr>
+<td>
+
+`store2:allow-delete-secret`
+
+</td>
+<td>
+
+Enables the delete_secret command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`store2:deny-delete-secret`
+
+</td>
+<td>
+
+Denies the delete_secret command without any pre-configured scope.
+
+</td>
+</tr>
 
 <tr>
 <td>
@@ -76,6 +106,32 @@ Denies the get_number command without any pre-configured scope.
 <tr>
 <td>
 
+`store2:allow-get-secret`
+
+</td>
+<td>
+
+Enables the get_secret command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`store2:deny-get-secret`
+
+</td>
+<td>
+
+Denies the get_secret command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `store2:allow-get-str`
 
 </td>
@@ -95,6 +151,32 @@ Enables the get_str command without any pre-configured scope.
 <td>
 
 Denies the get_str command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`store2:allow-repair-keychain-access`
+
+</td>
+<td>
+
+Enables the repair_keychain_access command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`store2:deny-repair-keychain-access`
+
+</td>
+<td>
+
+Denies the repair_keychain_access command without any pre-configured scope.
 
 </td>
 </tr>
@@ -173,6 +255,32 @@ Enables the set_number command without any pre-configured scope.
 <td>
 
 Denies the set_number command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`store2:allow-set-secret`
+
+</td>
+<td>
+
+Enables the set_secret command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`store2:deny-set-secret`
+
+</td>
+<td>
+
+Denies the set_secret command without any pre-configured scope.
 
 </td>
 </tr>

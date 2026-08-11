@@ -1,4 +1,9 @@
-import type { JSONContent } from "@hypr/editor/note";
+import type { JSONContent, PlaceholderFunction } from "@anlg/editor/note";
+
+export const documentTitlePlaceholder: PlaceholderFunction = ({ node, pos }) =>
+  pos === 0 && node.type.name === "heading" && node.attrs.level === 1
+    ? "Untitled"
+    : "";
 
 export function extractFirstLineTitle(content: JSONContent) {
   const firstBlock = content.content?.[0];
@@ -9,6 +14,30 @@ export function extractFirstLineTitle(content: JSONContent) {
   }
 
   return collectText(content).trim() ? "" : null;
+}
+
+export function removeDocumentTitle(
+  content: JSONContent,
+  title: string | null | undefined,
+) {
+  const blocks = content.content ?? [];
+  const firstBlock = blocks[0];
+  const firstBlockText = collectText(firstBlock).trim();
+  const sessionTitle = title?.trim() ?? "";
+  const isDocumentTitle =
+    firstBlock?.type === "heading" &&
+    firstBlock.attrs?.level === 1 &&
+    (!firstBlockText || firstBlockText === sessionTitle);
+
+  if (!isDocumentTitle && blocks.length > 0) {
+    return content;
+  }
+
+  const body = isDocumentTitle ? blocks.slice(1) : blocks;
+  return {
+    ...content,
+    content: body.length > 0 ? body : [{ type: "paragraph" }],
+  };
 }
 
 export function ensureFirstLineTitle(

@@ -1,16 +1,18 @@
+import { useLingui } from "@lingui/react/macro";
+import { platform } from "@tauri-apps/plugin-os";
 import { format } from "date-fns";
 import { useCallback, useMemo } from "react";
 
-import { commands as fsSyncCommands } from "@hypr/plugin-fs-sync";
-import { commands as openerCommands } from "@hypr/plugin-opener2";
-import { Button } from "@hypr/ui/components/ui/button";
+import { commands as fsSyncCommands } from "@anlg/plugin-fs-sync";
+import { commands as openerCommands } from "@anlg/plugin-opener2";
+import { Button } from "@anlg/ui/components/ui/button";
 import {
   AppFloatingPanel,
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from "@hypr/ui/components/ui/popover";
-import { cn } from "@hypr/utils";
+} from "@anlg/ui/components/ui/popover";
+import { cn } from "@anlg/utils";
 
 import { toTz, useTimezone } from "~/calendar/hooks";
 import { useDeleteSession } from "~/session/hooks/useDeleteSession";
@@ -19,24 +21,26 @@ import {
   type MenuItemDef,
   useNativeContextMenu,
 } from "~/shared/hooks/useNativeContextMenu";
-import * as main from "~/store/tinybase/store/main";
+import type { TimelineSessionRow } from "~/sidebar/timeline/utils";
 import { useTabs } from "~/store/zustand/tabs";
 
-export function SessionChip({ sessionId }: { sessionId: string }) {
+export function SessionChip({
+  sessionId,
+  session,
+}: {
+  sessionId: string;
+  session: TimelineSessionRow | undefined;
+}) {
+  const { t } = useLingui();
   const tz = useTimezone();
   const deleteSession = useDeleteSession();
-  const session = main.UI.useResultRow(
-    main.QUERIES.timelineSessions,
-    sessionId,
-    main.STORE_ID,
-  );
-  const title = session?.title as string | undefined;
-  const eventJson = session?.event_json as string | null | undefined;
+  const title = session?.title ?? undefined;
+  const eventJson = session?.event_json;
   const createdAt = session?.created_at
-    ? format(toTz(session.created_at as string, tz), "h:mm a")
+    ? format(toTz(session.created_at, tz), "h:mm a")
     : null;
 
-  const handleShowInFinder = useCallback(async () => {
+  const handleShowInFolder = useCallback(async () => {
     const result = await fsSyncCommands.sessionDir(sessionId);
     if (result.status === "ok") {
       await openerCommands.openPath(result.data, null);
@@ -45,15 +49,18 @@ export function SessionChip({ sessionId }: { sessionId: string }) {
 
   const handleDelete = useCallback(() => {
     const sessionEvent = getSessionEvent({ event_json: eventJson });
-    deleteSession(sessionId, sessionEvent?.tracking_id);
-  }, [deleteSession, sessionId, eventJson]);
+    deleteSession(sessionId, {
+      trackingId: sessionEvent?.tracking_id,
+      title,
+    });
+  }, [deleteSession, sessionId, eventJson, title]);
 
   const contextMenu = useMemo<MenuItemDef[]>(
     () => [
       {
         id: "show",
-        text: "Show in Finder",
-        action: handleShowInFinder,
+        text: platform() === "macos" ? t`Show in Finder` : t`Show in folder`,
+        action: handleShowInFolder,
       },
       { separator: true },
       {
@@ -62,7 +69,7 @@ export function SessionChip({ sessionId }: { sessionId: string }) {
         action: handleDelete,
       },
     ],
-    [handleShowInFinder, handleDelete],
+    [t, handleShowInFolder, handleDelete],
   );
   const showContextMenu = useNativeContextMenu(contextMenu);
 
@@ -96,19 +103,20 @@ export function SessionChip({ sessionId }: { sessionId: string }) {
         onClick={(e) => e.stopPropagation()}
       >
         <AppFloatingPanel>
-          <SessionPopoverContent sessionId={sessionId} />
+          <SessionPopoverContent sessionId={sessionId} session={session} />
         </AppFloatingPanel>
       </PopoverContent>
     </Popover>
   );
 }
 
-function SessionPopoverContent({ sessionId }: { sessionId: string }) {
-  const session = main.UI.useResultRow(
-    main.QUERIES.timelineSessions,
-    sessionId,
-    main.STORE_ID,
-  );
+function SessionPopoverContent({
+  sessionId,
+  session,
+}: {
+  sessionId: string;
+  session: TimelineSessionRow;
+}) {
   const openCurrent = useTabs((state) => state.openCurrent);
   const tz = useTimezone();
 
@@ -116,18 +124,14 @@ function SessionPopoverContent({ sessionId }: { sessionId: string }) {
     openCurrent({ type: "sessions", id: sessionId });
   }, [openCurrent, sessionId]);
 
-  if (!session) {
-    return null;
-  }
-
   const createdAt = session.created_at
-    ? format(toTz(session.created_at as string, tz), "MMM d, yyyy h:mm a")
+    ? format(toTz(session.created_at, tz), "MMM d, yyyy h:mm a")
     : null;
 
   return (
     <div className="flex flex-col gap-3 p-4">
       <div className="text-foreground text-base font-medium">
-        {session.title as string}
+        {session.title}
       </div>
       <div className="bg-accent h-px" />
       {createdAt && (

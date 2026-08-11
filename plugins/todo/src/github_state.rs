@@ -1,4 +1,4 @@
-use hypr_github_issues::{GitHubIssuesClient, Issue, IssueComment};
+use anlg_github_issues::{GitHubIssuesClient, Issue, IssueComment};
 
 use crate::error::Error;
 
@@ -18,9 +18,12 @@ impl PublicGitHubHttpClient {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::ACCEPT,
-            "application/vnd.github+json".parse().unwrap(),
+            reqwest::header::HeaderValue::from_static("application/vnd.github+json"),
         );
-        headers.insert(reqwest::header::USER_AGENT, "hypr-desktop".parse().unwrap());
+        headers.insert(
+            reqwest::header::USER_AGENT,
+            reqwest::header::HeaderValue::from_static("anarlog-desktop"),
+        );
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
@@ -29,8 +32,16 @@ impl PublicGitHubHttpClient {
     }
 }
 
-impl hypr_http::HttpClient for PublicGitHubHttpClient {
-    async fn get(&self, path: &str) -> Result<Vec<u8>, hypr_http::Error> {
+fn unsupported_request(method: &str) -> Result<Vec<u8>, anlg_http::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("public GitHub client does not support {method} requests"),
+    )
+    .into())
+}
+
+impl anlg_http::HttpClient for PublicGitHubHttpClient {
+    async fn get(&self, path: &str) -> Result<Vec<u8>, anlg_http::Error> {
         let url = format!("https://api.github.com{path}");
         let resp = self.client.get(&url).send().await.map_err(Box::new)?;
         let status = resp.status();
@@ -46,20 +57,20 @@ impl hypr_http::HttpClient for PublicGitHubHttpClient {
         _path: &str,
         _body: Vec<u8>,
         _content_type: &str,
-    ) -> Result<Vec<u8>, hypr_http::Error> {
-        unimplemented!()
+    ) -> Result<Vec<u8>, anlg_http::Error> {
+        unsupported_request("POST")
     }
 
-    async fn put(&self, _path: &str, _body: Vec<u8>) -> Result<Vec<u8>, hypr_http::Error> {
-        unimplemented!()
+    async fn put(&self, _path: &str, _body: Vec<u8>) -> Result<Vec<u8>, anlg_http::Error> {
+        unsupported_request("PUT")
     }
 
-    async fn patch(&self, _path: &str, _body: Vec<u8>) -> Result<Vec<u8>, hypr_http::Error> {
-        unimplemented!()
+    async fn patch(&self, _path: &str, _body: Vec<u8>) -> Result<Vec<u8>, anlg_http::Error> {
+        unsupported_request("PATCH")
     }
 
-    async fn delete(&self, _path: &str) -> Result<Vec<u8>, hypr_http::Error> {
-        unimplemented!()
+    async fn delete(&self, _path: &str) -> Result<Vec<u8>, anlg_http::Error> {
+        unsupported_request("DELETE")
     }
 }
 
@@ -112,4 +123,21 @@ pub async fn fetch_issue_comments(
         .await
         .map_err(|e| Error::Api(e.to_string()))?;
     Ok(comments)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_requests_return_recoverable_errors() {
+        for method in ["POST", "PUT", "PATCH", "DELETE"] {
+            let error = unsupported_request(method).unwrap_err();
+
+            assert_eq!(
+                error.to_string(),
+                format!("public GitHub client does not support {method} requests")
+            );
+        }
+    }
 }

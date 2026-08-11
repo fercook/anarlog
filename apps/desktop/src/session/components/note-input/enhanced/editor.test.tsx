@@ -7,18 +7,19 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { EnhancedEditor } from "./editor";
+import { EnhancedEditor as SessionEnhancedEditor } from "./editor";
 
 const hoisted = vi.hoisted(() => ({
   content: JSON.stringify({ type: "doc", content: [] }),
   sessionTitle: "Weekly sync",
-  persistContent: vi.fn(),
-  persistSessionTitle: vi.fn(),
+  persistContent: vi.fn(() => Promise.resolve()),
   fileUpload: vi.fn(),
   processAudioFile: vi.fn(),
   showWindow: vi.fn(),
   unminimizeWindow: vi.fn(),
   focusWindow: vi.fn(),
+  startCommentDraft: vi.fn(),
+  commentDraft: null as Record<string, unknown> | null,
   noteEditorProps: [] as Record<string, unknown>[],
 }));
 
@@ -34,16 +35,24 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 
-vi.mock("@hypr/editor/markdown", () => ({
-  parseJsonContent: (value: string) => JSON.parse(value),
+vi.mock("@anlg/editor/markdown", () => ({
+  parseJsonContent: (value: string) =>
+    value
+      ? JSON.parse(value)
+      : { type: "doc", content: [{ type: "paragraph" }] },
 }));
 
-vi.mock("@hypr/editor/note", () => ({
+vi.mock("@anlg/editor/note", () => ({
+  normalizePortableAttachmentUrls: (value: unknown) => value,
   NoteEditor: (props: Record<string, unknown>) => {
     hoisted.noteEditorProps.push(props);
 
     return <div>Note editor</div>;
   },
+}));
+
+vi.mock("~/session/hooks/useAttachmentResolver", () => ({
+  useAttachmentResolver: () => () => null,
 }));
 
 vi.mock("~/editor-bridge/app-link-view", () => ({
@@ -80,22 +89,34 @@ vi.mock("~/stt/useUploadFile", () => ({
   useUploadFile: () => ({ processAudioFile: hoisted.processAudioFile }),
 }));
 
-vi.mock("~/store/tinybase/store/main", () => ({
-  STORE_ID: "main",
-  UI: {
-    useCell: (table: string, _row: string, cell: string) => {
-      if (table === "sessions" && cell === "title") {
-        return hoisted.sessionTitle;
-      }
-
-      return hoisted.content;
-    },
-    useSetPartialRowCallback: (table: string) =>
-      table === "sessions"
-        ? hoisted.persistSessionTitle
-        : hoisted.persistContent,
-  },
+vi.mock("~/session-sharing/comments", () => ({
+  SessionCommentsLayer: () => <div data-testid="summary-comments-layer" />,
+  useOwnedSessionComments: () => ({
+    containerRef: { current: null },
+    onCommentAnchorsEvent: vi.fn(),
+    onViewReady: vi.fn(),
+    onViewDisposed: vi.fn(),
+    draft: hoisted.commentDraft,
+    selection: {},
+    startDraft: hoisted.startCommentDraft,
+  }),
 }));
+
+vi.mock("~/session/queries", () => ({
+  useEnhancedNote: () => ({ content: hoisted.content }),
+  useUpdateEnhancedNoteContent: () => hoisted.persistContent,
+}));
+
+function EnhancedEditor(
+  props: Omit<
+    React.ComponentProps<typeof SessionEnhancedEditor>,
+    "sessionTitle"
+  >,
+) {
+  return (
+    <SessionEnhancedEditor {...props} sessionTitle={hoisted.sessionTitle} />
+  );
+}
 
 describe("EnhancedEditor", () => {
   afterEach(() => {
@@ -106,10 +127,10 @@ describe("EnhancedEditor", () => {
     hoisted.noteEditorProps = [];
     hoisted.content = JSON.stringify({ type: "doc", content: [] });
     hoisted.sessionTitle = "Weekly sync";
-    hoisted.persistContent = vi.fn();
-    hoisted.persistSessionTitle = vi.fn();
+    hoisted.persistContent = vi.fn(() => Promise.resolve());
     hoisted.fileUpload = vi.fn();
     hoisted.processAudioFile = vi.fn();
+    hoisted.commentDraft = null;
     hoisted.showWindow.mockReset();
     hoisted.unminimizeWindow.mockReset();
     hoisted.focusWindow.mockReset();
@@ -130,12 +151,22 @@ describe("EnhancedEditor", () => {
       ],
     });
 
-    render(<EnhancedEditor sessionId="session-1" enhancedNoteId="note-1" />);
+    render(
+      <EnhancedEditor
+        sessionId="session-1"
+        enhancedNoteId="note-1"
+        content={hoisted.content}
+      />,
+    );
 
     const props = hoisted.noteEditorProps[hoisted.noteEditorProps.length - 1];
 
     expect(props?.className).toContain("session-note-editor");
     expect(props?.className).toContain("enhanced-summary-editor");
+    expect(props?.onCommentAnchorsEvent).toEqual(expect.any(Function));
+    expect(props?.onCommentSelection).toBe(hoisted.startCommentDraft);
+    expect(screen.getByTestId("summary-comments-layer")).toBeTruthy();
+    expect(props?.placeholderComponent).toEqual(expect.any(Function));
     expect(props?.syncContentWhenFocused).toBe(false);
     expect(props?.handleChange).not.toBe(hoisted.persistContent);
     expect(props?.taskSource).toEqual({ type: "enhanced_note", id: "note-1" });
@@ -156,8 +187,49 @@ describe("EnhancedEditor", () => {
     });
   });
 
+  it("hides the selection comment action while a draft is open", () => {
+    hoisted.commentDraft = {};
+
+    render(
+      <EnhancedEditor
+        sessionId="session-1"
+        enhancedNoteId="note-1"
+        content={hoisted.content}
+      />,
+    );
+
+    const props = hoisted.noteEditorProps[hoisted.noteEditorProps.length - 1];
+    expect(props?.onCommentSelection).toBeUndefined();
+  });
+
+  it("does not rerender the editor when its props are unchanged", () => {
+    const view = render(
+      <EnhancedEditor
+        sessionId="session-1"
+        enhancedNoteId="note-1"
+        content={hoisted.content}
+      />,
+    );
+
+    view.rerender(
+      <EnhancedEditor
+        sessionId="session-1"
+        enhancedNoteId="note-1"
+        content={hoisted.content}
+      />,
+    );
+
+    expect(hoisted.noteEditorProps).toHaveLength(1);
+  });
+
   it("persists content and updates the session title from the first line", () => {
-    render(<EnhancedEditor sessionId="session-1" enhancedNoteId="note-1" />);
+    render(
+      <EnhancedEditor
+        sessionId="session-1"
+        enhancedNoteId="note-1"
+        content={hoisted.content}
+      />,
+    );
 
     const props = hoisted.noteEditorProps[hoisted.noteEditorProps.length - 1];
     const input = {
@@ -173,8 +245,175 @@ describe("EnhancedEditor", () => {
 
     (props?.handleChange as (input: unknown) => void)(input);
 
-    expect(hoisted.persistContent).toHaveBeenCalledWith(input);
-    expect(hoisted.persistSessionTitle).toHaveBeenCalledWith("Edited title");
+    expect(hoisted.persistContent).toHaveBeenCalledWith(
+      JSON.stringify(input),
+      "Edited title",
+    );
+  });
+
+  it("does not persist the empty title layout for a new summary", () => {
+    hoisted.content = "";
+    hoisted.sessionTitle = "";
+
+    render(
+      <EnhancedEditor
+        sessionId="session-1"
+        enhancedNoteId="note-1"
+        content={hoisted.content}
+      />,
+    );
+
+    const props = hoisted.noteEditorProps[hoisted.noteEditorProps.length - 1];
+    const input = {
+      type: "doc",
+      content: [
+        { type: "heading", attrs: { level: 1 } },
+        { type: "paragraph" },
+      ],
+    };
+
+    (props?.handleChange as (input: unknown) => void)(input);
+
+    expect(hoisted.persistContent).not.toHaveBeenCalled();
+  });
+
+  it("does not persist a synthesized session title for a new summary", () => {
+    hoisted.content = "";
+    hoisted.sessionTitle = "Weekly sync";
+
+    render(
+      <EnhancedEditor
+        sessionId="session-1"
+        enhancedNoteId="note-1"
+        content={hoisted.content}
+      />,
+    );
+
+    const props = hoisted.noteEditorProps[hoisted.noteEditorProps.length - 1];
+    const input = {
+      type: "doc",
+      content: [
+        {
+          type: "heading",
+          attrs: { level: 1 },
+          content: [{ type: "text", text: "Weekly sync" }],
+        },
+        { type: "paragraph" },
+      ],
+    };
+
+    (props?.handleChange as (input: unknown) => void)(input);
+
+    expect(hoisted.persistContent).not.toHaveBeenCalled();
+  });
+
+  it("persists formatting applied to a synthesized session title", () => {
+    hoisted.content = "";
+    hoisted.sessionTitle = "Weekly sync";
+
+    render(
+      <EnhancedEditor
+        sessionId="session-1"
+        enhancedNoteId="note-1"
+        content={hoisted.content}
+      />,
+    );
+
+    const props = hoisted.noteEditorProps[hoisted.noteEditorProps.length - 1];
+    const input = {
+      type: "doc",
+      content: [
+        {
+          type: "heading",
+          attrs: { level: 1 },
+          content: [
+            {
+              type: "text",
+              text: "Weekly sync",
+              marks: [{ type: "bold" }],
+            },
+          ],
+        },
+        { type: "paragraph" },
+      ],
+    };
+
+    (props?.handleChange as (input: unknown) => void)(input);
+
+    expect(hoisted.persistContent).toHaveBeenCalledWith(
+      JSON.stringify(input),
+      "Weekly sync",
+    );
+  });
+
+  it("persists clearing an existing summary", () => {
+    hoisted.content = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "heading",
+          attrs: { level: 1 },
+          content: [{ type: "text", text: "Existing summary" }],
+        },
+      ],
+    });
+    hoisted.sessionTitle = "";
+
+    render(
+      <EnhancedEditor
+        sessionId="session-1"
+        enhancedNoteId="note-1"
+        content={hoisted.content}
+      />,
+    );
+
+    const props = hoisted.noteEditorProps[hoisted.noteEditorProps.length - 1];
+    const input = {
+      type: "doc",
+      content: [
+        { type: "heading", attrs: { level: 1 } },
+        { type: "paragraph" },
+      ],
+    };
+
+    (props?.handleChange as (input: unknown) => void)(input);
+
+    expect(hoisted.persistContent).toHaveBeenCalledWith(
+      JSON.stringify(input),
+      "",
+    );
+  });
+
+  it("persists an attachment added to a new summary", () => {
+    hoisted.content = "";
+    hoisted.sessionTitle = "";
+
+    render(
+      <EnhancedEditor
+        sessionId="session-1"
+        enhancedNoteId="note-1"
+        content={hoisted.content}
+      />,
+    );
+
+    const props = hoisted.noteEditorProps[hoisted.noteEditorProps.length - 1];
+    const input = {
+      type: "doc",
+      content: [
+        { type: "heading", attrs: { level: 1 } },
+        {
+          type: "fileAttachment",
+          attrs: { attachmentId: "attachment-1", name: "notes.pdf" },
+        },
+      ],
+    };
+
+    (props?.handleChange as (input: unknown) => void)(input);
+
+    expect(hoisted.persistContent).toHaveBeenCalledWith(
+      JSON.stringify(input),
+      undefined,
+    );
   });
 
   it("keeps streamed previews syncing while focused", () => {
@@ -189,6 +428,7 @@ describe("EnhancedEditor", () => {
       <EnhancedEditor
         sessionId="session-1"
         enhancedNoteId="note-1"
+        content={hoisted.content}
         contentOverride={contentOverride}
       />,
     );
@@ -215,7 +455,13 @@ describe("EnhancedEditor", () => {
   });
 
   it("routes dropped audio files to transcription", () => {
-    render(<EnhancedEditor sessionId="session-1" enhancedNoteId="note-1" />);
+    render(
+      <EnhancedEditor
+        sessionId="session-1"
+        enhancedNoteId="note-1"
+        content={hoisted.content}
+      />,
+    );
 
     const props = hoisted.noteEditorProps[hoisted.noteEditorProps.length - 1];
     const fileHandlerConfig = props?.fileHandlerConfig as {
@@ -228,7 +474,13 @@ describe("EnhancedEditor", () => {
   });
 
   it("keeps non-audio files available when audio is dropped with attachments", () => {
-    render(<EnhancedEditor sessionId="session-1" enhancedNoteId="note-1" />);
+    render(
+      <EnhancedEditor
+        sessionId="session-1"
+        enhancedNoteId="note-1"
+        content={hoisted.content}
+      />,
+    );
 
     const props = hoisted.noteEditorProps[hoisted.noteEditorProps.length - 1];
     const fileHandlerConfig = props?.fileHandlerConfig as {
@@ -245,7 +497,13 @@ describe("EnhancedEditor", () => {
   });
 
   it("only imports the first audio file from a multi-audio drop", () => {
-    render(<EnhancedEditor sessionId="session-1" enhancedNoteId="note-1" />);
+    render(
+      <EnhancedEditor
+        sessionId="session-1"
+        enhancedNoteId="note-1"
+        content={hoisted.content}
+      />,
+    );
 
     const props = hoisted.noteEditorProps[hoisted.noteEditorProps.length - 1];
     const fileHandlerConfig = props?.fileHandlerConfig as {
@@ -264,7 +522,13 @@ describe("EnhancedEditor", () => {
   });
 
   it("shows an audio upload overlay and intercepts audio drops", async () => {
-    render(<EnhancedEditor sessionId="session-1" enhancedNoteId="note-1" />);
+    render(
+      <EnhancedEditor
+        sessionId="session-1"
+        enhancedNoteId="note-1"
+        content={hoisted.content}
+      />,
+    );
 
     const file = new File(["audio"], "clip.m4a", { type: "" });
     const dataTransfer = audioDataTransfer(file);

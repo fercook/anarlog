@@ -4,4 +4,10 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "pass"
+      - uses: actions/checkout@v4
+      - run: >-
+          node --test
+          scripts/desktop-release-provenance.test.mjs
+          scripts/repack-linux-appimage.test.mjs
+          scripts/verify-linux-audio-qa-run.test.mjs
+          scripts/verify-linux-audio-qa-evidence.test.mjs

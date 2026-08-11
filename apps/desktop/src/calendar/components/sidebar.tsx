@@ -1,29 +1,32 @@
 import { useLingui } from "@lingui/react/macro";
+import { CaretRight, CircleNotch, Plus } from "@phosphor-icons/react";
 import { platform } from "@tauri-apps/plugin-os";
-import { ChevronRight, PlusIcon } from "lucide-react";
 import { useCallback, useMemo, type MouseEvent } from "react";
 
-import type { ConnectionItem } from "@hypr/api-client";
+import type { ConnectionItem } from "@anlg/api-client";
 import {
   Accordion,
   AccordionContent,
   AccordionHeader,
   AccordionItem,
   AccordionTriggerPrimitive,
-} from "@hypr/ui/components/ui/accordion";
-import { cn } from "@hypr/utils";
+} from "@anlg/ui/components/ui/accordion";
+import { cn } from "@anlg/utils";
 
 import { AppleCalendarSelection } from "./apple/calendar-selection";
-import { AccessPermissionRow, TroubleShootingLink } from "./apple/permission";
+import { TroubleShootingLink } from "./apple/permission";
 import { OAuthProviderContent } from "./oauth/provider-content";
 import { type CalendarProvider, PROVIDERS } from "./shared";
 
 import { useAuth } from "~/auth";
-import { useBillingAccess } from "~/auth/billing";
+import { useBillingAccess } from "~/auth/billing-context";
 import { useConnections } from "~/auth/useConnections";
 import { useNativeContextMenu } from "~/shared/hooks/useNativeContextMenu";
 import { usePermission } from "~/shared/hooks/usePermissions";
-import { openIntegrationUrl } from "~/shared/integration";
+import {
+  openIntegrationUrl,
+  useOpenIntegrationUrl,
+} from "~/shared/integration";
 
 function getProviderBadgeClassName(badge: string) {
   if (badge === "Beta") {
@@ -159,7 +162,8 @@ function ProviderAccordionItem({
 }) {
   const { t } = useLingui();
   const auth = useAuth();
-  const { isPaid, isPro, upgradeToPro } = useBillingAccess();
+  const { isPaid, isPro, upgradeToPro, isUpgradingToPro } = useBillingAccess();
+  const { openIntegration, openingAction } = useOpenIntegrationUrl();
   const { data: connections, isPending, isError } = useConnections(isPaid);
   const providerConnections =
     connections?.filter(
@@ -167,6 +171,8 @@ function ProviderAccordionItem({
     ) ?? [];
 
   const requiresPro = !!provider.nangoIntegrationId && !isPro;
+  const appleNeedsPermission =
+    provider.id === "apple" && calendar.status !== "authorized";
 
   const canAddAccount =
     !!provider.nangoIntegrationId &&
@@ -177,36 +183,55 @@ function ProviderAccordionItem({
   const shouldConnectOnClick =
     canAddAccount && providerConnections.length === 0;
 
+  const handleAppleConnect = useCallback(() => {
+    if (calendar.isPending) return;
+    if (calendar.status === "denied") {
+      void calendar.open();
+    } else {
+      calendar.request();
+    }
+  }, [calendar]);
   const handleTriggerClick = useCallback(
     (event: MouseEvent<HTMLButtonElement>) => {
       if (requiresPro) {
         event.preventDefault();
         return;
       }
+      if (appleNeedsPermission) {
+        event.preventDefault();
+        handleAppleConnect();
+        return;
+      }
       if (!shouldConnectOnClick) return;
       event.preventDefault();
-      void openIntegrationUrl(
-        provider.nangoIntegrationId,
-        undefined,
-        "connect",
+      openIntegration({
+        nangoIntegrationId: provider.nangoIntegrationId,
+        action: "connect",
         returnTo,
-      );
+      });
     },
-    [provider.nangoIntegrationId, requiresPro, returnTo, shouldConnectOnClick],
+    [
+      appleNeedsPermission,
+      handleAppleConnect,
+      openIntegration,
+      provider.nangoIntegrationId,
+      requiresPro,
+      returnTo,
+      shouldConnectOnClick,
+    ],
   );
   const handleAddAccount = useCallback(
     (event: MouseEvent<HTMLButtonElement>) => {
       if (!canAddAccount) return;
       event.preventDefault();
       event.stopPropagation();
-      void openIntegrationUrl(
-        provider.nangoIntegrationId,
-        undefined,
-        "connect",
+      openIntegration({
+        nangoIntegrationId: provider.nangoIntegrationId,
+        action: "connect",
         returnTo,
-      );
+      });
     },
-    [canAddAccount, provider.nangoIntegrationId, returnTo],
+    [canAddAccount, openIntegration, provider.nangoIntegrationId, returnTo],
   );
   const handleUpgradeToPro = useCallback(
     (event: MouseEvent<HTMLButtonElement>) => {
@@ -291,24 +316,47 @@ function ProviderAccordionItem({
           <button
             type="button"
             onClick={handleUpgradeToPro}
-            className="border-primary bg-primary text-primary-foreground hover:bg-primary/90 focus-visible:ring-ring pointer-events-none absolute top-1/2 right-1 z-10 shrink-0 translate-x-1 -translate-y-1/2 rounded-full border-2 px-3 py-1 text-xs font-medium opacity-0 shadow-[0_4px_14px_rgba(87,83,78,0.18)] transition-all duration-150 group-focus-within/row:pointer-events-auto group-focus-within/row:translate-x-0 group-focus-within/row:opacity-100 group-hover/row:pointer-events-auto group-hover/row:translate-x-0 group-hover/row:opacity-100 focus-visible:ring-2 focus-visible:outline-none"
+            disabled={isUpgradingToPro}
+            className="border-primary bg-primary text-primary-foreground hover:bg-primary/90 focus-visible:ring-ring pointer-events-none absolute top-1/2 right-1 z-10 flex shrink-0 translate-x-1 -translate-y-1/2 items-center gap-1 rounded-full border-2 px-3 py-1 text-xs font-medium opacity-0 shadow-[0_4px_14px_rgba(87,83,78,0.18)] transition-all duration-150 group-focus-within/row:pointer-events-auto group-focus-within/row:translate-x-0 group-focus-within/row:opacity-100 group-hover/row:pointer-events-auto group-hover/row:translate-x-0 group-hover/row:opacity-100 focus-visible:ring-2 focus-visible:outline-none disabled:opacity-70"
             aria-label={t`Upgrade to Pro for ${provider.displayName}`}
           >
+            {isUpgradingToPro && (
+              <CircleNotch className="size-3 animate-spin" aria-hidden="true" />
+            )}
             {t`Upgrade to Pro`}
+          </button>
+        ) : appleNeedsPermission ? (
+          <button
+            type="button"
+            onClick={handleAppleConnect}
+            disabled={calendar.isPending}
+            className="text-muted-foreground hover:bg-accent hover:text-foreground shrink-0 rounded-full p-1 transition-colors disabled:opacity-50"
+            aria-label={t`Connect ${provider.displayName}`}
+          >
+            {calendar.isPending ? (
+              <CircleNotch className="size-4 animate-spin" />
+            ) : (
+              <Plus className="size-4" />
+            )}
           </button>
         ) : hasAddAccountButton ? (
           <button
             type="button"
             onClick={handleAddAccount}
-            className="text-muted-foreground hover:bg-accent hover:text-foreground shrink-0 rounded-full p-1 transition-colors"
+            disabled={openingAction !== null}
+            className="text-muted-foreground hover:bg-accent hover:text-foreground shrink-0 rounded-full p-1 transition-colors disabled:opacity-50"
             aria-label={t`Add ${provider.displayName} account`}
           >
-            <PlusIcon className="size-4" />
+            {openingAction === "connect" ? (
+              <CircleNotch className="size-4 animate-spin" />
+            ) : (
+              <Plus className="size-4" />
+            )}
           </button>
         ) : null}
 
-        {!requiresPro && (
-          <ChevronRight
+        {!requiresPro && !appleNeedsPermission && (
+          <CaretRight
             className={cn([
               "text-muted-foreground size-4 shrink-0 transition-transform duration-200",
               "group-data-[state=open]/provider:rotate-90",
@@ -316,31 +364,20 @@ function ProviderAccordionItem({
           />
         )}
       </div>
-      {!requiresPro && (
+      {!requiresPro && !appleNeedsPermission && (
         <AccordionContent className="pb-3">
           {provider.id === "apple" && (
             <div className="flex flex-col gap-3">
-              {calendar.status !== "authorized" ? (
-                <AccessPermissionRow
-                  title={t`Calendar`}
-                  status={calendar.status}
-                  isPending={calendar.isPending}
-                  onOpen={calendar.open}
-                  onRequest={calendar.request}
-                  onReset={calendar.reset}
-                />
-              ) : (
-                <AppleCalendarSelection
-                  leftAction={
-                    <TroubleShootingLink
-                      isPending={calendar.isPending}
-                      onOpen={calendar.open}
-                      onRequest={calendar.request}
-                      onReset={calendar.reset}
-                    />
-                  }
-                />
-              )}
+              <AppleCalendarSelection
+                leftAction={
+                  <TroubleShootingLink
+                    isPending={calendar.isPending}
+                    onOpen={calendar.open}
+                    onRequest={calendar.request}
+                    onReset={calendar.reset}
+                  />
+                }
+              />
             </div>
           )}
           {provider.nangoIntegrationId && (

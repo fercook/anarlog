@@ -100,6 +100,61 @@ describe("Basic Tab Actions", () => {
     expect(state).toHaveHistoryLength(1);
   });
 
+  test("openNew applies auto-start when reusing a session tab", () => {
+    useTabs.getState().openNew({
+      type: "sessions",
+      id: "tab1",
+      state: {
+        view: { type: "enhanced", id: "summary-1" },
+        autoStart: null,
+      },
+    });
+
+    useTabs.getState().openNew({
+      type: "sessions",
+      id: "tab1",
+      state: { view: null, autoStart: true },
+    });
+
+    expect(useTabs.getState()).toHaveCurrentTab({
+      id: "tab1",
+      state: {
+        view: { type: "enhanced", id: "summary-1" },
+        autoStart: true,
+      },
+    });
+    expect(useTabs.getState().tabs).toHaveLength(1);
+  });
+
+  test("shared-note tabs are distinct, idempotent, and not pinnable", () => {
+    useTabs.getState().openNew({ type: "shared_sessions", id: "share-1" });
+    useTabs.getState().openNew({ type: "shared_sessions", id: "share-1" });
+
+    const tab = useTabs.getState().currentTab!;
+    expect(useTabs.getState().tabs).toHaveLength(1);
+    expect(tab).toMatchObject({
+      type: "shared_sessions",
+      id: "share-1",
+      pinned: false,
+    });
+
+    useTabs.getState().pin(tab);
+    expect(useTabs.getState().currentTab?.pinned).toBe(false);
+  });
+
+  test("ephemeral shared-note previews are not pinnable", () => {
+    useTabs.getState().openNew({
+      type: "shared_note_preview",
+      id: "13697a87-f69b-456d-8679-4202d4f5d498",
+    });
+
+    const tab = useTabs.getState().currentTab!;
+    useTabs.getState().pin(tab);
+
+    expect(tab.type).toBe("shared_note_preview");
+    expect(useTabs.getState().currentTab?.pinned).toBe(false);
+  });
+
   test("openNew reuses settings tab and updates requested subsection", () => {
     const settings = createSettingsTab({
       active: false,
@@ -153,6 +208,25 @@ describe("Basic Tab Actions", () => {
     useTabs.getState().openNew({ type: "settings" });
 
     expect(useTabs.getState()).toHaveCurrentTab({ type: "settings" });
+    expect(useTabs.getState().chatMode).toBe("FloatingClosed");
+  });
+
+  test("openNew keeps generic Chat closed when opening Automations", () => {
+    useTabs.getState().openNew({ type: "automations" });
+
+    expect(useTabs.getState()).toHaveCurrentTab({
+      type: "automations",
+    });
+    expect(useTabs.getState().chatMode).toBe("FloatingClosed");
+  });
+
+  test("openNew redirects legacy automation settings links", () => {
+    useTabs.getState().openNew({
+      type: "settings",
+      state: { tab: "automations" },
+    });
+
+    expect(useTabs.getState()).toHaveCurrentTab({ type: "automations" });
     expect(useTabs.getState().chatMode).toBe("FloatingClosed");
   });
 
@@ -265,15 +339,30 @@ describe("Basic Tab Actions", () => {
     ]);
   });
 
-  test("openNew falls back from legacy data settings tab to app", () => {
+  test("openNew redirects legacy data settings tab to imports", () => {
     useTabs.getState().openNew({ type: "settings", state: { tab: "data" } });
 
     expect(useTabs.getState()).toHaveCurrentTab({
       type: "settings",
-      state: { tab: "app" },
+      state: { tab: "imports" },
     });
     expect(useTabs.getState()).toMatchTabsInOrder([
-      { type: "settings", active: true, state: { tab: "app" } },
+      { type: "settings", active: true, state: { tab: "imports" } },
+    ]);
+  });
+
+  test("openNew redirects legacy personalization settings to dictionary", () => {
+    useTabs.getState().openNew({
+      type: "settings",
+      state: { tab: "personalization" },
+    });
+
+    expect(useTabs.getState()).toHaveCurrentTab({
+      type: "settings",
+      state: { tab: "dictionary" },
+    });
+    expect(useTabs.getState()).toMatchTabsInOrder([
+      { type: "settings", active: true, state: { tab: "dictionary" } },
     ]);
   });
 
@@ -287,6 +376,46 @@ describe("Basic Tab Actions", () => {
     expect(useTabs.getState()).toMatchTabsInOrder([
       { type: "settings", active: true, state: { tab: "account" } },
     ]);
+  });
+
+  test("openNew preserves sync settings tab requests", () => {
+    useTabs.getState().openNew({ type: "settings", state: { tab: "sync" } });
+
+    expect(useTabs.getState()).toHaveCurrentTab({
+      type: "settings",
+      state: { tab: "sync" },
+    });
+  });
+
+  test("openNew preserves meeting settings tab requests", () => {
+    useTabs
+      .getState()
+      .openNew({ type: "settings", state: { tab: "meetings" } });
+
+    expect(useTabs.getState()).toHaveCurrentTab({
+      type: "settings",
+      state: { tab: "meetings" },
+    });
+  });
+
+  test("openNew redirects legacy audio settings to meetings", () => {
+    useTabs.getState().openNew({ type: "settings", state: { tab: "audio" } });
+
+    expect(useTabs.getState()).toHaveCurrentTab({
+      type: "settings",
+      state: { tab: "meetings" },
+    });
+  });
+
+  test("openNew preserves transcription settings tab requests", () => {
+    useTabs
+      .getState()
+      .openNew({ type: "settings", state: { tab: "transcription" } });
+
+    expect(useTabs.getState()).toHaveCurrentTab({
+      type: "settings",
+      state: { tab: "transcription" },
+    });
   });
 
   test("select toggles active flag without changing history", () => {

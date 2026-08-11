@@ -1,26 +1,54 @@
-import * as Sentry from "@sentry/react";
+import {
+  ArrowClockwise,
+  House,
+  MagnifyingGlass,
+  Warning,
+} from "@phosphor-icons/react";
 import {
   type ErrorRouteComponent,
   NotFoundRouteComponent,
   useNavigate,
 } from "@tanstack/react-router";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { AlertTriangle, Home, RotateCw, Search } from "lucide-react";
 import { motion } from "motion/react";
-import { useEffect } from "react";
 
-import { Button } from "@hypr/ui/components/ui/button";
+import { Button } from "@anlg/ui/components/ui/button";
 
-export const ErrorComponent: ErrorRouteComponent = ({ error }) => {
-  useEffect(() => {
-    Sentry.captureException(error);
-  }, [error]);
+import { captureOperationalError } from "~/error-reporting";
+import { useMountEffect } from "~/shared/hooks/useMountEffect";
+
+const routeErrorKeys = new WeakMap<object, number>();
+let nextRouteErrorKey = 0;
+
+function getRouteErrorKey(error: unknown) {
+  if (typeof error !== "object" || error === null) {
+    return String(error);
+  }
+
+  const existing = routeErrorKeys.get(error);
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  nextRouteErrorKey += 1;
+  routeErrorKeys.set(error, nextRouteErrorKey);
+  return nextRouteErrorKey;
+}
+
+const ReportedErrorComponent = ({ error }: { error: Error }) => {
+  useMountEffect(() => {
+    captureOperationalError(error, {
+      operation: "route_render",
+    });
+  });
 
   const handleRestart = async () => {
     try {
       await relaunch();
     } catch (err) {
-      console.error("Failed to restart app:", err);
+      captureOperationalError(err, {
+        operation: "app_restart",
+      });
     }
   };
 
@@ -50,7 +78,7 @@ export const ErrorComponent: ErrorRouteComponent = ({ error }) => {
                   stiffness: 200,
                 }}
               >
-                <AlertTriangle className="h-6 w-6 text-red-500" />
+                <Warning className="h-6 w-6 text-red-500" />
               </motion.div>
 
               <div className="flex flex-col gap-1.5">
@@ -64,7 +92,7 @@ export const ErrorComponent: ErrorRouteComponent = ({ error }) => {
 
               <div className="pt-2">
                 <Button size="sm" onClick={handleRestart}>
-                  <RotateCw className="mr-1.5 h-3.5 w-3.5" />
+                  <ArrowClockwise className="mr-1.5 h-3.5 w-3.5" />
                   Restart App
                 </Button>
               </div>
@@ -75,6 +103,10 @@ export const ErrorComponent: ErrorRouteComponent = ({ error }) => {
     </div>
   );
 };
+
+export const ErrorComponent: ErrorRouteComponent = ({ error }) => (
+  <ReportedErrorComponent key={getRouteErrorKey(error)} error={error} />
+);
 
 export const NotFoundComponent: NotFoundRouteComponent = () => {
   const navigate = useNavigate();
@@ -105,7 +137,7 @@ export const NotFoundComponent: NotFoundRouteComponent = () => {
                   stiffness: 200,
                 }}
               >
-                <Search className="text-muted-foreground h-6 w-6" />
+                <MagnifyingGlass className="text-muted-foreground h-6 w-6" />
               </motion.div>
 
               <div className="flex flex-col gap-1.5">
@@ -131,7 +163,7 @@ export const NotFoundComponent: NotFoundRouteComponent = () => {
 
               <div className="pt-2">
                 <Button size="sm" onClick={() => navigate({ to: "/app" })}>
-                  <Home className="mr-1.5 h-3.5 w-3.5" />
+                  <House className="mr-1.5 h-3.5 w-3.5" />
                   Go to Home
                 </Button>
               </div>

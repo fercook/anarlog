@@ -1,28 +1,21 @@
-pub fn get_preferred_languages() -> Vec<hypr_language::Language> {
-    use objc2_foundation::NSLocale;
-
-    let languages = NSLocale::preferredLanguages();
-    languages
-        .iter()
-        .filter_map(|s| locale_to_language(&s.to_string()))
+pub fn get_preferred_languages() -> Vec<anlg_language::Language> {
+    sys_locale::get_locales()
+        .filter_map(|locale| locale_to_language(&locale))
         .collect()
 }
 
-fn locale_to_language(locale: &str) -> Option<hypr_language::Language> {
+fn locale_to_language(locale: &str) -> Option<anlg_language::Language> {
     locale.parse().ok()
 }
 
 pub fn get_current_locale_identifier() -> String {
-    use objc2_foundation::NSLocale;
-
-    let locale = NSLocale::currentLocale();
-    locale.localeIdentifier().to_string()
+    sys_locale::get_locale().unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hypr_language::ISO639;
+    use anlg_language::ISO639;
 
     #[test]
     fn test_locale_to_language() {
@@ -52,15 +45,18 @@ mod tests {
 
     #[test]
     fn test_get_preferred_languages() {
-        let languages = get_preferred_languages();
-        println!("Preferred languages: {:?}", languages);
-        assert!(!languages.is_empty());
+        let expected = sys_locale::get_locales()
+            .filter_map(|locale| locale_to_language(&locale))
+            .collect::<Vec<_>>();
+
+        assert_eq!(get_preferred_languages(), expected);
     }
 
     #[test]
     fn test_get_current_locale_identifier() {
-        let locale = get_current_locale_identifier();
-        println!("Current locale: {}", locale);
-        assert!(!locale.is_empty());
+        assert_eq!(
+            get_current_locale_identifier(),
+            sys_locale::get_locale().unwrap_or_default()
+        );
     }
 }

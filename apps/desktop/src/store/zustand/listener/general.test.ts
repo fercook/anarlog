@@ -2,23 +2,29 @@ import { create as mutate } from "mutative";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const {
+  dispatchEventMock,
   getIdentifierMock,
   getCaptureSnapshotMock,
   listenCaptureDataMock,
   listenCaptureLifecycleMock,
   listenCaptureStatusMock,
+  listMicUsingApplicationsMock,
   runEventHooksMock,
   setRecordingIndicatorMock,
+  startCaptureMock,
   stopCaptureMock,
   vaultBaseMock,
 } = vi.hoisted(() => ({
+  dispatchEventMock: vi.fn(),
   getIdentifierMock: vi.fn(),
   getCaptureSnapshotMock: vi.fn(),
   listenCaptureDataMock: vi.fn(),
   listenCaptureLifecycleMock: vi.fn(),
   listenCaptureStatusMock: vi.fn(),
+  listMicUsingApplicationsMock: vi.fn(),
   runEventHooksMock: vi.fn(),
   setRecordingIndicatorMock: vi.fn(),
+  startCaptureMock: vi.fn(),
   stopCaptureMock: vi.fn(),
   vaultBaseMock: vi.fn(),
 }));
@@ -27,35 +33,41 @@ vi.mock("@tauri-apps/api/app", () => ({
   getIdentifier: getIdentifierMock,
 }));
 
-vi.mock("@hypr/plugin-detect", () => ({
+vi.mock("@anlg/plugin-detect", () => ({
   commands: {
-    listMicUsingApplications: vi.fn(),
+    listMicUsingApplications: listMicUsingApplicationsMock,
   },
 }));
 
-vi.mock("@hypr/plugin-hooks", () => ({
+vi.mock("@anlg/plugin-hooks", () => ({
   commands: {
     runEventHooks: runEventHooksMock,
   },
 }));
 
-vi.mock("@hypr/plugin-icon", () => ({
+vi.mock("@anlg/plugin-icon", () => ({
   commands: {
     setRecordingIndicator: setRecordingIndicatorMock,
   },
 }));
 
-vi.mock("@hypr/plugin-settings", () => ({
+vi.mock("@anlg/plugin-local-api", () => ({
+  commands: {
+    dispatchEvent: dispatchEventMock,
+  },
+}));
+
+vi.mock("@anlg/plugin-settings", () => ({
   commands: {
     vaultBase: vaultBaseMock,
   },
 }));
 
-vi.mock("@hypr/plugin-transcription", () => ({
+vi.mock("@anlg/plugin-transcription", () => ({
   commands: {
     getCaptureSnapshot: getCaptureSnapshotMock,
     setMicMuted: vi.fn(),
-    startCapture: vi.fn(),
+    startCapture: startCaptureMock,
     startTranscription: vi.fn(),
     stopCapture: stopCaptureMock,
     stopTranscription: vi.fn(),
@@ -74,12 +86,20 @@ vi.mock("@hypr/plugin-transcription", () => ({
   },
 }));
 
+vi.mock("~/cloud-api/client", () => ({
+  syncCloudApiSnapshotBestEffort: vi.fn(),
+}));
+
 import { createListenerStore } from ".";
 import {
   getLiveCaptureUiMode,
   markLiveActive,
+  markLiveInactive,
+  markLiveStartRequested,
   updateLiveProgress,
 } from "./general-shared";
+
+import { enqueueSessionAudioOperation } from "~/session/audio-operations";
 
 let store: ReturnType<typeof createListenerStore>;
 
@@ -87,7 +107,7 @@ describe("General Listener Slice", () => {
   beforeEach(() => {
     store = createListenerStore();
     vi.clearAllMocks();
-    getIdentifierMock.mockResolvedValue("com.hyprnote.stable");
+    getIdentifierMock.mockResolvedValue("com.anarlog.stable");
     getCaptureSnapshotMock.mockResolvedValue({
       status: "ok",
       data: {
@@ -101,9 +121,12 @@ describe("General Listener Slice", () => {
     listenCaptureDataMock.mockResolvedValue(() => {});
     listenCaptureLifecycleMock.mockResolvedValue(() => {});
     listenCaptureStatusMock.mockResolvedValue(() => {});
+    listMicUsingApplicationsMock.mockResolvedValue({ status: "ok", data: [] });
     runEventHooksMock.mockResolvedValue({ status: "ok", data: null });
     setRecordingIndicatorMock.mockResolvedValue({ status: "ok", data: null });
+    startCaptureMock.mockResolvedValue({ status: "ok", data: null });
     stopCaptureMock.mockResolvedValue({ status: "ok", data: null });
+    dispatchEventMock.mockResolvedValue({ status: "ok", data: 1 });
     vaultBaseMock.mockResolvedValue({ status: "ok", data: "/tmp/anarlog" });
   });
 
@@ -116,6 +139,8 @@ describe("General Listener Slice", () => {
       expect(state.live.seconds).toBe(0);
       expect(state.live.eventUnlistenersBySession).toEqual({});
       expect(state.live.intervalId).toBeUndefined();
+      expect(state.live.needsBatchRepair).toBe(false);
+      expect(state.live.postStopProcessingBySession).toEqual({});
       expect(state.batch).toEqual({});
     });
   });
@@ -190,6 +215,67 @@ describe("General Listener Slice", () => {
 
       expect(store.getState().live.status).toBe("active");
       expect(store.getState().live.lastError).toBe("socket closed");
+      expect(store.getState().live.lastErrorSessionId).toBe("session-1");
+    });
+
+    test("markLiveActive preserves the need for batch repair after recovery", () => {
+      const intervalId = setInterval(() => {}, 1000);
+
+      store.setState((state) =>
+        mutate(state, (draft) => {
+          markLiveActive(draft.live, "session-1", intervalId, true, false, {
+            type: "connection_timeout",
+          });
+          markLiveActive(draft.live, "session-1", intervalId, true, true, null);
+        }),
+      );
+
+      clearInterval(intervalId);
+      expect(store.getState().live.needsBatchRepair).toBe(true);
+    });
+
+    test("keeps same-session audio recovery after a terminal stop error", () => {
+      store.setState((state) =>
+        mutate(state, (draft) => {
+          markLiveStartRequested(draft.live, "session-a");
+          updateLiveProgress(draft.live, {
+            type: "audio_error",
+            session_id: "session-a",
+            error: "microphone unavailable",
+            device: null,
+            is_fatal: true,
+          });
+          markLiveInactive(
+            draft.live,
+            "session-a",
+            "capture restart limit exceeded",
+          );
+        }),
+      );
+
+      expect(store.getState().live.lastError).toBe("microphone unavailable");
+      expect(store.getState().live.lastErrorSessionId).toBe("session-a");
+      expect(store.getState().live.lastErrorIsAudioRelated).toBe(true);
+    });
+
+    test("clears scoped recovery after a normal stop", () => {
+      store.setState((state) =>
+        mutate(state, (draft) => {
+          markLiveStartRequested(draft.live, "session-a");
+          updateLiveProgress(draft.live, {
+            type: "audio_error",
+            session_id: "session-a",
+            error: "microphone unavailable",
+            device: null,
+            is_fatal: true,
+          });
+          markLiveInactive(draft.live, "session-a", null);
+        }),
+      );
+
+      expect(store.getState().live.lastError).toBeNull();
+      expect(store.getState().live.lastErrorSessionId).toBeNull();
+      expect(store.getState().live.lastErrorIsAudioRelated).toBe(false);
     });
   });
 
@@ -644,7 +730,68 @@ describe("General Listener Slice", () => {
       expect(store.getState().live.finalizingBySession["session-1"]).toEqual({
         startedAtMs: expect.any(Number),
         seconds: 42,
+        needsBatchRepair: false,
       });
+    });
+
+    test("dispatches completion after post-stop processing settles", async () => {
+      let lifecycleHandler:
+        | ((event: { payload: Record<string, unknown> }) => void)
+        | undefined;
+      let finishPostStopProcessing: (() => void) | undefined;
+      const intervalId = setInterval(() => {}, 1000);
+
+      listenCaptureLifecycleMock.mockImplementationOnce((handler) => {
+        lifecycleHandler = handler;
+        return Promise.resolve(() => {});
+      });
+      getCaptureSnapshotMock.mockResolvedValueOnce({
+        status: "ok",
+        data: {
+          activeSessionId: "session-a",
+          finalizingSessionIds: [],
+          liveTranscriptionActive: true,
+          requestedLiveTranscription: true,
+          state: "active",
+        },
+      });
+      store.setState((state) =>
+        mutate(state, (draft) => {
+          markLiveActive(draft.live, "session-a", intervalId, true, true, null);
+        }),
+      );
+      store.getState().setOnStopped(
+        "session-a",
+        () =>
+          new Promise<void>((resolve) => {
+            finishPostStopProcessing = resolve;
+          }),
+      );
+
+      await store.getState().attachLiveSession("session-a");
+      store.getState().stop();
+      await vi.waitFor(() => expect(stopCaptureMock).toHaveBeenCalledOnce());
+      expect(dispatchEventMock).not.toHaveBeenCalled();
+
+      lifecycleHandler?.({
+        payload: {
+          type: "stopped",
+          session_id: "session-a",
+          audio_path: "/tmp/session.wav",
+          requested_live_transcription: true,
+          live_transcription_active: true,
+          error: null,
+        },
+      });
+      expect(dispatchEventMock).not.toHaveBeenCalled();
+
+      finishPostStopProcessing?.();
+      await vi.waitFor(() =>
+        expect(dispatchEventMock).toHaveBeenCalledWith(
+          "meeting.completed",
+          "session-a",
+        ),
+      );
     });
   });
 
@@ -663,6 +810,21 @@ describe("General Listener Slice", () => {
           liveTranscriptionActive: true,
           requestedLiveTranscription: true,
           state: "active",
+          liveSegmentsSessionId: "session-a",
+          liveSegments: [
+            {
+              id: "snapshot-segment",
+              key: {
+                channel: "DirectMic",
+                speaker_index: null,
+                speaker_human_id: null,
+              },
+              start_ms: 100,
+              end_ms: 200,
+              text: "restored",
+              words: [],
+            },
+          ],
         },
       });
 
@@ -671,9 +833,506 @@ describe("General Listener Slice", () => {
       expect(store.getState().getSessionMode("session-a")).toBe("active");
       expect(store.getState().live.sessionId).toBe("session-a");
       expect(store.getState().live.liveTranscriptionActive).toBe(true);
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBe(1);
+      expect(store.getState().liveSegments).toEqual([
+        expect.objectContaining({ id: "snapshot-segment", text: "restored" }),
+      ]);
       expect(listenCaptureLifecycleMock).toHaveBeenCalledTimes(1);
       expect(listenCaptureStatusMock).toHaveBeenCalledTimes(1);
       expect(listenCaptureDataMock).toHaveBeenCalledTimes(1);
+    });
+
+    test("attached windows advance once for each observed native capture", async () => {
+      let lifecycleHandler:
+        | ((event: { payload: Record<string, unknown> }) => void)
+        | undefined;
+      listenCaptureLifecycleMock.mockImplementation((handler) => {
+        lifecycleHandler = handler;
+        return Promise.resolve(() => {});
+      });
+
+      await store.getState().attachLiveSession("session-a");
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBeUndefined();
+
+      const started = {
+        type: "started",
+        session_id: "session-a",
+        requested_live_transcription: true,
+        live_transcription_active: true,
+        degraded: null,
+      };
+      const stopped = {
+        type: "stopped",
+        session_id: "session-a",
+        audio_path: "/tmp/session.wav",
+        requested_live_transcription: true,
+        live_transcription_active: true,
+        error: null,
+      };
+
+      lifecycleHandler?.({ payload: started });
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBe(1);
+      lifecycleHandler?.({ payload: started });
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBe(1);
+      lifecycleHandler?.({
+        payload: { type: "finalizing", session_id: "session-a" },
+      });
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBe(1);
+      lifecycleHandler?.({ payload: stopped });
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBeUndefined();
+
+      await store.getState().attachLiveSession("session-a");
+      lifecycleHandler?.({ payload: started });
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBe(2);
+      lifecycleHandler?.({ payload: stopped });
+    });
+
+    test("attachLiveSession restores transcript and stop callbacks for an active native capture", async () => {
+      let dataHandler:
+        | ((event: { payload: Record<string, unknown> }) => void)
+        | undefined;
+      let lifecycleHandler:
+        | ((event: { payload: Record<string, unknown> }) => void)
+        | undefined;
+      const handlePersist = vi.fn();
+      const onStopped = vi.fn();
+      listenCaptureDataMock.mockImplementationOnce((handler) => {
+        dataHandler = handler;
+        return Promise.resolve(() => {});
+      });
+      listenCaptureLifecycleMock.mockImplementationOnce((handler) => {
+        lifecycleHandler = handler;
+        return Promise.resolve(() => {});
+      });
+      getCaptureSnapshotMock.mockResolvedValueOnce({
+        status: "ok",
+        data: {
+          activeSessionId: "session-a",
+          finalizingSessionIds: [],
+          liveTranscriptionActive: true,
+          requestedLiveTranscription: true,
+          state: "active",
+        },
+      });
+
+      await store.getState().attachLiveSession("session-a", {
+        handlePersist,
+        onStopped,
+      });
+      dataHandler?.({
+        payload: {
+          session_id: "session-a",
+          type: "transcript_delta",
+          delta: {
+            new_words: [
+              {
+                id: "word-after-reload",
+                text: " preserved",
+                start_ms: 1_000,
+                end_ms: 1_500,
+                channel: 0,
+              },
+            ],
+            replaced_ids: [],
+            partials: [],
+          },
+        },
+      });
+      lifecycleHandler?.({
+        payload: {
+          type: "stopped",
+          session_id: "session-a",
+          audio_path: "/tmp/session.wav",
+          requested_live_transcription: true,
+          live_transcription_active: true,
+          error: null,
+        },
+      });
+
+      expect(handlePersist).toHaveBeenCalledWith(
+        expect.objectContaining({
+          new_words: [expect.objectContaining({ id: "word-after-reload" })],
+        }),
+      );
+      expect(onStopped).toHaveBeenCalledWith(
+        "session-a",
+        expect.objectContaining({
+          audioPath: "/tmp/session.wav",
+          liveTranscriptionActive: true,
+        }),
+      );
+    });
+
+    test("keeps recovery callbacks installed when the native snapshot is unavailable", async () => {
+      const handlePersist = vi.fn();
+      const onStopped = vi.fn();
+      getCaptureSnapshotMock.mockResolvedValueOnce({
+        status: "error",
+        error: "capture snapshot unavailable",
+      });
+
+      await expect(
+        store.getState().attachLiveSession("session-a", {
+          handlePersist,
+          onStopped,
+        }),
+      ).resolves.toBe("error");
+
+      expect(store.getState().handlePersistBySession["session-a"]).toBe(
+        handlePersist,
+      );
+      expect(store.getState().onStoppedBySession["session-a"]).toBe(onStopped);
+      expect(
+        store.getState().live.eventUnlistenersBySession["session-a"],
+      ).toHaveLength(3);
+      expect(store.getState().canStartLiveSession("session-a")).toBe(false);
+      expect(store.getState().canStartLiveSession("session-b")).toBe(false);
+      await expect(
+        store.getState().start({
+          session_id: "session-b",
+          languages: [],
+          onboarding: false,
+          model: "test-model",
+          base_url: "http://localhost",
+          api_key: "test-key",
+          keywords: [],
+        }),
+      ).resolves.toBe(false);
+      expect(startCaptureMock).not.toHaveBeenCalled();
+
+      getCaptureSnapshotMock.mockResolvedValueOnce({
+        status: "ok",
+        data: {
+          activeSessionId: null,
+          finalizingSessionIds: [],
+          liveTranscriptionActive: null,
+          requestedLiveTranscription: null,
+          state: "inactive",
+        },
+      });
+
+      await expect(
+        store.getState().attachLiveSession("session-a", {
+          handlePersist: vi.fn(),
+          onStopped: vi.fn(),
+        }),
+      ).resolves.toBe("inactive");
+      expect(
+        store.getState().handlePersistBySession["session-a"],
+      ).toBeUndefined();
+      expect(store.getState().onStoppedBySession["session-a"]).toBeUndefined();
+      expect(
+        store.getState().beginCaptureRecoveryFinalization("session-a"),
+      ).toBe(true);
+      expect(store.getState().canStartLiveSession("session-a")).toBe(false);
+      expect(store.getState().canStartLiveSession("session-b")).toBe(true);
+      store.getState().finishCaptureRecoveryFinalization("session-a");
+      expect(store.getState().canStartLiveSession("session-a")).toBe(true);
+    });
+
+    test("finalizing sessions keep the batch repair flag when another session starts", async () => {
+      let lifecycleHandler:
+        | ((event: {
+            payload:
+              | {
+                  type: "started";
+                  session_id: string;
+                  requested_live_transcription: boolean;
+                  live_transcription_active: boolean;
+                  degraded: { type: "connection_timeout" } | null;
+                }
+              | {
+                  type: "finalizing";
+                  session_id: string;
+                }
+              | {
+                  type: "stopped";
+                  session_id: string;
+                  audio_path: string;
+                  requested_live_transcription: boolean;
+                  live_transcription_active: boolean;
+                  error: null;
+                };
+          }) => void)
+        | undefined;
+      const onStopped = vi.fn();
+      listenCaptureLifecycleMock.mockImplementationOnce((handler) => {
+        lifecycleHandler = handler;
+        return Promise.resolve(() => {});
+      });
+      getCaptureSnapshotMock.mockResolvedValueOnce({
+        status: "ok",
+        data: {
+          activeSessionId: "session-a",
+          finalizingSessionIds: [],
+          liveTranscriptionActive: true,
+          requestedLiveTranscription: true,
+          state: "active",
+        },
+      });
+      store.getState().setOnStopped("session-a", onStopped);
+
+      await store.getState().attachLiveSession("session-a");
+      lifecycleHandler?.({
+        payload: {
+          type: "started",
+          session_id: "session-a",
+          requested_live_transcription: true,
+          live_transcription_active: false,
+          degraded: { type: "connection_timeout" },
+        },
+      });
+      lifecycleHandler?.({
+        payload: {
+          type: "started",
+          session_id: "session-a",
+          requested_live_transcription: true,
+          live_transcription_active: true,
+          degraded: null,
+        },
+      });
+      lifecycleHandler?.({
+        payload: {
+          type: "finalizing",
+          session_id: "session-a",
+        },
+      });
+      store.setState((state) =>
+        mutate(state, (draft) => {
+          markLiveStartRequested(draft.live, "session-b");
+        }),
+      );
+      lifecycleHandler?.({
+        payload: {
+          type: "finalizing",
+          session_id: "session-a",
+        },
+      });
+      lifecycleHandler?.({
+        payload: {
+          type: "stopped",
+          session_id: "session-a",
+          audio_path: "/tmp/session.wav",
+          requested_live_transcription: true,
+          live_transcription_active: true,
+          error: null,
+        },
+      });
+
+      expect(onStopped).toHaveBeenCalledWith(
+        "session-a",
+        expect.objectContaining({ needsBatchRepair: true }),
+      );
+    });
+
+    test("repairs a live transcript when stop leaves unfinalized words", async () => {
+      let lifecycleHandler:
+        | ((event: { payload: Record<string, unknown> }) => void)
+        | undefined;
+      const onStopped = vi.fn();
+      listenCaptureLifecycleMock.mockImplementationOnce((handler) => {
+        lifecycleHandler = handler;
+        return Promise.resolve(() => {});
+      });
+      getCaptureSnapshotMock.mockResolvedValueOnce({
+        status: "ok",
+        data: {
+          activeSessionId: "session-a",
+          finalizingSessionIds: [],
+          liveTranscriptionActive: true,
+          requestedLiveTranscription: true,
+          state: "active",
+        },
+      });
+      store.getState().setOnStopped("session-a", onStopped);
+
+      await store.getState().attachLiveSession("session-a");
+      store.setState((state) =>
+        mutate(state, (draft) => {
+          draft.partialWordsByChannel[0] = [
+            {
+              text: " trailing words",
+              start_ms: 1_000,
+              end_ms: 2_000,
+              channel: 0,
+            },
+          ];
+        }),
+      );
+
+      lifecycleHandler?.({
+        payload: {
+          type: "finalizing",
+          session_id: "session-a",
+        },
+      });
+      lifecycleHandler?.({
+        payload: {
+          type: "stopped",
+          session_id: "session-a",
+          audio_path: "/tmp/session.wav",
+          requested_live_transcription: true,
+          live_transcription_active: true,
+          error: null,
+        },
+      });
+
+      expect(onStopped).toHaveBeenCalledWith(
+        "session-a",
+        expect.objectContaining({ needsBatchRepair: true }),
+      );
+    });
+
+    test("observes asynchronous post-stop failures", async () => {
+      let lifecycleHandler:
+        | ((event: { payload: Record<string, unknown> }) => void)
+        | undefined;
+      const error = new Error("summary scheduling failed");
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      listenCaptureLifecycleMock.mockImplementationOnce((handler) => {
+        lifecycleHandler = handler;
+        return Promise.resolve(() => {});
+      });
+      getCaptureSnapshotMock.mockResolvedValueOnce({
+        status: "ok",
+        data: {
+          activeSessionId: "session-a",
+          finalizingSessionIds: [],
+          liveTranscriptionActive: true,
+          requestedLiveTranscription: true,
+          state: "active",
+        },
+      });
+      store
+        .getState()
+        .setOnStopped("session-a", vi.fn().mockRejectedValue(error));
+
+      await store.getState().attachLiveSession("session-a");
+      lifecycleHandler?.({
+        payload: {
+          type: "stopped",
+          session_id: "session-a",
+          audio_path: "/tmp/session.wav",
+          requested_live_transcription: true,
+          live_transcription_active: true,
+          error: null,
+        },
+      });
+      await Promise.resolve();
+
+      expect(consoleError).toHaveBeenCalledWith(
+        "[listener] post-stop processing failed",
+        error,
+      );
+      await vi.waitFor(() =>
+        expect(store.getState().canStartLiveSession("session-a")).toBe(true),
+      );
+      consoleError.mockRestore();
+    });
+
+    test("blocks an immediate same-session restart until post-stop repair settles", async () => {
+      let lifecycleHandler:
+        | ((event: { payload: Record<string, unknown> }) => void)
+        | undefined;
+      let finishRepair: (() => void) | undefined;
+      const repairCompleted = vi.fn();
+      const onStopped = vi.fn(
+        (
+          _sessionId: string,
+          details: { needsBatchRepair: boolean },
+        ): Promise<void> => {
+          expect(details.needsBatchRepair).toBe(true);
+          return new Promise<void>((resolve) => {
+            finishRepair = () => {
+              repairCompleted();
+              resolve();
+            };
+          });
+        },
+      );
+      listenCaptureLifecycleMock.mockImplementationOnce((handler) => {
+        lifecycleHandler = handler;
+        return Promise.resolve(() => {});
+      });
+      getCaptureSnapshotMock.mockResolvedValueOnce({
+        status: "ok",
+        data: {
+          activeSessionId: "session-a",
+          finalizingSessionIds: [],
+          liveTranscriptionActive: true,
+          requestedLiveTranscription: true,
+          state: "active",
+        },
+      });
+      store.getState().setOnStopped("session-a", onStopped);
+
+      await store.getState().attachLiveSession("session-a");
+      store.setState((state) =>
+        mutate(state, (draft) => {
+          draft.live.needsBatchRepair = true;
+        }),
+      );
+      lifecycleHandler?.({
+        payload: {
+          type: "stopped",
+          session_id: "session-a",
+          audio_path: "/tmp/session.wav",
+          requested_live_transcription: true,
+          live_transcription_active: true,
+          error: null,
+        },
+      });
+
+      expect(onStopped).toHaveBeenCalledOnce();
+      expect(store.getState().canStartLiveSession("session-a")).toBe(false);
+      expect(store.getState().canStartLiveSession("session-b")).toBe(true);
+      await expect(
+        store.getState().start({
+          session_id: "session-a",
+          languages: [],
+          onboarding: false,
+          model: "test-model",
+          base_url: "http://localhost",
+          api_key: "test-key",
+          keywords: [],
+        }),
+      ).resolves.toBe(false);
+      expect(startCaptureMock).not.toHaveBeenCalled();
+      expect(repairCompleted).not.toHaveBeenCalled();
+
+      finishRepair?.();
+      await vi.waitFor(() =>
+        expect(store.getState().canStartLiveSession("session-a")).toBe(true),
+      );
+      expect(repairCompleted).toHaveBeenCalledOnce();
+      await expect(
+        store.getState().start({
+          session_id: "session-a",
+          languages: [],
+          onboarding: false,
+          model: "test-model",
+          base_url: "http://localhost",
+          api_key: "test-key",
+          keywords: [],
+        }),
+      ).resolves.toBe(true);
+      expect(startCaptureMock).toHaveBeenCalledOnce();
     });
 
     test("attachLiveSession ignores overlapping attaches for the same session", async () => {
@@ -734,6 +1393,71 @@ describe("General Listener Slice", () => {
       expect(store.getState().live.sessionId).toBeNull();
     });
 
+    test("attachLiveSession keeps a finalizing target attached while another capture is active", async () => {
+      const handlePersist = vi.fn();
+      const onStopped = vi.fn();
+      getCaptureSnapshotMock.mockResolvedValueOnce({
+        status: "ok",
+        data: {
+          activeSessionId: "session-b",
+          finalizingSessionIds: ["session-a"],
+          liveTranscriptionActive: true,
+          requestedLiveTranscription: true,
+          state: "active",
+        },
+      });
+
+      await expect(
+        store.getState().attachLiveSession("session-a", {
+          handlePersist,
+          onStopped,
+        }),
+      ).resolves.toBe("attached");
+
+      expect(store.getState().getSessionMode("session-a")).toBe("finalizing");
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBe(1);
+      expect(store.getState().handlePersistBySession["session-a"]).toBe(
+        handlePersist,
+      );
+      expect(store.getState().onStoppedBySession["session-a"]).toBe(onStopped);
+    });
+
+    test("attachLiveSession does not hydrate another session's snapshot segments", async () => {
+      getCaptureSnapshotMock.mockResolvedValueOnce({
+        status: "ok",
+        data: {
+          activeSessionId: "session-b",
+          finalizingSessionIds: ["session-a"],
+          liveTranscriptionActive: true,
+          requestedLiveTranscription: true,
+          state: "active",
+          liveSegmentsSessionId: "session-b",
+          liveSegments: [
+            {
+              id: "session-b-segment",
+              key: {
+                channel: "DirectMic",
+                speaker_index: null,
+                speaker_human_id: null,
+              },
+              start_ms: 100,
+              end_ms: 200,
+              text: "belongs to session b",
+              words: [],
+            },
+          ],
+        },
+      });
+
+      await expect(
+        store.getState().attachLiveSession("session-a"),
+      ).resolves.toBe("attached");
+
+      expect(store.getState().liveSegments).toEqual([]);
+    });
+
     test("attachLiveSession hydrates finalizing native capture for the same session", async () => {
       let dataHandler:
         | ((event: {
@@ -763,6 +1487,9 @@ describe("General Listener Slice", () => {
 
       expect(store.getState().live.sessionId).toBe("session-a");
       expect(store.getState().getSessionMode("session-a")).toBe("finalizing");
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBe(1);
 
       dataHandler?.({
         payload: {
@@ -791,7 +1518,7 @@ describe("General Listener Slice", () => {
       ]);
     });
 
-    test("attachLiveSession accepts segment events before snapshot hydration", async () => {
+    test("attachLiveSession replays segment events after snapshot hydration", async () => {
       let dataHandler:
         | ((event: {
             payload: {
@@ -841,22 +1568,206 @@ describe("General Listener Slice", () => {
         },
       });
 
-      expect(store.getState().liveSegments).toMatchObject([
-        { id: "segment-before-snapshot", text: "early" },
-      ]);
+      expect(store.getState().liveSegments).toEqual([]);
 
       resolveSnapshot?.({
         status: "ok",
         data: {
-          activeSessionId: null,
+          activeSessionId: "session-a",
           finalizingSessionIds: [],
-          liveTranscriptionActive: null,
-          requestedLiveTranscription: null,
-          state: "inactive",
+          liveSegments: [],
+          liveTranscriptionActive: true,
+          requestedLiveTranscription: true,
+          state: "active",
         },
       });
-      await attachPromise;
-      expect(store.getState().live.sessionId).toBeNull();
+      await expect(attachPromise).resolves.toBe("attached");
+      expect(store.getState().liveSegments).toMatchObject([
+        { id: "segment-before-snapshot", text: "early" },
+      ]);
+    });
+
+    test("attachLiveSession bounds and releases buffered segments when snapshot hydration times out", async () => {
+      vi.useFakeTimers();
+      try {
+        let dataHandler:
+          | ((event: {
+              payload: {
+                session_id: string;
+                type: "transcript_segment_delta";
+                delta: unknown;
+              };
+            }) => void)
+          | undefined;
+        listenCaptureDataMock.mockImplementationOnce((handler) => {
+          dataHandler = handler;
+          return Promise.resolve(() => {});
+        });
+        getCaptureSnapshotMock.mockReturnValueOnce(new Promise(() => {}));
+        const handleTranscriptSegmentDelta = vi.fn(
+          store.getState().handleTranscriptSegmentDelta,
+        );
+        store.setState({ handleTranscriptSegmentDelta });
+
+        const emitSegmentDelta = (delta: unknown) =>
+          dataHandler?.({
+            payload: {
+              delta,
+              session_id: "session-a",
+              type: "transcript_segment_delta",
+            },
+          });
+        const attachPromise = store.getState().attachLiveSession("session-a");
+        await vi.waitFor(() => {
+          expect(dataHandler).toBeDefined();
+        });
+
+        for (let index = 0; index < 1_000; index += 1) {
+          emitSegmentDelta({
+            removed_ids: [],
+            upserts: [
+              {
+                end_ms: index + 1,
+                id: `segment-${index}`,
+                key: { channel: "DirectMic" },
+                start_ms: index,
+                text: `segment ${index}`,
+                words: [],
+              },
+            ],
+          });
+          emitSegmentDelta({
+            removed_ids: [`removed-${index}`],
+            upserts: [],
+          });
+        }
+        emitSegmentDelta({
+          removed_ids: ["segment-999"],
+          upserts: [
+            {
+              end_ms: 999,
+              id: "segment-998",
+              key: { channel: "DirectMic" },
+              start_ms: 998,
+              text: "latest segment 998",
+              words: [],
+            },
+          ],
+        });
+
+        expect(handleTranscriptSegmentDelta).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(5_000);
+        await expect(attachPromise).resolves.toBe("error");
+
+        expect(handleTranscriptSegmentDelta).toHaveBeenCalledOnce();
+        const replayedDelta = handleTranscriptSegmentDelta.mock.calls[0]?.[0];
+        expect(replayedDelta?.upserts).toHaveLength(199);
+        expect(replayedDelta?.removed_ids).toHaveLength(200);
+        expect(replayedDelta?.removed_ids).toContain("segment-999");
+        expect(replayedDelta?.upserts).toContainEqual(
+          expect.objectContaining({
+            id: "segment-998",
+            text: "latest segment 998",
+          }),
+        );
+
+        emitSegmentDelta({
+          removed_ids: [],
+          upserts: [
+            {
+              end_ms: 2_001,
+              id: "segment-after-timeout",
+              key: { channel: "DirectMic" },
+              start_ms: 2_000,
+              text: "still live",
+              words: [],
+            },
+          ],
+        });
+        expect(handleTranscriptSegmentDelta).toHaveBeenCalledTimes(2);
+        expect(store.getState().liveSegments).toContainEqual(
+          expect.objectContaining({ id: "segment-after-timeout" }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("an already-subscribed attach does not overwrite newer segment events with its snapshot", async () => {
+      let dataHandler:
+        | ((event: {
+            payload: {
+              session_id: string;
+              type: "transcript_segment_delta";
+              delta: unknown;
+            };
+          }) => void)
+        | undefined;
+      let resolveSnapshot:
+        | ((value: Awaited<ReturnType<typeof getCaptureSnapshotMock>>) => void)
+        | undefined;
+      listenCaptureDataMock.mockImplementationOnce((handler) => {
+        dataHandler = handler;
+        return Promise.resolve(() => {});
+      });
+      getCaptureSnapshotMock.mockResolvedValueOnce({
+        status: "ok",
+        data: {
+          activeSessionId: "session-a",
+          finalizingSessionIds: [],
+          liveSegments: [],
+          liveTranscriptionActive: true,
+          requestedLiveTranscription: true,
+          state: "active",
+        },
+      });
+      await store.getState().attachLiveSession("session-a");
+
+      getCaptureSnapshotMock.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSnapshot = resolve;
+        }),
+      );
+      const reattachPromise = store.getState().attachLiveSession("session-a", {
+        handlePersist: vi.fn(),
+      });
+      dataHandler?.({
+        payload: {
+          delta: {
+            removed_ids: [],
+            upserts: [
+              {
+                end_ms: 1_000,
+                id: "newer-segment",
+                key: { channel: "DirectMic" },
+                start_ms: 0,
+                text: "newer",
+                words: [],
+              },
+            ],
+          },
+          session_id: "session-a",
+          type: "transcript_segment_delta",
+        },
+      });
+
+      resolveSnapshot?.({
+        status: "ok",
+        data: {
+          activeSessionId: "session-a",
+          finalizingSessionIds: [],
+          liveSegments: [],
+          liveTranscriptionActive: true,
+          requestedLiveTranscription: true,
+          state: "active",
+        },
+      });
+      await expect(reattachPromise).resolves.toBe("attached");
+      expect(store.getState().liveSegments).toMatchObject([
+        { id: "newer-segment", text: "newer" },
+      ]);
+
+      clearInterval(store.getState().live.intervalId);
     });
 
     test("start returns false while another session is active", async () => {
@@ -882,12 +1793,314 @@ describe("General Listener Slice", () => {
       expect(store.getState().live.sessionId).toBe("session-a");
     });
 
+    test("holds the session audio lock until capture startup finishes", async () => {
+      let resolveStart:
+        | ((value: { status: "ok"; data: null }) => void)
+        | undefined;
+      startCaptureMock.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveStart = resolve;
+        }),
+      );
+      const start = store.getState().start({
+        session_id: "session-a",
+        languages: [],
+        onboarding: false,
+        model: "test-model",
+        base_url: "http://localhost",
+        api_key: "test-key",
+        keywords: [],
+      });
+
+      await vi.waitFor(() => expect(startCaptureMock).toHaveBeenCalled());
+      const nextOperation = vi.fn(async () => {});
+      const queued = enqueueSessionAudioOperation("session-a", nextOperation);
+      expect(nextOperation).not.toHaveBeenCalled();
+
+      resolveStart?.({ status: "ok", data: null });
+      await expect(start).resolves.toBe(true);
+      await queued;
+      expect(nextOperation).toHaveBeenCalledOnce();
+    });
+
+    test("releases a failed start generation before retrying", async () => {
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const params = {
+        session_id: "session-a",
+        languages: [],
+        onboarding: false,
+        model: "test-model",
+        base_url: "http://localhost",
+        api_key: "test-key",
+        keywords: [],
+      };
+      startCaptureMock.mockResolvedValueOnce({
+        status: "error",
+        error: "capture unavailable",
+      });
+
+      await expect(store.getState().start(params)).resolves.toBe(false);
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBeUndefined();
+      expect(store.getState().live.captureGenerationCounter).toBe(1);
+      expect(store.getState().live.lastError).toBe("capture unavailable");
+      expect(store.getState().live.lastErrorSessionId).toBe("session-a");
+      expect(store.getState().live.lastErrorIsAudioRelated).toBe(false);
+
+      await expect(store.getState().start(params)).resolves.toBe(true);
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBe(2);
+      expect(store.getState().live.lastError).toBeNull();
+      expect(store.getState().live.lastErrorSessionId).toBeNull();
+      consoleError.mockRestore();
+    });
+
+    test("keeps a rejected capture startup error visible", async () => {
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      startCaptureMock.mockRejectedValueOnce(
+        new Error("audio backend unavailable"),
+      );
+
+      await expect(
+        store.getState().start({
+          session_id: "session-a",
+          languages: [],
+          onboarding: false,
+          model: "test-model",
+          base_url: "http://localhost",
+          api_key: "test-key",
+          keywords: [],
+        }),
+      ).resolves.toBe(false);
+
+      expect(store.getState().live.lastError).toBe("audio backend unavailable");
+      expect(store.getState().live.lastErrorSessionId).toBe("session-a");
+      expect(store.getState().live.lastErrorIsAudioRelated).toBe(false);
+      consoleError.mockRestore();
+    });
+
+    test("does not classify pre-capture startup failures as audio errors", async () => {
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      vaultBaseMock.mockResolvedValueOnce({
+        status: "error",
+        error: "storage unavailable",
+      });
+
+      await expect(
+        store.getState().start({
+          session_id: "session-a",
+          languages: [],
+          onboarding: false,
+          model: "test-model",
+          base_url: "http://localhost",
+          api_key: "test-key",
+          keywords: [],
+        }),
+      ).resolves.toBe(false);
+
+      expect(startCaptureMock).not.toHaveBeenCalled();
+      expect(store.getState().live.lastError).toBe("storage unavailable");
+      expect(store.getState().live.lastErrorSessionId).toBe("session-a");
+      expect(store.getState().live.lastErrorIsAudioRelated).toBe(false);
+      consoleError.mockRestore();
+    });
+
+    test("preserves explicit audio errors when capture startup fails", async () => {
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      let resolveStart:
+        | ((value: { status: "error"; error: string }) => void)
+        | undefined;
+      startCaptureMock.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveStart = resolve;
+        }),
+      );
+
+      const start = store.getState().start({
+        session_id: "session-a",
+        languages: [],
+        onboarding: false,
+        model: "test-model",
+        base_url: "http://localhost",
+        api_key: "test-key",
+        keywords: [],
+      });
+
+      await vi.waitFor(() => expect(startCaptureMock).toHaveBeenCalled());
+      const progressHandler =
+        listenCaptureStatusMock.mock.calls[
+          listenCaptureStatusMock.mock.calls.length - 1
+        ]?.[0];
+      progressHandler?.({
+        payload: {
+          type: "audio_error",
+          session_id: "session-a",
+          error: "microphone unavailable",
+          is_fatal: true,
+        },
+      });
+      resolveStart?.({ status: "error", error: "start session failed" });
+
+      await expect(start).resolves.toBe(false);
+      expect(store.getState().live.lastError).toBe("microphone unavailable");
+      expect(store.getState().live.lastErrorSessionId).toBe("session-a");
+      expect(store.getState().live.lastErrorIsAudioRelated).toBe(true);
+      consoleError.mockRestore();
+    });
+
+    test("does not classify connection errors as audio startup failures", async () => {
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      let resolveStart:
+        | ((value: { status: "error"; error: string }) => void)
+        | undefined;
+      startCaptureMock.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveStart = resolve;
+        }),
+      );
+
+      const start = store.getState().start({
+        session_id: "session-a",
+        languages: [],
+        onboarding: false,
+        model: "test-model",
+        base_url: "http://localhost",
+        api_key: "test-key",
+        keywords: [],
+      });
+
+      await vi.waitFor(() => expect(startCaptureMock).toHaveBeenCalled());
+      const progressHandler =
+        listenCaptureStatusMock.mock.calls[
+          listenCaptureStatusMock.mock.calls.length - 1
+        ]?.[0];
+      progressHandler?.({
+        payload: {
+          type: "connection_error",
+          session_id: "session-a",
+          error: "transcription connection closed",
+        },
+      });
+      resolveStart?.({ status: "error", error: "start session failed" });
+
+      await expect(start).resolves.toBe(false);
+      expect(store.getState().live.lastError).toBe("start session failed");
+      expect(store.getState().live.lastErrorSessionId).toBe("session-a");
+      expect(store.getState().live.lastErrorIsAudioRelated).toBe(false);
+      consoleError.mockRestore();
+    });
+
+    test("keeps the capture generation when stop command delivery fails", async () => {
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const intervalId = setInterval(() => {}, 1000);
+      store.setState((state) =>
+        mutate(state, (draft) => {
+          markLiveActive(draft.live, "session-a", intervalId, true, true, null);
+        }),
+      );
+      stopCaptureMock.mockResolvedValueOnce({
+        status: "error",
+        error: "stop unavailable",
+      });
+
+      store.getState().stop();
+
+      await vi.waitFor(() =>
+        expect(store.getState().live.status).toBe("active"),
+      );
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBe(1);
+      clearInterval(store.getState().live.intervalId);
+      consoleError.mockRestore();
+    });
+
+    test("deduplicates capture generation across native start event ordering", async () => {
+      let lifecycleHandler:
+        | ((event: { payload: Record<string, unknown> }) => void)
+        | undefined;
+      let resolveStart:
+        | ((value: { status: "ok"; data: null }) => void)
+        | undefined;
+      listenCaptureLifecycleMock.mockImplementation((handler) => {
+        lifecycleHandler = handler;
+        return Promise.resolve(() => {});
+      });
+      startCaptureMock.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveStart = resolve;
+        }),
+      );
+      const params = {
+        session_id: "session-a",
+        languages: [],
+        onboarding: false,
+        model: "test-model",
+        base_url: "http://localhost",
+        api_key: "test-key",
+        keywords: [],
+      };
+      const started = {
+        type: "started",
+        session_id: "session-a",
+        requested_live_transcription: true,
+        live_transcription_active: true,
+        degraded: null,
+      };
+      const stopped = {
+        type: "stopped",
+        session_id: "session-a",
+        audio_path: "/tmp/session.wav",
+        requested_live_transcription: true,
+        live_transcription_active: true,
+        error: null,
+      };
+
+      const firstStart = store.getState().start(params);
+      await vi.waitFor(() => expect(startCaptureMock).toHaveBeenCalledOnce());
+      lifecycleHandler?.({ payload: started });
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBe(1);
+      resolveStart?.({ status: "ok", data: null });
+      await expect(firstStart).resolves.toBe(true);
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBe(1);
+      lifecycleHandler?.({ payload: stopped });
+
+      await expect(store.getState().start(params)).resolves.toBe(true);
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBe(2);
+      lifecycleHandler?.({ payload: started });
+      expect(
+        store.getState().live.captureGenerationBySession["session-a"],
+      ).toBe(2);
+      lifecycleHandler?.({ payload: stopped });
+    });
+
     test("getSessionMode returns finalizing for non-active finalizing sessions", () => {
       store.setState((state) =>
         mutate(state, (draft) => {
           draft.live.finalizingBySession["session-a"] = {
             startedAtMs: 123,
             seconds: 0,
+            needsBatchRepair: false,
           };
         }),
       );
@@ -904,6 +2117,7 @@ describe("General Listener Slice", () => {
           draft.live.finalizingBySession["session-a"] = {
             startedAtMs: 123,
             seconds: 0,
+            needsBatchRepair: false,
           };
         }),
       );
@@ -930,7 +2144,7 @@ describe("General Listener Slice", () => {
       await expect(
         store.getState().startTranscription({
           session_id: sessionId,
-          provider: "hyprnote",
+          provider: "anarlog",
           file_path: "/tmp/session.wav",
           base_url: "",
           api_key: "",

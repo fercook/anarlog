@@ -1,6 +1,37 @@
 import { describe, expect, test } from "vitest";
 
-import { getPreferredProviderModel } from "./selection";
+import {
+  getDefaultSttModel,
+  getDefaultSttSelection,
+  getLanguageSupportIssue,
+  getPreferredProviderModel,
+  resolveLiveLanguageSupportMode,
+} from "./selection";
+
+describe("getDefaultSttModel", () => {
+  test("repairs external providers with their first supported model", () => {
+    expect(getDefaultSttModel("deepgram")).toBe("nova-3-general");
+    expect(getDefaultSttModel("soniox")).toBe("stt-rt-v5");
+    expect(getDefaultSttModel("cohere")).toBe("cohere-transcribe-03-2026");
+    expect(getDefaultSttModel("groq")).toBe("whisper-large-v3-turbo");
+    expect(getDefaultSttModel("openrouter")).toBe(
+      "openai/gpt-4o-mini-transcribe",
+    );
+    expect(getDefaultSttModel("xai")).toBe("xai-stt");
+    expect(getDefaultSttModel("together")).toBe("openai/whisper-large-v3");
+    expect(getDefaultSttModel("speechmatics")).toBe("enhanced");
+    expect(getDefaultSttModel("azure_speech")).toBe("fast-transcription");
+    expect(getDefaultSttModel("google_cloud")).toBe("latest_long");
+    expect(getDefaultSttModel("aws_transcribe")).toBe("amazon-transcribe");
+    expect(getDefaultSttModel("revai")).toBe("machine");
+    expect(getDefaultSttModel("fireworks")).toBe("whisper-v3-turbo");
+  });
+
+  test("does not invent a model for custom or Anarlog providers", () => {
+    expect(getDefaultSttModel("custom")).toBeUndefined();
+    expect(getDefaultSttModel("anarlog")).toBeUndefined();
+  });
+});
 
 describe("getPreferredProviderModel", () => {
   test("returns the remembered model when it is still available", () => {
@@ -100,5 +131,110 @@ describe("getPreferredProviderModel", () => {
         allowSavedModelWithoutChoices: true,
       }),
     ).toBe("whisper-large-v3");
+  });
+});
+
+describe("getDefaultSttSelection", () => {
+  test("keeps the active configured provider and repairs its missing model", () => {
+    expect(
+      getDefaultSttSelection(
+        ["deepgram", "assemblyai"],
+        {
+          deepgram: {
+            configured: true,
+            models: [{ id: "nova-3-general" }],
+          },
+          assemblyai: {
+            configured: true,
+            models: [{ id: "universal-3-pro" }],
+          },
+        },
+        "deepgram",
+      ),
+    ).toEqual({ provider: "deepgram", model: "nova-3-general" });
+  });
+
+  test("skips configured providers that have no available model", () => {
+    expect(
+      getDefaultSttSelection(["anarlog", "deepgram"], {
+        anarlog: {
+          configured: true,
+          models: [{ id: "cloud", isDownloaded: false }],
+        },
+        deepgram: {
+          configured: true,
+          models: [{ id: "nova-3-general" }],
+        },
+      }),
+    ).toEqual({ provider: "deepgram", model: "nova-3-general" });
+  });
+
+  test("returns no selection when nothing is available", () => {
+    expect(
+      getDefaultSttSelection(["anarlog"], {
+        anarlog: {
+          configured: true,
+          models: [{ id: "cloud", isDownloaded: false }],
+        },
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("getLanguageSupportIssue", () => {
+  test("returns the languages the model cannot transcribe", async () => {
+    const issue = await getLanguageSupportIssue(
+      ["en", "ko", "ja"],
+      async (languages) => !languages.includes("ko"),
+    );
+
+    expect(issue).toEqual({ unsupportedLanguages: ["ko"] });
+  });
+
+  test("distinguishes an unsupported combination from unsupported languages", async () => {
+    const issue = await getLanguageSupportIssue(
+      ["en", "ko"],
+      async (languages) => languages.length === 1,
+    );
+
+    expect(issue).toEqual({ unsupportedLanguages: [] });
+  });
+
+  test("returns no issue when the full selection is supported", async () => {
+    const issue = await getLanguageSupportIssue(["en", "ko"], async () => true);
+
+    expect(issue).toBeNull();
+  });
+});
+
+describe("resolveLiveLanguageSupportMode", () => {
+  test("uses provider live support for hosted models", () => {
+    expect(
+      resolveLiveLanguageSupportMode({
+        isOnDeviceModel: false,
+        useLiveOnDeviceModel: false,
+        liveSupported: true,
+      }),
+    ).toBe(true);
+  });
+
+  test("keeps batch-only on-device models in batch mode", () => {
+    expect(
+      resolveLiveLanguageSupportMode({
+        isOnDeviceModel: true,
+        useLiveOnDeviceModel: false,
+        liveSupported: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("requires provider live support for realtime on-device models", () => {
+    expect(
+      resolveLiveLanguageSupportMode({
+        isOnDeviceModel: true,
+        useLiveOnDeviceModel: true,
+        liveSupported: false,
+      }),
+    ).toBe(false);
   });
 });

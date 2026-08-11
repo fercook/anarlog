@@ -19,7 +19,7 @@ async fn run_passthrough_live_test<A: RealtimeSttAdapter>(provider: Provider) {
     let sample_rate = provider.default_live_sample_rate();
     let params = owhisper_interface::ListenParams {
         model: Some(provider.default_live_model().to_string()),
-        languages: vec![hypr_language::ISO639::En.into()],
+        languages: vec![anlg_language::ISO639::En.into()],
         sample_rate,
         ..Default::default()
     };
@@ -31,12 +31,13 @@ async fn run_passthrough_live_test<A: RealtimeSttAdapter>(provider: Provider) {
         .api_base(format!("http://{}", addr))
         .params(params)
         .build_single()
-        .await;
+        .await
+        .unwrap();
 
     run_live_stream_test(client, provider_name, sample_rate).await;
 }
 
-async fn run_hyprnote_live_test(provider: Provider) {
+async fn run_anarlog_live_test(provider: Provider) {
     let _ = tracing_subscriber::fmt::try_init();
 
     let api_key = std::env::var(provider.env_key_name())
@@ -46,24 +47,25 @@ async fn run_hyprnote_live_test(provider: Provider) {
     let sample_rate = provider.default_live_sample_rate();
     let params = owhisper_interface::ListenParams {
         model: Some(provider.default_live_model().to_string()),
-        languages: vec![hypr_language::ISO639::En.into()],
+        languages: vec![anlg_language::ISO639::En.into()],
         sample_rate,
         custom_query: Some(
-            [("provider".to_string(), "hyprnote".to_string())]
+            [("provider".to_string(), "anarlog".to_string())]
                 .into_iter()
                 .collect(),
         ),
         ..Default::default()
     };
 
-    let provider_name = format!("hyprnote:{}", provider);
+    let provider_name = format!("anarlog:{}", provider);
 
     let client = ListenClient::builder()
-        .adapter::<owhisper_client::HyprnoteAdapter>()
+        .adapter::<owhisper_client::AnarlogAdapter>()
         .api_base(format!("http://{}", addr))
         .params(params)
         .build_single()
-        .await;
+        .await
+        .unwrap();
 
     run_live_stream_test(client, provider_name, sample_rate).await;
 }
@@ -118,7 +120,7 @@ async fn run_passthrough_batch_test(provider: Provider) {
     let addr = start_server_with_provider(provider, api_key).await;
 
     let audio_bytes =
-        std::fs::read(hypr_data::english_1::AUDIO_PATH).expect("failed to read test audio file");
+        std::fs::read(anlg_data::english_1::AUDIO_PATH).expect("failed to read test audio file");
 
     let model = provider.default_batch_model();
     let url = format!(
@@ -129,7 +131,7 @@ async fn run_passthrough_batch_test(provider: Provider) {
     run_batch_request(url, audio_bytes, format!("passthrough:{}", provider)).await;
 }
 
-async fn run_hyprnote_batch_test(provider: Provider) {
+async fn run_anarlog_batch_test(provider: Provider) {
     let _ = tracing_subscriber::fmt::try_init();
 
     let api_key = std::env::var(provider.env_key_name())
@@ -137,15 +139,15 @@ async fn run_hyprnote_batch_test(provider: Provider) {
     let addr = start_server_with_provider(provider, api_key).await;
 
     let audio_bytes =
-        std::fs::read(hypr_data::english_1::AUDIO_PATH).expect("failed to read test audio file");
+        std::fs::read(anlg_data::english_1::AUDIO_PATH).expect("failed to read test audio file");
 
     let model = provider.default_batch_model();
     let url = format!(
-        "http://{}/listen?provider=hyprnote&model={}&language=en",
+        "http://{}/listen?provider=anarlog&model={}&language=en",
         addr, model
     );
 
-    run_batch_request(url, audio_bytes, format!("hyprnote:{}", provider)).await;
+    run_batch_request(url, audio_bytes, format!("anarlog:{}", provider)).await;
 }
 
 async fn run_batch_request(url: String, audio_bytes: Vec<u8>, provider_name: String) {
@@ -199,12 +201,12 @@ macro_rules! passthrough_live_test {
     };
 }
 
-macro_rules! hyprnote_live_test {
+macro_rules! anarlog_live_test {
     ($name:ident, $provider:expr) => {
         #[ignore]
         #[tokio::test]
         async fn $name() {
-            run_hyprnote_live_test($provider).await;
+            run_anarlog_live_test($provider).await;
         }
     };
 }
@@ -219,12 +221,12 @@ macro_rules! passthrough_batch_test {
     };
 }
 
-macro_rules! hyprnote_batch_test {
+macro_rules! anarlog_batch_test {
     ($name:ident, $provider:expr) => {
         #[ignore]
         #[tokio::test]
         async fn $name() {
-            run_hyprnote_batch_test($provider).await;
+            run_anarlog_batch_test($provider).await;
         }
     };
 }
@@ -257,6 +259,12 @@ mod passthrough {
             owhisper_client::ElevenLabsAdapter,
             Provider::ElevenLabs
         );
+        passthrough_live_test!(mistral, owhisper_client::MistralAdapter, Provider::Mistral);
+        passthrough_live_test!(
+            dashscope,
+            owhisper_client::DashScopeAdapter,
+            Provider::DashScope
+        );
     }
 
     pub mod batch {
@@ -269,32 +277,36 @@ mod passthrough {
         passthrough_batch_test!(fireworks, Provider::Fireworks);
         passthrough_batch_test!(openai, Provider::OpenAI);
         passthrough_batch_test!(elevenlabs, Provider::ElevenLabs);
+        passthrough_batch_test!(mistral, Provider::Mistral);
     }
 }
 
-mod hyprnote {
+mod anarlog {
     use super::*;
 
     pub mod live {
         use super::*;
 
-        hyprnote_live_test!(deepgram, Provider::Deepgram);
-        hyprnote_live_test!(assemblyai, Provider::AssemblyAI);
-        hyprnote_live_test!(soniox, Provider::Soniox);
-        hyprnote_live_test!(gladia, Provider::Gladia);
-        hyprnote_live_test!(fireworks, Provider::Fireworks);
-        hyprnote_live_test!(elevenlabs, Provider::ElevenLabs);
+        anarlog_live_test!(deepgram, Provider::Deepgram);
+        anarlog_live_test!(assemblyai, Provider::AssemblyAI);
+        anarlog_live_test!(soniox, Provider::Soniox);
+        anarlog_live_test!(gladia, Provider::Gladia);
+        anarlog_live_test!(fireworks, Provider::Fireworks);
+        anarlog_live_test!(elevenlabs, Provider::ElevenLabs);
+        anarlog_live_test!(mistral, Provider::Mistral);
+        anarlog_live_test!(dashscope, Provider::DashScope);
     }
 
     pub mod batch {
         use super::*;
 
-        hyprnote_batch_test!(deepgram, Provider::Deepgram);
-        hyprnote_batch_test!(assemblyai, Provider::AssemblyAI);
-        hyprnote_batch_test!(soniox, Provider::Soniox);
-        hyprnote_batch_test!(gladia, Provider::Gladia);
-        hyprnote_batch_test!(fireworks, Provider::Fireworks);
-        hyprnote_batch_test!(openai, Provider::OpenAI);
-        hyprnote_batch_test!(elevenlabs, Provider::ElevenLabs);
+        anarlog_batch_test!(deepgram, Provider::Deepgram);
+        anarlog_batch_test!(assemblyai, Provider::AssemblyAI);
+        anarlog_batch_test!(soniox, Provider::Soniox);
+        anarlog_batch_test!(gladia, Provider::Gladia);
+        anarlog_batch_test!(fireworks, Provider::Fireworks);
+        anarlog_batch_test!(openai, Provider::OpenAI);
+        anarlog_batch_test!(elevenlabs, Provider::ElevenLabs);
+        anarlog_batch_test!(mistral, Provider::Mistral);
     }
 }

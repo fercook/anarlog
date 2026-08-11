@@ -1,6 +1,12 @@
+import { i18n } from "@lingui/core";
 import { randomUUID } from "node:crypto";
 import * as React from "react";
 import { vi } from "vitest";
+
+// Compiled @lingui/core/macro calls hit the real global i18n; give it a
+// locale so untranslated messages fall back to their English source.
+i18n.load("en", {});
+i18n.activate("en");
 
 Object.defineProperty(globalThis.crypto, "randomUUID", { value: randomUUID });
 
@@ -50,10 +56,51 @@ vi.mock("@tauri-apps/api/path", () => ({
   sep: vi.fn().mockReturnValue("/"),
 }));
 
-vi.mock("@hypr/plugin-db", () => ({
+vi.mock("@anlg/plugin-db", () => ({
+  CLOUDSYNC_ACTIVITY_DEFERRED_ERROR: "cloudsync_activity_deferred",
+  beginCloudsyncActivity: vi.fn().mockResolvedValue(undefined),
+  endCloudsyncActivity: vi.fn().mockResolvedValue(undefined),
+  isCloudsyncActivityDeferredError: (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    return message === "cloudsync_activity_deferred";
+  },
+  bindCloudsyncAccount: vi.fn().mockResolvedValue(true),
+  configureCloudsyncToken: vi.fn().mockResolvedValue("configured"),
   execute: vi.fn().mockResolvedValue([]),
   executeProxy: vi.fn().mockResolvedValue({ rows: [] }),
-  subscribe: vi.fn().mockResolvedValue(() => {}),
+  executeTransaction: vi.fn().mockResolvedValue([]),
+  getE2eeIdentityStatus: vi.fn().mockResolvedValue({
+    configured: true,
+    keyId: "abcdefghijklmnopqrstuv",
+  }),
+  createE2eeIdentity: vi.fn(),
+  inspectE2eeRecoveryKey: vi
+    .fn()
+    .mockResolvedValue({ keyId: "abcdefghijklmnopqrstuv" }),
+  importE2eeIdentity: vi.fn(),
+  getCloudsyncStatus: vi.fn().mockResolvedValue({
+    cloudsync_enabled: true,
+    extension_loaded: true,
+    configured: false,
+    running: false,
+    network_initialized: false,
+    activity_paused: false,
+    last_sync: null,
+    last_sync_at_ms: null,
+    has_unsent_changes: null,
+    last_error: null,
+    last_error_kind: null,
+    consecutive_failures: 0,
+    deferred_for_capture: false,
+  }),
+  getMeeting: vi.fn(),
+  getMeetingTranscript: vi.fn(),
+  getRecurringMeetingHistory: vi.fn(),
+  listMeetings: vi.fn(),
+  subscribe: vi.fn().mockResolvedValue(() => Promise.resolve()),
+  suspendCloudsync: vi.fn().mockResolvedValue(undefined),
+  suspendCloudsyncAfterAuthLoss: vi.fn().mockResolvedValue(undefined),
+  suspendCloudsyncForSignOut: vi.fn().mockResolvedValue(undefined),
 }));
 
 function translate(
@@ -126,11 +173,11 @@ vi.mock("@lingui/react", () => ({
   useLingui: () => ({
     _: translate,
     t: translate,
-    i18n: { locale: "en" },
+    i18n: { _: translate, locale: "en" },
   }),
 }));
 
-vi.mock("@hypr/plugin-analytics", () => ({
+vi.mock("@anlg/plugin-analytics", () => ({
   commands: {
     event: vi.fn().mockResolvedValue({ status: "ok", data: null }),
     setProperties: vi.fn().mockResolvedValue({ status: "ok", data: null }),

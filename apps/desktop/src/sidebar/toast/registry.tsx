@@ -1,10 +1,12 @@
-import type { ServerStatus } from "@hypr/plugin-local-stt";
+import type { ServerStatus } from "@anlg/plugin-local-stt";
 
 import type { DownloadProgress, ToastCondition, ToastType } from "./types";
 
+import type { DesktopUpdateControl } from "~/main/update-banner";
 import type { DevtoolsToastPreview } from "~/store/zustand/devtools-toast-preview";
 
 const ANARLOG_ICON_SRC = "/assets/anarlog-icon.png";
+const DESKTOP_UPDATE_TOAST_PREFIX = "desktop-update:";
 
 type ToastRegistryEntry = {
   toast: ToastType;
@@ -21,12 +23,14 @@ type ToastRegistryParams = {
   isAiTranscriptionTabActive: boolean;
   isAiIntelligenceTabActive: boolean;
   isBatchTranscribingInActiveTranscriptTab: boolean;
+  isLiveMeetingActive: boolean;
+  cloudsyncInitialSyncToastId: string | null;
   hasActiveDownload: boolean;
-  downloadProgress: number | null;
   downloadingModel: string | null;
   activeDownloads: DownloadProgress[];
   localSttStatus: ServerStatus | null;
   isLocalSttModel: boolean;
+  update: DesktopUpdateControl;
   onSignIn: () => void | Promise<void>;
   onOpenLLMSettings: () => void;
   onOpenSTTSettings: () => void;
@@ -49,12 +53,14 @@ export function createToastRegistry({
   isAiTranscriptionTabActive,
   isAiIntelligenceTabActive,
   isBatchTranscribingInActiveTranscriptTab,
+  isLiveMeetingActive,
+  cloudsyncInitialSyncToastId,
   hasActiveDownload,
-  downloadProgress,
   downloadingModel,
   activeDownloads,
   localSttStatus,
   isLocalSttModel,
+  update,
   onSignIn,
   onOpenLLMSettings,
   onOpenSTTSettings,
@@ -63,6 +69,13 @@ export function createToastRegistry({
     activeDownloads.length === 1 && downloadingModel
       ? `Downloading ${downloadingModel}`
       : `Downloading ${activeDownloads.length} models`;
+  const hasUsableSttConfigured =
+    hasSttConfigured &&
+    (isAuthLoading || isAuthenticated || !hasProSttConfigured);
+  const hasUsableLlmConfigured =
+    hasLLMConfigured &&
+    (isAuthLoading || isAuthenticated || !hasProLlmConfigured);
+  const updateToast = createDesktopUpdateToast(update);
 
   // order matters
   return [
@@ -70,18 +83,35 @@ export function createToastRegistry({
       toast: {
         id: "downloading-model",
         description: downloadTitle,
-        dismissible: false,
-        progress:
-          activeDownloads.length === 1 ? (downloadProgress ?? 0) : undefined,
-        downloads: activeDownloads.length > 1 ? activeDownloads : undefined,
+        lifecycle: { type: "condition-bound" },
+        loading: true,
       },
       condition: () => hasActiveDownload,
     },
     {
       toast: {
+        id: cloudsyncInitialSyncToastId ?? "cloudsync-initial-sync",
+        description: "Syncing your data in the background...",
+        lifecycle: { type: "condition-bound" },
+        loading: true,
+      },
+      condition: () => cloudsyncInitialSyncToastId !== null,
+    },
+    ...(updateToast
+      ? [
+          {
+            toast: updateToast,
+            // Never show update prompts mid-meeting; they resurface after.
+            condition: () => !isLiveMeetingActive,
+          },
+        ]
+      : []),
+    {
+      toast: {
         id: "local-stt-loading",
         description: "Starting transcription...",
-        dismissible: false,
+        lifecycle: { type: "condition-bound" },
+        loading: true,
       },
       condition: () =>
         isLocalSttModel &&
@@ -97,7 +127,7 @@ export function createToastRegistry({
           label: "Settings",
           onClick: onOpenSTTSettings,
         },
-        dismissible: true,
+        lifecycle: { type: "condition-bound" },
         variant: "error",
       },
       condition: () =>
@@ -108,15 +138,38 @@ export function createToastRegistry({
     },
     {
       toast: {
+        id: "sign-in-benefits",
+        icon: (
+          <img
+            src={ANARLOG_ICON_SRC}
+            alt="Anarlog"
+            className="size-5 object-contain object-center"
+          />
+        ),
+        description: "Sign in to get the most out of Anarlog",
+        primaryAction: {
+          label: "Sign in",
+          onClick: onSignIn,
+        },
+        lifecycle: {
+          type: "persistent",
+          dismissal: "permanent",
+          dismissalId: "auth-promotion",
+        },
+      },
+      condition: () => !isAuthLoading && !isAuthenticated,
+    },
+    {
+      toast: {
         id: "missing-stt",
-        description: "Transcription model needed",
+        description: "Transcription provider needed",
         primaryAction: {
           label: "Add",
           onClick: onOpenSTTSettings,
         },
-        dismissible: false,
+        lifecycle: { type: "condition-bound" },
       },
-      condition: () => !hasSttConfigured && !isAiTranscriptionTabActive,
+      condition: () => !hasUsableSttConfigured && !isAiTranscriptionTabActive,
     },
     {
       toast: {
@@ -126,33 +179,12 @@ export function createToastRegistry({
           label: "Add",
           onClick: onOpenLLMSettings,
         },
-        dismissible: true,
+        lifecycle: { type: "condition-bound" },
       },
       condition: () =>
-        hasSttConfigured && !hasLLMConfigured && !isAiIntelligenceTabActive,
-    },
-    {
-      toast: {
-        id: "pro-requires-login",
-        icon: (
-          <img
-            src={ANARLOG_ICON_SRC}
-            alt="Anarlog Pro"
-            className="size-5 object-contain object-center"
-          />
-        ),
-        description: "Sign in required",
-        primaryAction: {
-          label: "Sign in",
-          onClick: onSignIn,
-        },
-        dismissible: true,
-      },
-      // suppress until auth resolves to avoid flash on startup
-      condition: () =>
-        !isAuthLoading &&
-        !isAuthenticated &&
-        (hasProSttConfigured || hasProLlmConfigured),
+        hasUsableSttConfigured &&
+        !hasUsableLlmConfigured &&
+        !isAiIntelligenceTabActive,
     },
     {
       toast: {
@@ -162,7 +194,11 @@ export function createToastRegistry({
           label: "Upgrade",
           onClick: onSignIn,
         },
-        dismissible: true,
+        lifecycle: {
+          type: "persistent",
+          dismissal: "permanent",
+          dismissalId: "auth-promotion",
+        },
       },
       // suppress until auth resolves to avoid flash on startup
       condition: () =>
@@ -176,12 +212,77 @@ export function createToastRegistry({
   ];
 }
 
+export function createDesktopUpdateToast(
+  update: DesktopUpdateControl,
+): ToastType | null {
+  if (!update.status || !update.version) {
+    return null;
+  }
+
+  const id = `${DESKTOP_UPDATE_TOAST_PREFIX}${update.version}`;
+  const busy =
+    update.status === "downloading" ||
+    update.downloadStarting ||
+    update.installing;
+
+  if (update.status === "ready") {
+    return {
+      // A new ID prevents Sonner from retaining the loading state used while
+      // this update was downloading.
+      id: `${id}:ready`,
+      description: `Anarlog ${update.version} is ready to install`,
+      primaryAction: busy
+        ? undefined
+        : { label: "Restart", onClick: update.installUpdate },
+      lifecycle: { type: "persistent", dismissal: "session" },
+    };
+  }
+
+  if (update.status === "downloading" || update.downloadStarting) {
+    const progress =
+      update.progress === null
+        ? ""
+        : ` (${Math.round(update.progress * 100)}%)`;
+    return {
+      id: `${id}:downloading`,
+      description: `Downloading Anarlog ${update.version}${progress}`,
+      lifecycle: { type: "condition-bound" },
+      loading: true,
+    };
+  }
+
+  if (update.status === "failed") {
+    return {
+      id: `${id}:failed`,
+      description: update.errorMessage || "The update download failed",
+      primaryAction: busy
+        ? undefined
+        : { label: "Retry", onClick: update.downloadUpdate },
+      lifecycle: { type: "persistent", dismissal: "session" },
+      variant: "error",
+    };
+  }
+
+  return {
+    id: `${id}:available`,
+    description: `Anarlog ${update.version} is available`,
+    primaryAction: busy
+      ? undefined
+      : { label: "Download", onClick: update.downloadUpdate },
+    lifecycle: { type: "persistent", dismissal: "day" },
+  };
+}
+
 export function getToastToShow(
   registry: ToastRegistryEntry[],
-  isDismissed: (id: string) => boolean,
+  isDismissed: (toast: ToastType) => boolean,
 ): ToastType | null {
   for (const entry of registry) {
-    if (entry.condition() && !isDismissed(entry.toast.id)) {
+    if (
+      entry.condition() &&
+      (entry.toast.lifecycle.type === "condition-bound" ||
+        !isDismissed(entry.toast))
+    ) {
       return entry.toast;
     }
   }
@@ -203,17 +304,17 @@ export function createDevtoolsToastPreview({
           label: "Add",
           onClick: onOpenLLMSettings,
         },
-        dismissible: true,
+        lifecycle: { type: "condition-bound" },
       };
     case "transcription-model":
       return {
         id: "devtools-missing-stt",
-        description: "Transcription model needed",
+        description: "Transcription provider needed",
         primaryAction: {
           label: "Add",
           onClick: onOpenSTTSettings,
         },
-        dismissible: false,
+        lifecycle: { type: "condition-bound" },
       };
     case "transcription-error":
       return {
@@ -223,15 +324,15 @@ export function createDevtoolsToastPreview({
           label: "Settings",
           onClick: onOpenSTTSettings,
         },
-        dismissible: true,
+        lifecycle: { type: "condition-bound" },
         variant: "error",
       };
     case "download":
       return {
         id: "devtools-downloading-model",
         description: "Downloading model",
-        dismissible: false,
-        progress: 42,
+        lifecycle: { type: "condition-bound" },
+        loading: true,
       };
     case "pro":
       return {
@@ -241,7 +342,7 @@ export function createDevtoolsToastPreview({
           label: "Upgrade",
           onClick: onSignIn,
         },
-        dismissible: true,
+        lifecycle: { type: "persistent", dismissal: "session" },
       };
   }
 }

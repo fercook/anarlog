@@ -12,9 +12,17 @@ import {
 } from "react";
 import WaveSurfer from "wavesurfer.js";
 
-import { commands as fsSyncCommands } from "@hypr/plugin-fs-sync";
+import { commands as fsSyncCommands } from "@anlg/plugin-fs-sync";
 
-import { useBillingAccess } from "~/auth/billing";
+import { configureCenteredPlayback } from "./playback";
+
+import { useBillingAccess } from "~/auth/billing-context";
+import {
+  isSessionAudioIdle,
+  subscribeToSessionAudioRetention,
+} from "~/services/audio-retention";
+import { deleteSessionAudio } from "~/session/attachments";
+import { useMountEffect } from "~/shared/hooks/useMountEffect";
 
 const TIME_UPDATE_STEP_SECONDS = 0.1;
 
@@ -75,6 +83,7 @@ interface AudioPlayerContextValue {
   stop: () => void;
   seek: (sec: number) => void;
   audioExists: boolean;
+  audioExistsResolved: boolean;
   playbackRate: number;
   setPlaybackRate: (rate: number) => void;
   deleteRecording: () => Promise<void>;
@@ -96,7 +105,7 @@ export function useAudioTime(): TimeSnapshot {
   return useSyncExternalStore(timeStore.subscribe, timeStore.getSnapshot);
 }
 
-export function useAudioExists(sessionId: string): boolean {
+function useAudioExistence(sessionId: string) {
   const audioExists = useQuery({
     queryKey: ["audio", sessionId, "exist"],
     queryFn: () => fsSyncCommands.audioExist(sessionId),
@@ -108,7 +117,14 @@ export function useAudioExists(sessionId: string): boolean {
     },
   });
 
-  return audioExists.data ?? false;
+  return {
+    audioExists: audioExists.data ?? false,
+    audioExistsResolved: audioExists.isSuccess,
+  };
+}
+
+export function useAudioExists(sessionId: string): boolean {
+  return useAudioExistence(sessionId).audioExists;
 }
 
 export function AudioPlayerProvider({
@@ -128,7 +144,9 @@ export function AudioPlayerProvider({
   const [playbackRate, setPlaybackRateState] = useState(1);
   const timeStoreRef = useRef(new TimeStore());
   const stopRequestedRef = useRef(false);
-  const audioExistsValue = useAudioExists(sessionId);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const { audioExists: audioExistsValue, audioExistsResolved } =
+    useAudioExistence(sessionId);
 
   const registerContainer = useCallback((el: HTMLDivElement | null) => {
     setContainer((prev) => (prev === el ? prev : el));
@@ -143,11 +161,12 @@ export function AudioPlayerProvider({
     store.reset();
     stopRequestedRef.current = false;
 
-    const audio = new Audio(url);
     let lastReportedTime = 0;
 
     const ws = WaveSurfer.create({
       container,
+      url,
+      backend: "WebAudio",
       height: 24,
       waveColor: "#e5e5e5",
       progressColor: "#a8a8a8",
@@ -157,7 +176,6 @@ export function AudioPlayerProvider({
       barGap: 2,
       barRadius: 2,
       barHeight: 1,
-      media: audio,
       dragToSeek: true,
       normalize: true,
       splitChannels: [
@@ -165,6 +183,8 @@ export function AudioPlayerProvider({
         { waveColor: "#d5dde8", progressColor: "#a3b3c9", overlay: true },
       ],
     });
+    const audioContext = configureCenteredPlayback(ws.getMediaElement());
+    audioContextRef.current = audioContext;
 
     const syncCurrentTime = (currentTime: number, force = false) => {
       if (
@@ -241,29 +261,39 @@ export function AudioPlayerProvider({
 
     return () => {
       stopRequestedRef.current = false;
+      if (audioContextRef.current === audioContext) {
+        audioContextRef.current = null;
+      }
       ws.destroy();
       setWavesurfer(null);
-      audio.pause();
-      audio.src = "";
-      audio.load();
+      void audioContext?.close();
     };
   }, [container, url]);
 
-  const start = useCallback(() => {
-    if (wavesurfer) {
-      void wavesurfer.play();
+  const play = useCallback(() => {
+    if (!wavesurfer) {
+      return;
     }
+
+    const audioContext = audioContextRef.current;
+    if (audioContext?.state === "suspended") {
+      void audioContext
+        .resume()
+        .then(() => {
+          if (audioContextRef.current === audioContext) {
+            return wavesurfer.play();
+          }
+        })
+        .catch(() => {});
+      return;
+    }
+
+    void wavesurfer.play();
   }, [wavesurfer]);
 
   const pause = useCallback(() => {
     if (wavesurfer) {
       wavesurfer.pause();
-    }
-  }, [wavesurfer]);
-
-  const resume = useCallback(() => {
-    if (wavesurfer) {
-      void wavesurfer.play();
     }
   }, [wavesurfer]);
 
@@ -278,6 +308,41 @@ export function AudioPlayerProvider({
       }
     }
   }, [wavesurfer]);
+
+  const markAudioDeleted = useCallback(() => {
+    timeStoreRef.current.reset();
+    queryClient.setQueryData(["audio", sessionId, "exist"], {
+      status: "ok",
+      data: false,
+    });
+    queryClient.setQueryData(["audio", sessionId, "url"], {
+      status: "error",
+      error: "audio_path_not_found",
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ["audio", sessionId, "exist"],
+    });
+    void queryClient.invalidateQueries({
+      queryKey: ["audio", sessionId, "url"],
+    });
+  }, [queryClient, sessionId]);
+  const retentionHandlerRef = useRef(
+    (_event: { phase: "deleting" | "deleted"; sessionId: string }) => {},
+  );
+  retentionHandlerRef.current = (event) => {
+    if (event.sessionId !== sessionId) {
+      return;
+    }
+    stop();
+    if (event.phase === "deleted") {
+      markAudioDeleted();
+    }
+  };
+  useMountEffect(() =>
+    subscribeToSessionAudioRetention((event) =>
+      retentionHandlerRef.current(event),
+    ),
+  );
 
   const seek = useCallback(
     (timeInSeconds: number) => {
@@ -316,21 +381,15 @@ export function AudioPlayerProvider({
 
   const deleteRecordingMutation = useMutation({
     mutationFn: async () => {
-      const result = await fsSyncCommands.audioDelete(sessionId);
-      if (result.status === "error") {
-        throw new Error(result.error);
+      stop();
+      const deleted = await deleteSessionAudio(sessionId, () =>
+        isSessionAudioIdle(sessionId),
+      );
+      if (!deleted) {
+        throw new Error("audio_session_busy");
       }
     },
-    onSuccess: () => {
-      stop();
-      timeStoreRef.current.reset();
-      void queryClient.invalidateQueries({
-        queryKey: ["audio", sessionId, "exist"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["audio", sessionId, "url"],
-      });
-    },
+    onSuccess: markAudioDeleted,
   });
 
   const value = useMemo<AudioPlayerContextValue>(
@@ -339,12 +398,13 @@ export function AudioPlayerProvider({
       wavesurfer,
       state,
       timeStore: timeStoreRef.current,
-      start,
+      start: play,
       pause,
-      resume,
+      resume: play,
       stop,
       seek,
       audioExists: audioExistsValue,
+      audioExistsResolved,
       playbackRate,
       setPlaybackRate,
       deleteRecording: deleteRecordingMutation.mutateAsync,
@@ -354,12 +414,12 @@ export function AudioPlayerProvider({
       registerContainer,
       wavesurfer,
       state,
-      start,
+      play,
       pause,
-      resume,
       stop,
       seek,
       audioExistsValue,
+      audioExistsResolved,
       playbackRate,
       setPlaybackRate,
       deleteRecordingMutation.mutateAsync,

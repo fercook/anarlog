@@ -7,6 +7,11 @@ use std::{
     task::{Context, Poll},
 };
 
+use anlg_audio_chunking::{SpeechChunkExt, SpeechChunkingConfig};
+use anlg_audio_interface::AsyncSource;
+use anlg_model_manager::{ModelManager, ModelManagerBuilder};
+use anlg_transcribe_core::TARGET_SAMPLE_RATE;
+use anlg_ws_utils::ConnectionManager;
 use axum::{
     body::Body,
     extract::{FromRequestParts, ws::WebSocketUpgrade},
@@ -14,14 +19,9 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures_util::{SinkExt, Stream, StreamExt, stream::poll_fn};
-use hypr_audio_chunking::{SpeechChunkExt, SpeechChunkingConfig};
-use hypr_audio_interface::AsyncSource;
-use hypr_model_manager::{ModelManager, ModelManagerBuilder};
-use hypr_transcribe_core::TARGET_SAMPLE_RATE;
-use hypr_ws_utils::ConnectionManager;
 use owhisper_interface::stream::StreamResponse;
 use owhisper_interface::{ControlMessage, ListenParams};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tower::Service;
 
 use super::batch;
@@ -36,12 +36,14 @@ use super::{
 
 pub const LISTEN_PATH: &str = "/v1/listen";
 pub const HEALTH_PATH: &str = "/health";
+const MAX_WEBSOCKET_CHANNELS: usize = 2;
 
 #[derive(Clone)]
 pub struct TranscribeService {
     model_path: PathBuf,
-    manager: ModelManager<hypr_whisper_local::LoadedWhisper>,
+    manager: ModelManager<anlg_whisper_local::LoadedWhisper>,
     connection_manager: ConnectionManager,
+    batch_admission: Arc<Semaphore>,
 }
 
 impl TranscribeService {
@@ -94,6 +96,7 @@ impl TranscribeServiceBuilder {
             model_path,
             manager,
             connection_manager: self.connection_manager.unwrap_or_default(),
+            batch_admission: batch::http_batch_admission(),
         }
     }
 }
@@ -111,6 +114,7 @@ impl Service<Request<Body>> for TranscribeService {
         let model_path = self.model_path.clone();
         let manager = self.manager.clone();
         let connection_manager = self.connection_manager.clone();
+        let batch_admission = Arc::clone(&self.batch_admission);
 
         Box::pin(async move {
             let is_ws = req
@@ -128,6 +132,10 @@ impl Service<Request<Body>> for TranscribeService {
             };
 
             if is_ws {
+                let total_channels = match websocket_channel_count(&params) {
+                    Ok(total_channels) => total_channels,
+                    Err(error) => return Ok((StatusCode::BAD_REQUEST, error).into_response()),
+                };
                 let model = match manager.get(None).await {
                     Ok(model) => model,
                     Err(error) => {
@@ -152,10 +160,30 @@ impl Service<Request<Body>> for TranscribeService {
                 let guard = connection_manager.acquire_connection();
                 Ok(ws_upgrade
                     .on_upgrade(move |socket| async move {
-                        handle_websocket(socket, params, metadata, guard, model, manager).await;
+                        handle_websocket(
+                            socket,
+                            params,
+                            total_channels,
+                            metadata,
+                            guard,
+                            model,
+                            manager,
+                        )
+                        .await;
                     })
                     .into_response())
             } else {
+                let permit = match batch::try_acquire_http_batch_permit(batch_admission) {
+                    Some(permit) => permit,
+                    None => {
+                        return Ok(
+                            match batch::drain_rejected_batch_audio(req.into_body()).await {
+                                Ok(()) => batch::batch_busy_response(),
+                                Err(response) => response,
+                            },
+                        );
+                    }
+                };
                 let content_type = req
                     .headers()
                     .get("content-type")
@@ -168,37 +196,40 @@ impl Service<Request<Body>> for TranscribeService {
                     .and_then(|value| value.to_str().ok())
                     .unwrap_or("")
                     .to_string();
-                let body = match axum::body::to_bytes(req.into_body(), 100 * 1024 * 1024).await {
-                    Ok(body) => body,
-                    Err(error) => {
-                        return Ok((StatusCode::BAD_REQUEST, error.to_string()).into_response());
-                    }
-                };
+                let audio_file =
+                    match batch::spool_batch_audio(req.into_body(), &content_type).await {
+                        Ok(audio_file) => audio_file,
+                        Err(response) => return Ok(response),
+                    };
 
-                if body.is_empty() {
+                if audio_file.is_empty() {
                     return Ok((StatusCode::BAD_REQUEST, "request body is empty").into_response());
                 }
 
                 if accept.contains("text/event-stream") {
                     Ok(
-                        batch::handle_batch_sse(
-                            body,
-                            &content_type,
-                            &params,
-                            &manager,
-                            &model_path,
-                        )
-                        .await,
+                        batch::handle_batch_sse(audio_file, &params, &manager, &model_path, permit)
+                            .await,
                     )
                 } else {
                     Ok(
-                        batch::handle_batch(body, &content_type, &params, &manager, &model_path)
+                        batch::handle_batch(audio_file, &params, &manager, &model_path, permit)
                             .await,
                     )
                 }
             }
         })
     }
+}
+
+fn websocket_channel_count(params: &ListenParams) -> Result<usize, String> {
+    let channel_count = (params.channels as usize).max(1);
+    if channel_count > MAX_WEBSOCKET_CHANNELS {
+        return Err(format!(
+            "whisper-local live transcription supports at most {MAX_WEBSOCKET_CHANNELS} audio channels; requested {channel_count}"
+        ));
+    }
+    Ok(channel_count)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -210,15 +241,15 @@ enum StopReason {
 async fn handle_websocket(
     socket: axum::extract::ws::WebSocket,
     params: ListenParams,
+    total_channels: usize,
     metadata: owhisper_interface::stream::Metadata,
-    guard: hypr_ws_utils::ConnectionGuard,
-    model: Arc<hypr_whisper_local::LoadedWhisper>,
-    manager: ModelManager<hypr_whisper_local::LoadedWhisper>,
+    guard: anlg_ws_utils::ConnectionGuard,
+    model: Arc<anlg_whisper_local::LoadedWhisper>,
+    manager: ModelManager<anlg_whisper_local::LoadedWhisper>,
 ) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
-    let total_channels = (params.channels as usize).max(1);
     let redemption_time = redemption_time(&params);
-    let languages: Vec<hypr_whisper::Language> = params
+    let languages: Vec<anlg_whisper::Language> = params
         .languages
         .iter()
         .filter_map(|lang| lang.clone().try_into().ok())
@@ -348,7 +379,7 @@ async fn handle_websocket(
                                         break;
                                     }
                                 } else {
-                                    let mixed = hypr_audio_utils::mix_audio_f32(&ch0, &ch1);
+                                    let mixed = anlg_audio_utils::mix_audio_f32(&ch0, &ch1);
                                     channel_audio_durations[0] += mixed.len() as f64 / TARGET_SAMPLE_RATE as f64;
                                     if !mixed.is_empty() && audio_txs[0].send(mixed).await.is_err() {
                                         send_ws_best_effort(
@@ -435,8 +466,8 @@ type TranscriptionStream =
 #[allow(clippy::type_complexity)]
 fn build_transcription_streams(
     total_channels: usize,
-    loaded_model: &hypr_whisper_local::LoadedWhisper,
-    languages: &[hypr_whisper::Language],
+    loaded_model: &anlg_whisper_local::LoadedWhisper,
+    languages: &[anlg_whisper::Language],
     redemption_time: std::time::Duration,
 ) -> Result<
     (
@@ -508,12 +539,12 @@ impl AsyncSource for ChannelAudioSource {
 struct TranscribeChannelStream<S> {
     channel_idx: usize,
     chunk_stream: S,
-    model: hypr_whisper_local::Whisper,
+    model: anlg_whisper_local::Whisper,
     pending: VecDeque<crate::service::Segment>,
 }
 
 impl<S> TranscribeChannelStream<S> {
-    fn new(channel_idx: usize, chunk_stream: S, model: hypr_whisper_local::Whisper) -> Self {
+    fn new(channel_idx: usize, chunk_stream: S, model: anlg_whisper_local::Whisper) -> Self {
         Self {
             channel_idx,
             chunk_stream,
@@ -525,7 +556,7 @@ impl<S> TranscribeChannelStream<S> {
 
 impl<S> Stream for TranscribeChannelStream<S>
 where
-    S: Stream<Item = Result<hypr_audio_chunking::AudioChunk, hypr_audio_chunking::Error>> + Unpin,
+    S: Stream<Item = Result<anlg_audio_chunking::AudioChunk, anlg_audio_chunking::Error>> + Unpin,
 {
     type Item = Result<(usize, crate::service::Segment), crate::Error>;
 
@@ -562,6 +593,7 @@ where
 mod tests {
     use super::*;
     use crate::service::build_metadata;
+    use tower::ServiceExt;
 
     #[test]
     fn health_and_listen_paths_are_stable() {
@@ -573,5 +605,53 @@ mod tests {
     fn metadata_uses_model_info() {
         let metadata = build_metadata(std::path::Path::new("/tmp/model.bin"));
         assert_eq!(metadata.model_info.arch, "whisper-local");
+    }
+
+    #[test]
+    fn websocket_rejects_channels_the_live_pipeline_cannot_feed() {
+        assert_eq!(
+            websocket_channel_count(&ListenParams {
+                channels: 0,
+                ..Default::default()
+            })
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            websocket_channel_count(&ListenParams {
+                channels: 2,
+                ..Default::default()
+            })
+            .unwrap(),
+            2
+        );
+        assert!(
+            websocket_channel_count(&ListenParams {
+                channels: 3,
+                ..Default::default()
+            })
+            .unwrap_err()
+            .contains("at most 2 audio channels")
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_channel_limit_is_checked_before_model_construction() {
+        let app = TranscribeService::builder()
+            .model_path(std::env::temp_dir().join("missing-whisper-model.bin"))
+            .build()
+            .into_router(|error: String| async move { (StatusCode::INTERNAL_SERVER_ERROR, error) });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/listen?channels=3")
+                    .header("upgrade", "websocket")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

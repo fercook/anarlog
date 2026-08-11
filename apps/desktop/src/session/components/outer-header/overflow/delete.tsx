@@ -1,13 +1,14 @@
 import { Trans } from "@lingui/react/macro";
-import { Loader2Icon, TrashIcon } from "lucide-react";
+import { CircleNotch, Trash } from "@phosphor-icons/react";
 import { useCallback } from "react";
 
-import { commands as analyticsCommands } from "@hypr/plugin-analytics";
-import { DropdownMenuItem } from "@hypr/ui/components/ui/dropdown-menu";
-import { cn } from "@hypr/utils";
+import { commands as analyticsCommands } from "@anlg/plugin-analytics";
+import { DropdownMenuItem } from "@anlg/ui/components/ui/dropdown-menu";
+import { cn } from "@anlg/utils";
 
 import { useAudioPlayer } from "~/audio-player";
 import { useDeleteSession } from "~/session/hooks/useDeleteSession";
+import { useSessionSummary } from "~/session/queries";
 import { useListener } from "~/stt/contexts";
 
 export function DeleteRecording({ sessionId }: { sessionId: string }) {
@@ -33,9 +34,9 @@ export function DeleteRecording({ sessionId }: { sessionId: string }) {
       ])}
     >
       {isDeletingRecording ? (
-        <Loader2Icon className="animate-spin" />
+        <CircleNotch className="animate-spin" />
       ) : (
-        <TrashIcon />
+        <Trash />
       )}
       <span>
         {isDeletingRecording ? (
@@ -50,15 +51,16 @@ export function DeleteRecording({ sessionId }: { sessionId: string }) {
 
 export function DeleteNote({ sessionId }: { sessionId: string }) {
   const deleteSession = useDeleteSession();
+  const title = useSessionSummary(sessionId)?.title;
 
   const handleDeleteNote = useCallback(() => {
-    deleteSession(sessionId);
+    deleteSession(sessionId, { title });
 
     void analyticsCommands.event({
       event: "session_deleted",
       includes_recording: true,
     });
-  }, [sessionId, deleteSession]);
+  }, [sessionId, deleteSession, title]);
 
   return (
     <DropdownMenuItem
@@ -68,7 +70,7 @@ export function DeleteNote({ sessionId }: { sessionId: string }) {
         "hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950/50 dark:hover:text-red-300",
       ])}
     >
-      <TrashIcon />
+      <Trash />
       <span>
         <Trans>Delete</Trans>
       </span>

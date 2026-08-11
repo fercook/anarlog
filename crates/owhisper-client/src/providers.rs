@@ -91,10 +91,28 @@ pub enum Provider {
     Mistral,
     #[strum(serialize = "pyannote")]
     Pyannote,
+    #[strum(serialize = "cohere")]
+    Cohere,
+    #[strum(serialize = "aws_transcribe")]
+    AwsTranscribe,
+    #[strum(serialize = "azure_speech")]
+    AzureSpeech,
+    #[strum(serialize = "google_cloud")]
+    GoogleCloud,
+    #[strum(serialize = "groq")]
+    Groq,
+    #[strum(serialize = "revai")]
+    RevAi,
+    #[strum(serialize = "speechmatics")]
+    Speechmatics,
+    #[strum(serialize = "together")]
+    Together,
+    #[strum(serialize = "xai")]
+    Xai,
 }
 
 impl Provider {
-    const ALL: [Provider; 12] = [
+    const ALL: [Provider; 21] = [
         Self::AquaVoice,
         Self::Cartesia,
         Self::Deepgram,
@@ -107,6 +125,15 @@ impl Provider {
         Self::DashScope,
         Self::Mistral,
         Self::Pyannote,
+        Self::Cohere,
+        Self::AwsTranscribe,
+        Self::AzureSpeech,
+        Self::GoogleCloud,
+        Self::Groq,
+        Self::RevAi,
+        Self::Speechmatics,
+        Self::Together,
+        Self::Xai,
     ];
 
     pub fn from_host(host: &str) -> Option<Self> {
@@ -161,6 +188,24 @@ impl Provider {
                 name: "Authorization",
                 prefix: Some("Bearer "),
             },
+            Self::Cohere => Auth::Header {
+                name: "Authorization",
+                prefix: Some("Bearer "),
+            },
+            Self::AzureSpeech => Auth::Header {
+                name: "Ocp-Apim-Subscription-Key",
+                prefix: None,
+            },
+            Self::AwsTranscribe
+            | Self::GoogleCloud
+            | Self::Groq
+            | Self::RevAi
+            | Self::Speechmatics
+            | Self::Together
+            | Self::Xai => Auth::Header {
+                name: "Authorization",
+                prefix: Some("Bearer "),
+            },
         }
     }
 
@@ -186,6 +231,15 @@ impl Provider {
             Self::DashScope => "dashscope-intl.aliyuncs.com",
             Self::Mistral => "api.mistral.ai",
             Self::Pyannote => "api.pyannote.ai",
+            Self::Cohere => "api.cohere.com",
+            Self::AwsTranscribe => "transcribe.us-east-1.amazonaws.com",
+            Self::AzureSpeech => "api.cognitive.microsoft.com",
+            Self::GoogleCloud => "speech.googleapis.com",
+            Self::Groq => "api.groq.com",
+            Self::RevAi => "api.rev.ai",
+            Self::Speechmatics => "eu1.asr.api.speechmatics.com",
+            Self::Together => "api.together.xyz",
+            Self::Xai => "api.x.ai",
         }
     }
 
@@ -203,6 +257,15 @@ impl Provider {
             Self::DashScope => "dashscope-intl.aliyuncs.com",
             Self::Mistral => "api.mistral.ai",
             Self::Pyannote => "api.pyannote.ai",
+            Self::Cohere => "api.cohere.com",
+            Self::AwsTranscribe => "transcribestreaming.us-east-1.amazonaws.com",
+            Self::AzureSpeech => "api.cognitive.microsoft.com",
+            Self::GoogleCloud => "speech.googleapis.com",
+            Self::Groq => "api.groq.com",
+            Self::RevAi => "api.rev.ai",
+            Self::Speechmatics => "eu2.rt.speechmatics.com",
+            Self::Together => "api.together.xyz",
+            Self::Xai => "api.x.ai",
         }
     }
 
@@ -220,6 +283,15 @@ impl Provider {
             Self::DashScope => "/api-ws/v1/realtime",
             Self::Mistral => "/v1/audio/transcriptions/realtime",
             Self::Pyannote => "/v1/diarize",
+            Self::Cohere => "",
+            Self::Xai => "/v1/stt",
+            Self::AwsTranscribe
+            | Self::AzureSpeech
+            | Self::GoogleCloud
+            | Self::Groq
+            | Self::RevAi
+            | Self::Speechmatics
+            | Self::Together => "",
         }
     }
 
@@ -237,6 +309,15 @@ impl Provider {
             Self::DashScope => None,
             Self::Mistral => None,
             Self::Pyannote => Some("https://api.pyannote.ai/v1"),
+            Self::Cohere => Some("https://api.cohere.com/v2"),
+            Self::AwsTranscribe
+            | Self::AzureSpeech
+            | Self::GoogleCloud
+            | Self::Groq
+            | Self::RevAi
+            | Self::Speechmatics
+            | Self::Together
+            | Self::Xai => None,
         }
     }
 
@@ -254,6 +335,15 @@ impl Provider {
             Self::DashScope => "https://dashscope-intl.aliyuncs.com",
             Self::Mistral => "https://api.mistral.ai/v1",
             Self::Pyannote => "https://api.pyannote.ai",
+            Self::Cohere => "https://api.cohere.com/v2",
+            Self::AwsTranscribe => "https://transcribe.us-east-1.amazonaws.com",
+            Self::AzureSpeech => "https://api.cognitive.microsoft.com",
+            Self::GoogleCloud => "https://speech.googleapis.com/v1",
+            Self::Groq => "https://api.groq.com/openai/v1",
+            Self::RevAi => "https://api.rev.ai/speechtotext/v1",
+            Self::Speechmatics => "https://eu1.asr.api.speechmatics.com/v2",
+            Self::Together => "https://api.together.xyz/v1",
+            Self::Xai => "https://api.x.ai/v1",
         }
     }
 
@@ -271,10 +361,25 @@ impl Provider {
             Self::DashScope => "aliyuncs.com",
             Self::Mistral => "mistral.ai",
             Self::Pyannote => "pyannote.ai",
+            Self::Cohere => "cohere.com",
+            Self::AwsTranscribe => "amazonaws.com",
+            Self::AzureSpeech => "cognitive.microsoft.com",
+            Self::GoogleCloud => "googleapis.com",
+            Self::Groq => "groq.com",
+            Self::RevAi => "rev.ai",
+            Self::Speechmatics => "speechmatics.com",
+            Self::Together => "together.xyz",
+            Self::Xai => "x.ai",
         }
     }
 
     pub fn is_host(&self, host: &str) -> bool {
+        if *self == Self::AzureSpeech
+            && (host == "cognitiveservices.azure.com"
+                || host.ends_with(".cognitiveservices.azure.com"))
+        {
+            return true;
+        }
         let domain = self.domain();
         host == domain || host.ends_with(&format!(".{}", domain))
     }
@@ -306,6 +411,15 @@ impl Provider {
             Self::DashScope => "DASHSCOPE_API_KEY",
             Self::Mistral => "MISTRAL_API_KEY",
             Self::Pyannote => "PYANNOTE_API_KEY",
+            Self::Cohere => "COHERE_API_KEY",
+            Self::AwsTranscribe => "AWS_TRANSCRIBE_API_KEY",
+            Self::AzureSpeech => "AZURE_SPEECH_API_KEY",
+            Self::GoogleCloud => "GOOGLE_CLOUD_ACCESS_TOKEN",
+            Self::Groq => "GROQ_API_KEY",
+            Self::RevAi => "REVAI_ACCESS_TOKEN",
+            Self::Speechmatics => "SPEECHMATICS_API_KEY",
+            Self::Together => "TOGETHER_API_KEY",
+            Self::Xai => "XAI_API_KEY",
         }
     }
 
@@ -317,12 +431,21 @@ impl Provider {
             Self::Soniox => "stt-rt-v5",
             Self::AssemblyAI => "u3-rt-pro",
             Self::Fireworks => "whisper-v3-turbo",
-            Self::OpenAI => "gpt-4o-transcribe",
+            Self::OpenAI => "gpt-live-transcribe",
             Self::Gladia => "solaria-1",
             Self::ElevenLabs => "scribe_v2_realtime",
             Self::DashScope => "qwen3-asr-flash-realtime",
             Self::Mistral => "voxtral-mini-transcribe-realtime-2602",
             Self::Pyannote => "parakeet-tdt-0.6b-v3",
+            Self::Cohere => "cohere-transcribe-03-2026",
+            Self::AwsTranscribe => "amazon-transcribe",
+            Self::AzureSpeech => "fast-transcription",
+            Self::GoogleCloud => "latest_long",
+            Self::Groq => "whisper-large-v3-turbo",
+            Self::RevAi => "machine",
+            Self::Speechmatics => "enhanced",
+            Self::Together => "openai/whisper-large-v3",
+            Self::Xai => "xai-stt",
         }
     }
 
@@ -330,7 +453,19 @@ impl Provider {
         match self {
             Self::AquaVoice => 16000,
             Self::OpenAI => 24000,
-            Self::ElevenLabs | Self::DashScope | Self::Mistral | Self::Pyannote => 16000,
+            Self::ElevenLabs
+            | Self::DashScope
+            | Self::Mistral
+            | Self::Pyannote
+            | Self::Cohere
+            | Self::AwsTranscribe
+            | Self::AzureSpeech
+            | Self::GoogleCloud
+            | Self::Groq
+            | Self::RevAi
+            | Self::Speechmatics
+            | Self::Together
+            | Self::Xai => 16000,
             _ => 16000,
         }
     }
@@ -343,12 +478,21 @@ impl Provider {
             Self::Soniox => "stt-async-v5",
             Self::AssemblyAI => "universal-3-pro",
             Self::Fireworks => "whisper-v3-turbo",
-            Self::OpenAI => "gpt-4o-transcribe-diarize",
+            Self::OpenAI => "gpt-transcribe",
             Self::Gladia => "solaria-1",
             Self::ElevenLabs => "scribe_v2",
             Self::DashScope => "qwen3-asr-flash-filetrans",
             Self::Mistral => "voxtral-mini-2602",
             Self::Pyannote => "parakeet-tdt-0.6b-v3",
+            Self::Cohere => "cohere-transcribe-03-2026",
+            Self::AwsTranscribe => "amazon-transcribe",
+            Self::AzureSpeech => "fast-transcription",
+            Self::GoogleCloud => "latest_long",
+            Self::Groq => "whisper-large-v3-turbo",
+            Self::RevAi => "machine",
+            Self::Speechmatics => "enhanced",
+            Self::Together => "openai/whisper-large-v3",
+            Self::Xai => "xai-stt",
         }
     }
 
@@ -356,14 +500,26 @@ impl Provider {
         match self {
             Self::Deepgram => &[("model", "nova-3-general"), ("mip_opt_out", "false")],
             Self::OpenAI => &[("intent", "transcription")],
-            Self::AquaVoice | Self::DashScope | Self::Mistral | Self::Pyannote => &[],
+            Self::AquaVoice
+            | Self::DashScope
+            | Self::Mistral
+            | Self::Pyannote
+            | Self::Cohere
+            | Self::AwsTranscribe
+            | Self::AzureSpeech
+            | Self::GoogleCloud
+            | Self::Groq
+            | Self::RevAi
+            | Self::Speechmatics
+            | Self::Together
+            | Self::Xai => &[],
             _ => &[],
         }
     }
 
     pub fn supports_native_multichannel(&self) -> bool {
         match self {
-            Self::Deepgram | Self::Gladia => true,
+            Self::Deepgram | Self::Gladia | Self::Xai => true,
             Self::AquaVoice
             | Self::Cartesia
             | Self::Soniox
@@ -373,8 +529,20 @@ impl Provider {
             | Self::ElevenLabs
             | Self::DashScope
             | Self::Mistral
-            | Self::Pyannote => false,
+            | Self::Pyannote
+            | Self::Cohere
+            | Self::AwsTranscribe
+            | Self::AzureSpeech
+            | Self::GoogleCloud
+            | Self::Groq
+            | Self::RevAi
+            | Self::Speechmatics
+            | Self::Together => false,
         }
+    }
+
+    pub fn preserves_batch_channel_identity(&self) -> bool {
+        matches!(self, Self::Deepgram | Self::AssemblyAI | Self::GoogleCloud)
     }
 
     pub fn control_message_types(&self) -> &'static [&'static str] {
@@ -388,7 +556,18 @@ impl Provider {
             Self::OpenAI => &[],
             Self::Gladia => &[],
             Self::ElevenLabs => &["commit"],
-            Self::DashScope | Self::Mistral | Self::Pyannote => &[],
+            Self::DashScope
+            | Self::Mistral
+            | Self::Pyannote
+            | Self::Cohere
+            | Self::AwsTranscribe
+            | Self::AzureSpeech
+            | Self::GoogleCloud
+            | Self::Groq
+            | Self::RevAi
+            | Self::Speechmatics
+            | Self::Together
+            | Self::Xai => &[],
         }
     }
 
@@ -407,7 +586,19 @@ impl Provider {
                     "words_accurate_timestamps": true
                 }
             })),
-            Self::AquaVoice | Self::Cartesia | Self::Mistral | Self::Pyannote => None,
+            Self::AquaVoice
+            | Self::Cartesia
+            | Self::Mistral
+            | Self::Pyannote
+            | Self::Cohere
+            | Self::AwsTranscribe
+            | Self::AzureSpeech
+            | Self::GoogleCloud
+            | Self::Groq
+            | Self::RevAi
+            | Self::Speechmatics
+            | Self::Together
+            | Self::Xai => None,
             _ => None,
         }
     }
@@ -417,7 +608,7 @@ impl Provider {
         msg: &owhisper_interface::ControlMessage,
     ) -> Option<String> {
         use crate::adapter::RealtimeSttAdapter;
-        use hypr_ws_client::client::Message;
+        use anlg_ws_client::client::Message;
         use owhisper_interface::ControlMessage;
 
         fn extract_text(msg: Message) -> Option<String> {
@@ -446,8 +637,17 @@ impl Provider {
             Self::Mistral => from_adapter(&crate::adapter::MistralAdapter::default(), msg),
             Self::AquaVoice => None,
             Self::Cartesia => from_adapter(&crate::adapter::CartesiaAdapter, msg),
-            Self::OpenAI => None,
+            Self::OpenAI => from_adapter(&crate::adapter::OpenAIAdapter::default(), msg),
             Self::Pyannote => None,
+            Self::Cohere => None,
+            Self::Xai => from_adapter(&crate::adapter::XaiAdapter::default(), msg),
+            Self::AwsTranscribe
+            | Self::AzureSpeech
+            | Self::GoogleCloud
+            | Self::Groq
+            | Self::RevAi
+            | Self::Speechmatics
+            | Self::Together => None,
         }
     }
 
@@ -464,7 +664,16 @@ impl Provider {
             | Self::Gladia
             | Self::DashScope
             | Self::Mistral
-            | Self::Pyannote => None,
+            | Self::Pyannote
+            | Self::Cohere
+            | Self::AwsTranscribe
+            | Self::AzureSpeech
+            | Self::GoogleCloud
+            | Self::Groq
+            | Self::RevAi
+            | Self::Speechmatics
+            | Self::Together
+            | Self::Xai => None,
         }
     }
 

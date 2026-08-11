@@ -1,73 +1,93 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { arch } from "@tauri-apps/plugin-os";
 import {
-  AlertTriangle,
   Check,
+  CircleNotch,
   FolderOpen,
-  Loader2,
-  Trash2,
-} from "lucide-react";
-import { useRef } from "react";
+  Trash,
+  Warning,
+} from "@phosphor-icons/react";
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { useRef, useState } from "react";
 
 import {
   commands as localSttCommands,
   type LocalModel,
-} from "@hypr/plugin-local-stt";
-import { commands as openerCommands } from "@hypr/plugin-opener2";
-import type { AIProviderStorage } from "@hypr/store";
-import { Input } from "@hypr/ui/components/ui/input";
+} from "@anlg/plugin-local-stt";
+import { commands as miscCommands } from "@anlg/plugin-misc";
+import { commands as openerCommands } from "@anlg/plugin-opener2";
+import type { AIProviderStorage } from "@anlg/store";
+import { Input } from "@anlg/ui/components/ui/input";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@hypr/ui/components/ui/select";
+} from "@anlg/ui/components/ui/select";
+import { sonnerToast } from "@anlg/ui/components/ui/toast";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from "@hypr/ui/components/ui/tooltip";
-import { cn } from "@hypr/utils";
+} from "@anlg/ui/components/ui/tooltip";
+import { cn } from "@anlg/utils";
 
 import { useSttSettings } from "./context";
 import { HealthStatusIndicator, useConnectionHealth } from "./health";
 import { LocalModelBackendBadge, LocalModelLabel } from "./model-icon";
-import { getPreferredProviderModel } from "./selection";
+import { recommendOnDeviceModel } from "./on-device-recommendation";
+import {
+  getDefaultSttSelection,
+  getLanguageSupportIssue,
+  resolveLiveLanguageSupportMode,
+} from "./selection";
 import {
   displayModelLabel,
-  displayModelTitle,
   formatModelSize,
   type ProviderId,
   PROVIDERS,
   sttModelQueries,
 } from "./shared";
 
-import { useBillingAccess } from "~/auth/billing";
+import { useBillingAccess } from "~/auth/billing-context";
 import { useNotifications } from "~/contexts/notifications";
 import { providerRowId, ProviderIconSlot } from "~/settings/ai/shared";
 import {
   getProviderSelectionBlockers,
   requiresEntitlement,
 } from "~/settings/ai/shared/eligibility";
+import { PersistAiSelection } from "~/settings/ai/shared/persist-selection";
+import {
+  getConfiguredProviderIds,
+  getConfiguredProviders,
+  getVisibleModelSelection,
+} from "~/settings/ai/shared/selection";
+import { getBaseLanguageDisplayName } from "~/settings/general/language";
+import { useAiProvidersState } from "~/settings/providers";
+import { useSetSettingValues } from "~/settings/queries";
 import { useConfigValues } from "~/shared/config";
 import { useMountEffect } from "~/shared/hooks/useMountEffect";
-import { SettingsAlert } from "~/shared/ui/settings-alert";
+import { SettingsAlertToast } from "~/shared/ui/settings-alert";
 import {
-  showTransientToast,
-  useTransientToast,
-} from "~/sidebar/toast/transient";
-import * as settings from "~/store/tinybase/store/settings";
-import {
+  canAppleSpeechTranscribe,
   isConfiguredSttModel,
-  isHyprnoteLocalSttModel,
+  getSttModelTranscriptionMode,
+  isOnDeviceSttModel,
   isLiveTranscriptionSupported,
   isRealtimeLocalModel,
   isSupportedLanguagesBatch,
   isSupportedLanguagesLive,
   isSupportedLocalSttModel,
 } from "~/stt/capabilities";
+import {
+  getDefaultSttModel,
+  getPreferredProviderModel,
+} from "~/stt/model-selection";
 
 export function SelectProviderAndModel() {
   const { t } = useLingui();
@@ -76,9 +96,13 @@ export function SelectProviderAndModel() {
     "current_stt_model",
   ] as const);
   const billing = useBillingAccess();
-  const configuredProviders = useConfiguredMapping();
+  const { providers: configuredProviders, isReady: providerSettingsReady } =
+    useConfiguredMapping();
   const { startDownload, startTrial } = useSttSettings();
   const health = useConnectionHealth();
+  const [pendingProvider, setPendingProvider] = useState<ProviderId | null>(
+    null,
+  );
 
   const selectedSttModel = isConfiguredSttModel(
     current_stt_provider,
@@ -86,35 +110,63 @@ export function SelectProviderAndModel() {
   )
     ? current_stt_model
     : undefined;
-  const isConfigured = !!(current_stt_provider && selectedSttModel);
-  const hasError = isConfigured && health.status === "error";
   const selectedProvider = current_stt_provider as ProviderId | undefined;
-  const selectedModels = selectedProvider
-    ? (configuredProviders[selectedProvider]?.models ?? [])
+  const selectedProviderConfigured = selectedProvider
+    ? (configuredProviders[selectedProvider]?.configured ?? false)
+    : false;
+  const visibleSelection = getVisibleModelSelection(
+    selectedProvider,
+    selectedSttModel,
+    selectedProviderConfigured,
+  );
+  const selectableProviders = PROVIDERS.filter(({ disabled }) => !disabled);
+  const configuredProviderIds = getConfiguredProviderIds(
+    selectableProviders,
+    configuredProviders,
+    selectedProvider,
+  );
+  const defaultSelection =
+    providerSettingsReady && !visibleSelection.model
+      ? getDefaultSttSelection(
+          configuredProviderIds,
+          configuredProviders,
+          selectedProvider,
+          current_stt_model,
+        )
+      : null;
+  const effectiveSelection = pendingProvider
+    ? { provider: pendingProvider, model: "" }
+    : (defaultSelection ?? visibleSelection);
+  const visibleProvider = effectiveSelection.provider as ProviderId | "";
+  const isConfigured = !!(visibleProvider && effectiveSelection.model);
+  const hasError = isConfigured && health.status === "error";
+  const alertDescription = !providerSettingsReady
+    ? undefined
+    : !isConfigured
+      ? t`Choose a transcription model to start listening.`
+      : hasError
+        ? health.message
+        : undefined;
+  const selectedModels = visibleProvider
+    ? (configuredProviders[visibleProvider]?.models ?? [])
     : [];
   const displayedSttModel =
-    selectedProvider === "custom"
-      ? selectedSttModel
-      : getPreferredProviderModel(selectedSttModel, selectedModels, {
-          keepUnavailableSavedModel: true,
-        });
+    visibleProvider === "custom"
+      ? effectiveSelection.model
+      : effectiveSelection.model
+        ? getPreferredProviderModel(effectiveSelection.model, selectedModels, {
+            keepUnavailableSavedModel: true,
+          })
+        : undefined;
   const selectedModel = selectedModels.find(
     (model) => model.id === displayedSttModel,
   );
-
-  const handleSelectProvider = settings.UI.useSetValueCallback(
-    "current_stt_provider",
-    (provider: string) => provider,
-    [],
-    settings.STORE_ID,
+  const providerOptions = getConfiguredProviders(
+    selectableProviders,
+    configuredProviders,
   );
 
-  const handleSelectModel = settings.UI.useSetValueCallback(
-    "current_stt_model",
-    (model: string) => model,
-    [],
-    settings.STORE_ID,
-  );
+  const setSelection = useSetSettingValues();
   const lastSelectedModelsRef = useRef<Record<string, string>>(
     current_stt_provider && selectedSttModel
       ? { [current_stt_provider]: selectedSttModel }
@@ -133,54 +185,69 @@ export function SelectProviderAndModel() {
 
     const providerId = provider as ProviderId;
     const nextModels = configuredProviders[providerId]?.models ?? [];
-    const nextModel = getPreferredProviderModel(
-      lastSelectedModelsRef.current[provider],
-      nextModels,
-      { allowSavedModelWithoutChoices: providerId === "custom" },
-    );
+    const nextModel =
+      getPreferredProviderModel(
+        lastSelectedModelsRef.current[provider],
+        nextModels,
+        { allowSavedModelWithoutChoices: providerId === "custom" },
+      ) ||
+      getDefaultSttModel(providerId) ||
+      "";
 
-    rememberModel(provider, nextModel);
-    handleSelectProvider(provider);
-    handleSelectModel(nextModel);
-  };
-
-  const handleModelChange = (model: string) => {
-    if (!current_stt_provider) {
+    if (!nextModel) {
+      setPendingProvider(providerId);
       return;
     }
 
-    rememberModel(current_stt_provider, model);
-    handleSelectModel(model);
+    setPendingProvider(null);
+    rememberModel(provider, nextModel);
+    setSelection({
+      current_stt_provider: provider,
+      current_stt_model: nextModel,
+    });
+  };
+
+  const handleModelChange = (model: string) => {
+    if (!visibleProvider) {
+      return;
+    }
+
+    rememberModel(visibleProvider, model);
+    setPendingProvider(null);
+    setSelection({
+      current_stt_provider: visibleProvider,
+      current_stt_model: model,
+    });
   };
   return (
     <div className="flex flex-col gap-4">
-      {!isConfigured && (
-        <SettingsAlert>
-          <Trans>
-            <strong className="font-medium">Transcription model</strong> is
-            needed to make Anarlog listen to your conversations.
-          </Trans>
-        </SettingsAlert>
-      )}
-
-      {hasError && health.message && (
-        <SettingsAlert>{health.message}</SettingsAlert>
-      )}
+      {defaultSelection && !pendingProvider ? (
+        <PersistAiSelection
+          key={`stt:${defaultSelection.provider}:${defaultSelection.model}`}
+          type="stt"
+          provider={defaultSelection.provider}
+          model={defaultSelection.model}
+        />
+      ) : null}
+      <SettingsAlertToast
+        id="stt-settings-alert"
+        description={alertDescription}
+        variant={hasError ? "error" : "warning"}
+        lifecycle="condition-bound"
+      />
+      {!alertDescription && <TranscriptionLanguageWarningToast />}
 
       <h3 className="text-md font-sans font-semibold">
         <Trans>Model being used</Trans>
       </h3>
       <div className="flex flex-row items-center gap-4">
         <div className="min-w-0 flex-2" data-stt-provider-selector>
-          <Select
-            value={current_stt_provider || ""}
-            onValueChange={handleProviderChange}
-          >
+          <Select value={visibleProvider} onValueChange={handleProviderChange}>
             <SelectTrigger className="bg-card shadow-none focus:ring-0">
               <SelectValue placeholder={t`Select a provider`} />
             </SelectTrigger>
             <SelectContent>
-              {PROVIDERS.filter(({ disabled }) => !disabled).map((provider) => {
+              {providerOptions.map((provider) => {
                 const configured =
                   configuredProviders[provider.id]?.configured ?? false;
                 const requiresPro = requiresEntitlement(
@@ -223,7 +290,7 @@ export function SelectProviderAndModel() {
 
         <span className="text-muted-foreground">/</span>
 
-        {current_stt_provider === "custom" ? (
+        {visibleProvider === "custom" ? (
           <div className="min-w-0 flex-3">
             <Input
               value={displayedSttModel || ""}
@@ -291,68 +358,127 @@ export function SelectProviderAndModel() {
 
 const TRANSCRIPTION_LANGUAGE_WARNING_TOAST_ID =
   "transcription-language-warning";
-const dismissedTranscriptionLanguageWarningKeys = new Set<string>();
+const MAX_DISMISSED_TRANSCRIPTION_LANGUAGE_WARNINGS = 128;
+const DISMISSED_TRANSCRIPTION_LANGUAGE_WARNINGS_KEY =
+  "anarlog:dismissed-transcription-language-warnings";
 
-export function TranscriptionLanguageWarningToast() {
-  const warningKey = useTranscriptionLanguageWarningKey();
+function rememberDismissedTranscriptionLanguageWarning(warningKey: string) {
+  try {
+    const warnings = readDismissedTranscriptionLanguageWarnings().filter(
+      (key) => key !== warningKey,
+    );
+    warnings.push(warningKey);
+    localStorage.setItem(
+      DISMISSED_TRANSCRIPTION_LANGUAGE_WARNINGS_KEY,
+      JSON.stringify(
+        warnings.slice(-MAX_DISMISSED_TRANSCRIPTION_LANGUAGE_WARNINGS),
+      ),
+    );
+  } catch {
+    return;
+  }
+}
 
-  if (
-    !warningKey ||
-    dismissedTranscriptionLanguageWarningKeys.has(warningKey)
-  ) {
+function isTranscriptionLanguageWarningDismissed(warningKey: string) {
+  return readDismissedTranscriptionLanguageWarnings().includes(warningKey);
+}
+
+function readDismissedTranscriptionLanguageWarnings(): string[] {
+  try {
+    const stored = JSON.parse(
+      localStorage.getItem(DISMISSED_TRANSCRIPTION_LANGUAGE_WARNINGS_KEY) ??
+        "[]",
+    );
+    return Array.isArray(stored)
+      ? stored.filter((key): key is string => typeof key === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function TranscriptionLanguageWarningToast() {
+  const { i18n, t } = useLingui();
+  const warning = useTranscriptionLanguageWarning();
+
+  if (!warning || isTranscriptionLanguageWarningDismissed(warning.key)) {
     return null;
   }
 
+  const model = displayModelLabel(warning.model);
+  const unsupportedLanguages = warning.unsupportedLanguages.map((language) =>
+    getBaseLanguageDisplayName(language, i18n.locale),
+  );
+  // Apple Speech is limited to languages added in System Settings, so a language it
+  // supports needs a different fix than one it cannot transcribe at all.
+  const needsSystemSettings =
+    warning.model === "apple-speech"
+      ? warning.unsupportedLanguages
+          .filter((language) => canAppleSpeechTranscribe(language))
+          .map((language) => getBaseLanguageDisplayName(language, i18n.locale))
+      : [];
+
+  const description =
+    needsSystemSettings.length > 0
+      ? t`Add ${formatLanguageList(needsSystemSettings)} in System Settings > General > Language & Region to transcribe with ${model}, or choose another model.`
+      : unsupportedLanguages.length > 0
+        ? t`${model} can't transcribe ${formatLanguageList(unsupportedLanguages)}. Try another model or change your spoken languages.`
+        : t`${model} can't transcribe all selected languages together. Try another model or use fewer spoken languages.`;
+
   return (
     <TranscriptionLanguageWarningToastLifecycle
-      key={warningKey}
-      warningKey={warningKey}
+      key={warning.key}
+      warningKey={warning.key}
+      description={description}
+      actionLabel={t`Got it`}
     />
   );
 }
 
 function TranscriptionLanguageWarningToastLifecycle({
   warningKey,
+  description,
+  actionLabel,
 }: {
   warningKey: string;
+  description: string;
+  actionLabel: string;
 }) {
   useMountEffect(() => {
-    showTransientToast(
-      {
-        id: TRANSCRIPTION_LANGUAGE_WARNING_TOAST_ID,
-        icon: <AlertTriangle className="size-4 shrink-0 text-amber-500" />,
-        description: "Model doesn't support all languages.",
-        anchor: "main-content-panel",
-        actions: [
-          {
-            label: "Dismiss",
-            onClick: () => {
-              dismissedTranscriptionLanguageWarningKeys.add(warningKey);
-              clearTranscriptionLanguageWarningToast();
-            },
-          },
-        ],
-        dismissible: false,
-        variant: "warning",
+    let shouldRememberDismissal = true;
+    sonnerToast.warning(description, {
+      id: TRANSCRIPTION_LANGUAGE_WARNING_TOAST_ID,
+      duration: Infinity,
+      icon: <Warning className="size-4 shrink-0 text-amber-500" />,
+      action: {
+        label: actionLabel,
+        onClick: () => {
+          shouldRememberDismissal = false;
+          rememberDismissedTranscriptionLanguageWarning(warningKey);
+          clearTranscriptionLanguageWarningToast();
+        },
       },
-      { durationMs: null },
-    );
+      onDismiss: () => {
+        if (shouldRememberDismissal) {
+          rememberDismissedTranscriptionLanguageWarning(warningKey);
+        }
+      },
+    });
 
-    return clearTranscriptionLanguageWarningToast;
+    return () => {
+      shouldRememberDismissal = false;
+      clearTranscriptionLanguageWarningToast();
+    };
   });
 
   return null;
 }
 
 function clearTranscriptionLanguageWarningToast() {
-  const { toast, clearToast } = useTransientToast.getState();
-
-  if (toast?.id === TRANSCRIPTION_LANGUAGE_WARNING_TOAST_ID) {
-    clearToast(toast.key);
-  }
+  sonnerToast.dismiss(TRANSCRIPTION_LANGUAGE_WARNING_TOAST_ID);
 }
 
-function useTranscriptionLanguageWarningKey() {
+function useTranscriptionLanguageWarning() {
   const { current_stt_provider, current_stt_model, spoken_languages } =
     useConfigValues([
       "current_stt_provider",
@@ -368,7 +494,7 @@ function useTranscriptionLanguageWarningKey() {
     ? current_stt_model
     : undefined;
   const isConfigured = !!(current_stt_provider && selectedSttModel);
-  const isOnDeviceModel = isHyprnoteLocalSttModel(
+  const isOnDeviceModel = isOnDeviceSttModel(
     current_stt_provider,
     selectedSttModel,
   );
@@ -381,31 +507,35 @@ function useTranscriptionLanguageWarningKey() {
       isLiveTranscriptionSupported(current_stt_provider, selectedSttModel),
     enabled: isConfigured,
   });
+  const useLiveMode = resolveLiveLanguageSupportMode({
+    isOnDeviceModel,
+    useLiveOnDeviceModel,
+    liveSupported: liveSupport.data,
+  });
 
-  const languageSupport = useQuery({
+  const languageSupportIssue = useQuery({
     queryKey: [
       "stt-language-support",
       current_stt_provider,
       selectedSttModel,
-      useLiveOnDeviceModel,
-      liveSupport.data,
+      useLiveMode,
       spoken_languages,
     ],
     queryFn: async () => {
-      const useLiveMode = isOnDeviceModel
-        ? useLiveOnDeviceModel && liveSupport.data
-        : liveSupport.data;
-      return useLiveMode
-        ? await isSupportedLanguagesLive(
-            current_stt_provider!,
-            selectedSttModel ?? null,
-            spoken_languages ?? [],
-          )
-        : await isSupportedLanguagesBatch(
-            current_stt_provider!,
-            selectedSttModel ?? null,
-            spoken_languages ?? [],
-          );
+      const isSupported = (languages: readonly string[]) =>
+        useLiveMode
+          ? isSupportedLanguagesLive(
+              current_stt_provider!,
+              selectedSttModel ?? null,
+              languages,
+            )
+          : isSupportedLanguagesBatch(
+              current_stt_provider!,
+              selectedSttModel ?? null,
+              languages,
+            );
+
+      return await getLanguageSupportIssue(spoken_languages ?? [], isSupported);
     },
     enabled:
       isConfigured &&
@@ -413,18 +543,38 @@ function useTranscriptionLanguageWarningKey() {
       !!spoken_languages?.length,
   });
 
-  if (!isConfigured || languageSupport.data !== false || hasError) {
+  if (
+    !isConfigured ||
+    !selectedSttModel ||
+    !languageSupportIssue.data ||
+    hasError
+  ) {
     return null;
   }
 
-  return [
-    current_stt_provider,
-    selectedSttModel,
-    ...(spoken_languages ?? []),
-  ].join(":");
+  return {
+    key: [
+      current_stt_provider,
+      selectedSttModel,
+      ...(spoken_languages ?? []),
+    ].join(":"),
+    model: selectedSttModel,
+    unsupportedLanguages: languageSupportIssue.data.unsupportedLanguages,
+  };
 }
 
-type ModelCategory = "latest" | null;
+function formatLanguageList(languages: string[]) {
+  const visibleLanguages = languages.slice(0, 3);
+  const remainingCount = languages.length - visibleLanguages.length;
+
+  if (remainingCount > 0) {
+    visibleLanguages.push(`${remainingCount} more`);
+  }
+
+  return visibleLanguages.join(", ");
+}
+
+type ModelCategory = "hardware" | "latest" | null;
 type ModelEntry = {
   id: string;
   isDownloaded: boolean;
@@ -440,81 +590,35 @@ function getModelCategoryLabel(category?: ModelCategory) {
     return "Recommended";
   }
 
+  if (category === "hardware") {
+    return <Trans>Best for this Mac</Trans>;
+  }
+
   return null;
 }
 
-function getProviderModelMode(
-  providerId: ProviderId,
-  model: string,
-): ModelEntry["mode"] {
-  if (providerId === "assemblyai") {
-    if (model === "universal-3-pro") {
-      return "batch";
+function useConfiguredMapping(): {
+  providers: Record<
+    ProviderId,
+    {
+      configured: boolean;
+      models: ModelEntry[];
     }
-
-    if (model === "u3-rt-pro") {
-      return "realtime";
-    }
-  }
-
-  if (providerId === "elevenlabs") {
-    if (model === "scribe_v2") {
-      return "batch";
-    }
-
-    if (model === "scribe_v2_realtime") {
-      return "realtime";
-    }
-  }
-
-  if (providerId === "mistral") {
-    if (model === "voxtral-mini-2602" || model === "voxtral-mini-latest") {
-      return "batch";
-    }
-
-    if (model === "voxtral-mini-transcribe-realtime-2602") {
-      return "realtime";
-    }
-  }
-
-  if (providerId === "soniox") {
-    if (model === "stt-async-v5" || model === "stt-async-v4") {
-      return "batch";
-    }
-
-    if (
-      model === "stt-rt-v5" ||
-      model === "stt-rt-v4" ||
-      model === "stt-v5" ||
-      model === "stt-v4"
-    ) {
-      return "realtime";
-    }
-  }
-
-  return undefined;
-}
-
-function useConfiguredMapping(): Record<
-  ProviderId,
-  {
-    configured: boolean;
-    models: ModelEntry[];
-  }
-> {
+  >;
+  isReady: boolean;
+} {
   const billing = useBillingAccess();
-  const configuredProviders = settings.UI.useResultTable(
-    settings.QUERIES.sttProviders,
-    settings.STORE_ID,
-  );
+  const { providers: configuredProviders, isReady } =
+    useAiProvidersState("stt");
 
-  const targetArch = useQuery({
-    queryKey: ["target-arch"],
-    queryFn: () => arch(),
+  const deviceInfo = useQuery({
+    queryKey: ["device-info"],
+    queryFn: async () => {
+      const result = await miscCommands.getDeviceInfo(null);
+      return result.status === "ok" ? result.data : null;
+    },
     staleTime: Infinity,
   });
-
-  const isAppleSilicon = targetArch.data === "aarch64";
 
   const supportedModels = useQuery({
     queryKey: ["list-supported-models"],
@@ -527,12 +631,22 @@ function useConfiguredMapping(): Record<
 
   const localModels = supportedModels.data ?? [];
   const soniqoModels = localModels.filter((m) => m.model_type === "soniqo");
+  // Listed only when the backend reports macOS 26 with Apple Speech available.
+  const appleSpeechModels = localModels.filter(
+    (m) => m.model_type === "appleSpeech",
+  );
 
   const soniqoDownloaded = useQueries({
     queries: [...soniqoModels.map((m) => sttModelQueries.isDownloaded(m.key))],
   });
 
-  return Object.fromEntries(
+  const appleSpeechDownloaded = useQueries({
+    queries: [
+      ...appleSpeechModels.map((m) => sttModelQueries.isDownloaded(m.key)),
+    ],
+  });
+
+  const providers = Object.fromEntries(
     PROVIDERS.map((provider) => {
       const config = configuredProviders[providerRowId("stt", provider.id)] as
         | AIProviderStorage
@@ -551,27 +665,38 @@ function useConfiguredMapping(): Record<
         return [provider.id, { configured: false, models: [] }];
       }
 
-      if (provider.id === "hyprnote") {
-        const models: ModelEntry[] = [
-          { id: "cloud", isDownloaded: billing.isPaid, category: "latest" },
+      if (provider.id === "anarlog") {
+        return [
+          provider.id,
+          {
+            configured: true,
+            models: [
+              {
+                id: "cloud",
+                isDownloaded: billing.isPaid,
+                category: "latest" as const,
+              },
+            ],
+          },
         ];
+      }
 
-        if (isAppleSilicon) {
-          soniqoModels.forEach((model, i) => {
-            models.push({
-              id: model.key,
-              isDownloaded: soniqoDownloaded[i]?.data ?? false,
-              displayName: model.display_name,
-              sizeBytes: model.size_bytes,
-              mode: isRealtimeLocalModel(String(model.key))
-                ? "realtime"
-                : "batch",
-              category: "latest",
-            });
-          });
-        }
+      if (provider.id === "soniqo") {
+        const models = buildOnDeviceModelEntries(
+          soniqoModels,
+          soniqoDownloaded,
+          deviceInfo.data?.totalMemoryBytes,
+        );
+        return [provider.id, { configured: models.length > 0, models }];
+      }
 
-        return [provider.id, { configured: true, models }];
+      if (provider.id === "apple_speech") {
+        const models = buildOnDeviceModelEntries(
+          appleSpeechModels,
+          appleSpeechDownloaded,
+          deviceInfo.data?.totalMemoryBytes,
+        );
+        return [provider.id, { configured: models.length > 0, models }];
       }
 
       if (provider.id === "custom") {
@@ -582,11 +707,14 @@ function useConfiguredMapping(): Record<
         provider.id,
         {
           configured: true,
-          models: provider.models.map((model) => ({
-            id: model,
-            isDownloaded: true,
-            mode: getProviderModelMode(provider.id, model),
-          })),
+          models: provider.models.map((model) => {
+            const mode = getSttModelTranscriptionMode(provider.id, model);
+            return {
+              id: model,
+              isDownloaded: true,
+              mode: mode === "live" ? "realtime" : mode,
+            };
+          }),
         },
       ];
     }),
@@ -597,6 +725,47 @@ function useConfiguredMapping(): Record<
       models: ModelEntry[];
     }
   >;
+
+  return {
+    providers,
+    isReady: isReady && supportedModels.isFetched && deviceInfo.isFetched,
+  };
+}
+
+function buildOnDeviceModelEntries(
+  models: Array<{
+    key: LocalModel;
+    display_name: string;
+    size_bytes: number | null;
+    supports_realtime: boolean;
+    recommended_memory_bytes: number;
+  }>,
+  downloads: Array<{ data?: boolean }>,
+  totalMemoryBytes?: number,
+): ModelEntry[] {
+  const recommendedModel = recommendOnDeviceModel(
+    models.map((model) => ({
+      id: model.key,
+      recommendedMemoryBytes: model.recommended_memory_bytes,
+    })),
+    totalMemoryBytes,
+  );
+
+  return models
+    .map((model, index) => ({
+      id: model.key,
+      isDownloaded: downloads[index]?.data ?? false,
+      displayName: model.display_name,
+      sizeBytes: model.size_bytes,
+      mode: model.supports_realtime
+        ? ("realtime" as const)
+        : ("batch" as const),
+      category: model.key === recommendedModel ? ("hardware" as const) : null,
+    }))
+    .sort(
+      (a, b) =>
+        Number(b.id === recommendedModel) - Number(a.id === recommendedModel),
+    );
 }
 
 function ModelSelectItem({
@@ -610,11 +779,12 @@ function ModelSelectItem({
 }) {
   const isCloud = model.id === "cloud";
   const { activeDownloads } = useNotifications();
+  const { queuedDownloads } = useSttSettings();
   const downloadInfo = activeDownloads.find((d) => d.model === model.id);
-  const isDownloading = !!downloadInfo;
+  const isDownloading =
+    !!downloadInfo || queuedDownloads.includes(model.id as LocalModel);
 
   const label = displayModelLabel(model.id, model.displayName);
-  const title = displayModelTitle(model.id, model.displayName);
   const sizeLabel = formatModelSize(model.sizeBytes);
   const showLocalActions = model.isDownloaded && isLocalModelId(model.id);
   const isDeprecated = model.isDeprecated === true;
@@ -623,12 +793,12 @@ function ModelSelectItem({
       <LocalModelLabel
         model={model.id}
         label={label}
-        title={title}
+        title={label}
         className="min-w-0 flex-1"
       />
       <div className="flex shrink-0 items-center gap-2 text-[11px]">
         <LocalModelBackendBadge model={model.id} />
-        <ModelModeBadge mode={model.mode} />
+        {model.mode !== "realtime" && <ModelModeBadge mode={model.mode} />}
         {!model.isDownloaded && sizeLabel && (
           <span className="text-muted-foreground font-mono">{sizeLabel}</span>
         )}
@@ -638,13 +808,14 @@ function ModelSelectItem({
 
   if (model.isDownloaded) {
     return (
-      <div className="group/model-row relative overflow-hidden rounded-full">
+      <div className="group/model-row relative overflow-hidden rounded-full has-[[data-model-actions-pending]]:[&>*:first-child>span:first-child]:opacity-0">
         <SelectItem
           key={model.id}
           value={model.id}
           className={cn([
             "group-hover/model-row:bg-accent group-hover/model-row:text-accent-foreground",
-            showLocalActions && "pr-20",
+            showLocalActions &&
+              "pr-20 group-focus-within/model-row:[&>span:first-child]:opacity-0 group-hover/model-row:[&>span:first-child]:opacity-0",
             isDeprecated && "text-muted-foreground focus:text-muted-foreground",
           ])}
         >
@@ -690,8 +861,12 @@ function ModelSelectItem({
             "from-muted to-accent text-muted-foreground bg-linear-to-t",
           ])}
         >
-          <Loader2 className="size-3 animate-spin" />
-          <span>{Math.round(downloadInfo.progress)}%</span>
+          <CircleNotch className="size-3 animate-spin" />
+          {downloadInfo ? (
+            <span>{Math.round(downloadInfo.progress)}%</span>
+          ) : (
+            <Trans>Starting</Trans>
+          )}
         </span>
       ) : (
         <button
@@ -714,13 +889,14 @@ function ModelSelectItem({
 
 function ModelSelectedValue({ model }: { model: ModelEntry }) {
   const isDeprecated = model.isDeprecated === true;
+  const label = displayModelLabel(model.id, model.displayName);
 
   return (
     <div className="flex max-w-full min-w-0 items-center gap-2">
       <LocalModelLabel
         model={model.id}
-        label={displayModelLabel(model.id, model.displayName)}
-        title={displayModelTitle(model.id, model.displayName)}
+        label={label}
+        title={label}
         className={cn(["min-w-0", isDeprecated && "opacity-60"])}
         labelClassName={cn([isDeprecated && "text-muted-foreground"])}
       />
@@ -788,23 +964,33 @@ function LocalModelDropdownActions({ model }: { model: LocalModel }) {
     });
   };
 
-  const handleDelete = () => {
-    void localSttCommands.deleteModel(model).then((result) => {
+  const deleteModel = useMutation({
+    mutationFn: () => localSttCommands.deleteModel(model),
+    onSuccess: (result) => {
       if (result.status === "ok") {
         void queryClient.invalidateQueries({
           queryKey: sttModelQueries.isDownloaded(model).queryKey,
         });
       }
-    });
+    },
+  });
+
+  const handleDelete = () => {
+    if (deleteModel.isPending) {
+      return;
+    }
+    deleteModel.mutate();
   };
 
   return (
     <div
+      data-model-actions-pending={deleteModel.isPending || undefined}
       className={cn([
         "absolute top-0 right-0 bottom-0 z-10 flex items-center justify-end gap-1 rounded-r-full pl-6",
         "pointer-events-none opacity-0 transition-opacity duration-150",
         "group-hover/model-row:pointer-events-auto group-hover/model-row:opacity-100",
         "group-focus-within/model-row:pointer-events-auto group-focus-within/model-row:opacity-100",
+        deleteModel.isPending && "pointer-events-auto opacity-100",
       ])}
     >
       <button
@@ -825,9 +1011,11 @@ function LocalModelDropdownActions({ model }: { model: LocalModel }) {
       <button
         type="button"
         aria-label={t`Delete model`}
+        disabled={deleteModel.isPending}
         className={cn([
           "flex size-6 items-center justify-center rounded-full",
           "text-red-500 hover:text-red-600",
+          "disabled:opacity-70",
         ])}
         onPointerDown={stopSelect}
         onClick={(event) => {
@@ -835,7 +1023,11 @@ function LocalModelDropdownActions({ model }: { model: LocalModel }) {
           handleDelete();
         }}
       >
-        <Trash2 className="size-3.5" />
+        {deleteModel.isPending ? (
+          <CircleNotch className="size-3.5 animate-spin" />
+        ) : (
+          <Trash className="size-3.5" />
+        )}
       </button>
     </div>
   );

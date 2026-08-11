@@ -7,10 +7,11 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@hypr/ui/components/ui/select";
+} from "@anlg/ui/components/ui/select";
 
+import { useSetSettingValue } from "~/settings/queries";
+import { SETTING_CONTROL_CLASS, SettingRow } from "~/settings/setting-row";
 import { useConfigValue } from "~/shared/config";
-import * as settings from "~/store/tinybase/store/settings";
 
 function getSystemWeekStart(): "sunday" | "monday" {
   const locale = navigator.language || "en-US";
@@ -25,12 +26,7 @@ function getSystemWeekStart(): "sunday" | "monday" {
 export function WeekStartSelector() {
   const { t } = useLingui();
   const value = useConfigValue("week_start");
-  const setWeekStart = settings.UI.useSetValueCallback(
-    "week_start",
-    (val: string) => val,
-    [],
-    settings.STORE_ID,
-  );
+  const setWeekStart = useSetSettingValue("week_start");
 
   const systemDefault = useMemo(() => getSystemWeekStart(), []);
 
@@ -49,27 +45,24 @@ export function WeekStartSelector() {
   };
 
   return (
-    <div className="flex flex-row items-center justify-between">
-      <div>
-        <h3 className="mb-1 text-sm font-medium">
-          <Trans>Week starts on</Trans>
-        </h3>
-        <p className="text-muted-foreground text-xs">
-          <Trans>First day of the week in the calendar view</Trans>
-        </p>
-      </div>
-      <Select value={displayValue} onValueChange={handleChange}>
-        <SelectTrigger className="bg-card w-40 shadow-none focus:ring-0">
-          <SelectValue placeholder={t`Select day`} />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map((option) => (
-            <SelectItem key={option.value} value={option.value}>
-              {option.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
+    <SettingRow
+      title={<Trans>Week starts on</Trans>}
+      description={<Trans>Choose which day begins your calendar week.</Trans>}
+    >
+      {(labelProps) => (
+        <Select value={displayValue} onValueChange={handleChange}>
+          <SelectTrigger {...labelProps} className={SETTING_CONTROL_CLASS}>
+            <SelectValue placeholder={t`Select day`} />
+          </SelectTrigger>
+          <SelectContent>
+            {options.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+    </SettingRow>
   );
 }

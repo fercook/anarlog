@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -10,6 +10,7 @@ import {
 import type { Segment, SegmentWord } from "~/stt/live-segment";
 
 const mocks = vi.hoisted(() => ({
+  updateTranscriptSegmentText: vi.fn(() => Promise.resolve()),
   wordSpan: vi.fn(
     ({
       displayText,
@@ -33,9 +34,14 @@ vi.mock("./word-span", () => ({
   WordSpan: mocks.wordSpan,
 }));
 
+vi.mock("~/stt/queries", () => ({
+  updateTranscriptSegmentText: mocks.updateTranscriptSegmentText,
+}));
+
 describe("SegmentRenderer", () => {
   beforeEach(() => {
     mocks.wordSpan.mockClear();
+    mocks.updateTranscriptSegmentText.mockClear();
   });
 
   it("keeps spaces between rendered words and lines", () => {
@@ -46,6 +52,7 @@ describe("SegmentRenderer", () => {
         segment={segment}
         offsetMs={0}
         transcriptId="transcript-1"
+        speakerLabel="Speaker 1"
         currentMs={0}
         seekAndPlay={seekAndPlay}
         audioExists
@@ -64,6 +71,7 @@ describe("SegmentRenderer", () => {
         segment={segment}
         offsetMs={0}
         transcriptId="transcript-1"
+        speakerLabel="Speaker 1"
         currentMs={500}
         seekAndPlay={seekAndPlay}
         audioExists
@@ -78,6 +86,7 @@ describe("SegmentRenderer", () => {
         segment={segment}
         offsetMs={0}
         transcriptId="transcript-1"
+        speakerLabel="Speaker 1"
         currentMs={700}
         seekAndPlay={seekAndPlay}
         audioExists
@@ -96,6 +105,7 @@ describe("SegmentRenderer", () => {
         segment={segment}
         offsetMs={0}
         transcriptId="transcript-1"
+        speakerLabel="Speaker 1"
         currentMs={500}
         seekAndPlay={seekAndPlay}
         audioExists
@@ -110,6 +120,7 @@ describe("SegmentRenderer", () => {
         segment={segment}
         offsetMs={0}
         transcriptId="transcript-1"
+        speakerLabel="Speaker 1"
         currentMs={1500}
         seekAndPlay={seekAndPlay}
         audioExists
@@ -129,6 +140,7 @@ describe("SegmentRenderer", () => {
         segment={segment}
         offsetMs={0}
         transcriptId="transcript-1"
+        speakerLabel="Speaker 1"
         currentMs={0}
         seekAndPlay={seekAndPlay}
         audioExists
@@ -143,6 +155,7 @@ describe("SegmentRenderer", () => {
         segment={segment}
         offsetMs={0}
         transcriptId="transcript-1"
+        speakerLabel="Speaker 1"
         currentMs={0}
         seekAndPlay={seekAndPlay}
         audioExists
@@ -161,6 +174,7 @@ describe("SegmentRenderer", () => {
         segment={segment}
         offsetMs={0}
         transcriptId="transcript-1"
+        speakerLabel="Speaker 1"
         currentMs={0}
         seekAndPlay={seekAndPlay}
         audioExists
@@ -175,6 +189,7 @@ describe("SegmentRenderer", () => {
         segment={segment}
         offsetMs={0}
         transcriptId="transcript-1"
+        speakerLabel="Speaker 1"
         currentMs={0}
         seekAndPlay={seekAndPlay}
         audioExists
@@ -183,6 +198,72 @@ describe("SegmentRenderer", () => {
     );
 
     expect(mocks.wordSpan).toHaveBeenCalledTimes(8);
+  });
+
+  it("rerenders when the computed speaker label changes", () => {
+    const segment = createSegment();
+    const seekAndPlay = vi.fn();
+    const view = render(
+      <SegmentRenderer
+        segment={segment}
+        offsetMs={0}
+        transcriptId="transcript-1"
+        speakerLabel="Speaker 1"
+        currentMs={0}
+        seekAndPlay={seekAndPlay}
+        audioExists
+        search={EMPTY_TRANSCRIPT_SEARCH}
+      />,
+    );
+
+    expect(mocks.wordSpan).toHaveBeenCalledTimes(4);
+
+    view.rerender(
+      <SegmentRenderer
+        segment={segment}
+        offsetMs={0}
+        transcriptId="transcript-1"
+        speakerLabel="Alice"
+        currentMs={0}
+        seekAndPlay={seekAndPlay}
+        audioExists
+        search={EMPTY_TRANSCRIPT_SEARCH}
+      />,
+    );
+
+    expect(mocks.wordSpan).toHaveBeenCalledTimes(8);
+  });
+
+  it("persists text corrections when leaving write mode content", async () => {
+    const segment = createSegment();
+    const view = render(
+      <SegmentRenderer
+        segment={segment}
+        offsetMs={0}
+        transcriptId="transcript-1"
+        speakerLabel="Speaker 1"
+        currentMs={0}
+        seekAndPlay={vi.fn()}
+        audioExists
+        search={EMPTY_TRANSCRIPT_SEARCH}
+        editMode
+      />,
+    );
+
+    const editor = view.container.querySelector<HTMLElement>(
+      "[data-transcript-editor]",
+    );
+    expect(editor?.getAttribute("contenteditable")).toBe("true");
+    editor!.innerText = "Corrected transcript text";
+    fireEvent.blur(editor!);
+
+    await waitFor(() => {
+      expect(mocks.updateTranscriptSegmentText).toHaveBeenCalledWith({
+        transcriptId: "transcript-1",
+        wordIds: ["word-1", "word-2", "word-3", "word-4"],
+        text: "Corrected transcript text",
+      });
+    });
   });
 });
 

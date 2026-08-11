@@ -1,42 +1,75 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { ChatEditorHandle, JSONContent } from "@hypr/editor/chat";
-import { EMPTY_DOC } from "@hypr/editor/markdown";
-import { commands as analyticsCommands } from "@hypr/plugin-analytics";
+import type { ChatEditorHandle, JSONContent } from "@anlg/editor/chat";
+import { EMPTY_DOC } from "@anlg/editor/markdown";
+import { commands as analyticsCommands } from "@anlg/plugin-analytics";
+import { sonnerToast } from "@anlg/ui/components/ui/toast";
+
+import { DraftCache, type DraftRetentionFailure } from "./draft-cache";
+import { pushSentMessage, sentMessageAt, sentMessageCount } from "./history";
 
 import type { ContextRef } from "~/chat/context/entities";
+import { useMountEffect } from "~/shared/hooks/useMountEffect";
 
-const draftsByKey = new Map<string, JSONContent>();
+const draftCache = new DraftCache();
 
 export function useDraftState({
   draftKey,
   onDraftContentChange,
   onContextRefsChange,
+  onUserEdit,
+  shouldPersistUpdate,
 }: {
   draftKey: string;
   onDraftContentChange?: (hasDraftContent: boolean) => void;
   onContextRefsChange?: (refs: ContextRef[]) => void;
+  onUserEdit?: () => void;
+  shouldPersistUpdate?: () => boolean;
 }) {
-  const initialContent = useRef(draftsByKey.get(draftKey) ?? EMPTY_DOC);
+  const initialContent = useRef(draftCache.peek(draftKey) ?? EMPTY_DOC);
   const [hasContent, setHasContent] = useState(() =>
     hasTextContent(initialContent.current),
   );
 
-  useEffect(() => {
+  useMountEffect(() => {
+    draftCache.acquire(
+      draftKey,
+      hasDraftContent(initialContent.current)
+        ? initialContent.current
+        : undefined,
+    );
     onDraftContentChange?.(hasDraftContent(initialContent.current));
     onContextRefsChange?.(
       extractContextRefsFromTiptapJson(initialContent.current),
     );
-  }, [onDraftContentChange, onContextRefsChange]);
+    return () => {
+      const failure = draftCache.release(draftKey);
+      if (failure) {
+        sonnerToast.error(draftRetentionFailureMessage(failure));
+      }
+    };
+  });
 
   const handleEditorUpdate = useCallback(
     (json: JSONContent) => {
       setHasContent(hasTextContent(json));
-      draftsByKey.set(draftKey, json);
+      const shouldPersist = shouldPersistUpdate?.() ?? true;
+      if (shouldPersist) {
+        draftCache.update(draftKey, hasDraftContent(json) ? json : undefined);
+      }
       onDraftContentChange?.(hasDraftContent(json));
       onContextRefsChange?.(extractContextRefsFromTiptapJson(json));
+      if (shouldPersist) {
+        onUserEdit?.();
+      }
     },
-    [draftKey, onDraftContentChange, onContextRefsChange],
+    [
+      draftKey,
+      onDraftContentChange,
+      onContextRefsChange,
+      onUserEdit,
+      shouldPersistUpdate,
+    ],
   );
 
   return {
@@ -53,6 +86,7 @@ export function useSubmit({
   onSendMessage,
   onDraftContentChange,
   onContextRefsChange,
+  onSubmitted,
 }: {
   draftKey: string;
   editorRef: React.RefObject<ChatEditorHandle | null>;
@@ -65,6 +99,7 @@ export function useSubmit({
   ) => void;
   onDraftContentChange?: (hasDraftContent: boolean) => void;
   onContextRefsChange?: (refs: ContextRef[]) => void;
+  onSubmitted?: (json: JSONContent | undefined) => void;
 }) {
   return useCallback(() => {
     const json = editorRef.current?.getJSON();
@@ -78,9 +113,10 @@ export function useSubmit({
     void analyticsCommands.event({ event: "message_sent" });
     onSendMessage(text, [{ type: "text", text }], mentionRefs);
     editorRef.current?.clearContent();
-    draftsByKey.delete(draftKey);
+    draftCache.delete(draftKey);
     onDraftContentChange?.(false);
     onContextRefsChange?.([]);
+    onSubmitted?.(json);
   }, [
     draftKey,
     editorRef,
@@ -88,7 +124,89 @@ export function useSubmit({
     onSendMessage,
     onDraftContentChange,
     onContextRefsChange,
+    onSubmitted,
   ]);
+}
+
+export function useMessageHistory({
+  editorRef,
+}: {
+  editorRef: React.RefObject<ChatEditorHandle | null>;
+}) {
+  const [index, setIndex] = useState<number | null>(null);
+  const draftBeforeHistory = useRef<JSONContent | undefined>(undefined);
+  const isApplyingRef = useRef(false);
+
+  const applyContent = useCallback(
+    (content: JSONContent | undefined, selection: "start" | "end") => {
+      isApplyingRef.current = true;
+      editorRef.current?.replaceContent(content ?? EMPTY_DOC, selection);
+      isApplyingRef.current = false;
+    },
+    [editorRef],
+  );
+
+  const navigate = useCallback(
+    (direction: "prev" | "next") => {
+      if (direction === "prev") {
+        const total = sentMessageCount();
+        if (total === 0) {
+          return false;
+        }
+
+        const next = index === null ? 0 : index + 1;
+        if (next >= total) {
+          return true;
+        }
+
+        if (index === null) {
+          draftBeforeHistory.current = editorRef.current?.getJSON();
+        }
+        setIndex(next);
+        applyContent(sentMessageAt(next), "start");
+        return true;
+      }
+
+      if (index === null) {
+        return false;
+      }
+
+      if (index === 0) {
+        setIndex(null);
+        applyContent(draftBeforeHistory.current, "end");
+        return true;
+      }
+
+      setIndex(index - 1);
+      applyContent(sentMessageAt(index - 1), "end");
+      return true;
+    },
+    [applyContent, editorRef, index],
+  );
+
+  const handleUserEdit = useCallback(() => {
+    if (isApplyingRef.current) {
+      return;
+    }
+    setIndex(null);
+  }, []);
+
+  const shouldPersistUpdate = useCallback(() => !isApplyingRef.current, []);
+
+  const handleSubmitted = useCallback((json: JSONContent | undefined) => {
+    pushSentMessage(json);
+    draftBeforeHistory.current = undefined;
+    setIndex(null);
+  }, []);
+
+  return {
+    position: index === null ? null : index + 1,
+    total: sentMessageCount(),
+    navigate,
+    handleUserEdit,
+    handleSubmitted,
+    shouldPersistUpdate,
+  };
 }
 
 export function useAutoFocusEditor({
@@ -110,8 +228,7 @@ export function useAutoFocusEditor({
     const maxAttempts = 20;
 
     const tryFocus = () => {
-      if (editorRef.current) {
-        editorRef.current.focus();
+      if (editorRef.current?.focus()) {
         return;
       }
 
@@ -175,6 +292,19 @@ function hasAttachmentNode(json: JSONContent | undefined): boolean {
   }
 
   return Array.isArray(json.content) && json.content.some(hasAttachmentNode);
+}
+
+function draftRetentionFailureMessage(failure: DraftRetentionFailure) {
+  if (failure.reason === "draft-too-large") {
+    return "This unsent chat draft is too large to keep after closing the editor.";
+  }
+  if (failure.reason === "older-draft-removed") {
+    return failure.removedDraftCount === 1
+      ? "An older unsent chat draft was removed to keep your current draft."
+      : `${failure.removedDraftCount} older unsent chat drafts were removed to keep your current draft.`;
+  }
+
+  return "This unsent chat draft could not be kept because draft storage is full.";
 }
 
 function extractContextRefsFromTiptapJson(

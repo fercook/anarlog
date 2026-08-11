@@ -1,6 +1,6 @@
-import type { Queries } from "tinybase/with-schemas";
+import type { Manager } from "tinytick";
 
-import type { CalendarProviderType } from "@hypr/plugin-calendar";
+import type { CalendarProviderType } from "@anlg/plugin-calendar";
 
 import {
   type CalendarSyncRange,
@@ -14,66 +14,127 @@ import {
   fetchIncomingEvents,
 } from "./fetch";
 import {
-  executeForEventsSync,
-  executeForParticipantsSync,
   syncEvents,
   syncSessionEmbeddedEvents,
   syncSessionParticipants,
 } from "./process";
+import {
+  applyConnectionSync,
+  loadParticipantSyncSnapshot,
+  loadSessionsForTrackingIds,
+  tombstoneCalendarConnection,
+} from "./storage";
 
-import type { Schemas, Store } from "~/store/tinybase/store/main";
+import { enqueueDatabaseWrite } from "~/db/write-queue";
 
 export const CALENDAR_SYNC_TASK_ID = "calendarSync";
 export type { CalendarSyncRange };
+
 type CalendarSyncOptions = {
   signal?: AbortSignal;
 };
 
-export async function syncCalendarEvents(
-  store: Store,
-  queries: Queries<Schemas>,
-): Promise<void> {
-  await Promise.all([
-    new Promise((resolve) => setTimeout(resolve, 250)),
-    run(store, queries),
-  ]);
+let calendarSyncTail: Promise<void> = Promise.resolve();
+let calendarSyncGeneration = 0;
+const disconnectedCalendarConnections = new Set<string>();
+
+function enqueueCalendarSync(sync: () => Promise<void>): Promise<void> {
+  const result = calendarSyncTail.catch(() => undefined).then(sync);
+  calendarSyncTail = result.catch(() => undefined);
+  return result;
 }
 
-export async function syncCalendarEventsForRange(
-  store: Store,
-  queries: Queries<Schemas>,
+export function syncCalendarEvents(
+  options: CalendarSyncOptions = {},
+): Promise<void> {
+  return enqueueCalendarSync(async () => {
+    const generation = calendarSyncGeneration;
+    await Promise.all([
+      new Promise((resolve) => setTimeout(resolve, 250)),
+      run(undefined, options, generation),
+    ]);
+  });
+}
+
+export function scheduleCalendarSync(manager: Manager): string | undefined {
+  const activeTaskRunId = [
+    ...manager.getScheduledTaskRunIds(),
+    ...manager.getRunningTaskRunIds(),
+  ].find(
+    (taskRunId) =>
+      manager.getTaskRunInfo(taskRunId)?.taskId === CALENDAR_SYNC_TASK_ID,
+  );
+
+  return activeTaskRunId ?? manager.scheduleTaskRun(CALENDAR_SYNC_TASK_ID);
+}
+
+export function syncCalendarEventsForRange(
   range: CalendarSyncRange,
   options: CalendarSyncOptions = {},
 ): Promise<void> {
-  await run(store, queries, range, options);
+  return enqueueCalendarSync(() => run(range, options, calendarSyncGeneration));
+}
+
+export function removeDisconnectedCalendarConnection(
+  integrationId: string,
+  connectionId: string,
+): Promise<void> {
+  const provider = calendarProviderForIntegration(integrationId);
+
+  if (!provider) return Promise.resolve();
+
+  const key = connectionKey(provider, connectionId);
+  calendarSyncGeneration += 1;
+  disconnectedCalendarConnections.add(key);
+  return enqueueDatabaseWrite("calendar-sync", () =>
+    tombstoneCalendarConnection(provider, connectionId),
+  ).catch((error) => {
+    disconnectedCalendarConnections.delete(key);
+    throw error;
+  });
+}
+
+export function allowReconnectedCalendarConnections(
+  integrationId: string,
+): void {
+  const provider = calendarProviderForIntegration(integrationId);
+  if (!provider) return;
+
+  calendarSyncGeneration += 1;
+  const prefix = `${provider}:`;
+  for (const key of disconnectedCalendarConnections) {
+    if (key.startsWith(prefix)) disconnectedCalendarConnections.delete(key);
+  }
 }
 
 async function run(
-  store: Store,
-  queries: Queries<Schemas>,
   range?: CalendarSyncRange,
   options: CalendarSyncOptions = {},
+  generation = calendarSyncGeneration,
 ) {
-  if (isAborted(options.signal)) return;
+  const shouldStop = () => isStopped(options.signal, generation);
+  if (shouldStop()) return;
 
-  const providerConnections = await getProviderConnections();
-  if (isAborted(options.signal)) return;
+  const discoveredConnections = await getProviderConnections();
+  if (shouldStop()) return;
+  const providerConnections = excludeDisconnectedConnections(
+    discoveredConnections,
+  );
 
-  await syncCalendars(store, providerConnections);
-  if (isAborted(options.signal)) return;
+  await syncCalendars(providerConnections, options.signal, shouldStop);
+  if (shouldStop()) return;
 
   for (const { provider, connection_ids } of providerConnections) {
     for (const connectionId of connection_ids) {
-      if (isAborted(options.signal)) return;
+      if (shouldStop()) return;
 
       try {
         await runForConnection(
-          store,
-          queries,
           provider,
           connectionId,
           range,
           options,
+          generation,
         );
       } catch (error) {
         console.error(
@@ -85,17 +146,15 @@ async function run(
 }
 
 async function runForConnection(
-  store: Store,
-  queries: Queries<Schemas>,
   provider: CalendarProviderType,
   connectionId: string,
   range?: CalendarSyncRange,
   options: CalendarSyncOptions = {},
+  generation = calendarSyncGeneration,
 ) {
-  const ctx = createCtx(store, queries, provider, connectionId, range);
-  if (!ctx || isAborted(options.signal)) {
-    return;
-  }
+  const shouldStop = () => isStopped(options.signal, generation);
+  const ctx = await createCtx(provider, connectionId, range);
+  if (shouldStop()) return;
 
   let incoming;
   let incomingParticipants;
@@ -114,32 +173,89 @@ async function runForConnection(
     throw error;
   }
 
-  if (isAborted(options.signal)) return;
+  if (shouldStop()) return;
 
-  const existing = fetchExistingEvents(ctx);
-  if (isAborted(options.signal)) return;
+  const existing = await fetchExistingEvents(ctx, incoming);
+  if (shouldStop()) return;
 
-  const eventsOut = syncEvents(ctx, {
+  const events = syncEvents(ctx, {
     incoming,
     existing,
     incomingParticipants,
   });
-  if (isAborted(options.signal)) return;
+  const sessions = await loadSessionsForTrackingIds(
+    incoming.map((event) => event.tracking_id_event),
+  );
+  if (shouldStop()) return;
 
-  executeForEventsSync(ctx, eventsOut);
-  if (isAborted(options.signal)) return;
-
-  syncSessionEmbeddedEvents(ctx, incoming);
-  if (isAborted(options.signal)) return;
-
-  const participantsOut = syncSessionParticipants(ctx, {
+  const sessionUpdates = syncSessionEmbeddedEvents(ctx, incoming, sessions);
+  const participantSnapshot = await loadParticipantSyncSnapshot(
+    sessions,
     incomingParticipants,
-  });
-  if (isAborted(options.signal)) return;
+  );
+  if (shouldStop()) return;
 
-  executeForParticipantsSync(ctx, participantsOut);
+  const participants = syncSessionParticipants({
+    incomingParticipants,
+    snapshot: participantSnapshot,
+  });
+  await enqueueDatabaseWrite("calendar-sync", async () => {
+    if (shouldStop()) return;
+    await applyConnectionSync({
+      ctx,
+      events,
+      sessionUpdates,
+      participants,
+    });
+  });
 }
 
-function isAborted(signal: AbortSignal | undefined) {
-  return signal?.aborted === true;
+function isStopped(signal: AbortSignal | undefined, generation: number) {
+  return signal?.aborted === true || generation !== calendarSyncGeneration;
+}
+
+function excludeDisconnectedConnections(
+  providerConnections: Awaited<ReturnType<typeof getProviderConnections>>,
+) {
+  const discoveredConnectionKeys = new Set(
+    providerConnections.flatMap(({ provider, connection_ids }) =>
+      connection_ids.map((connectionId) =>
+        connectionKey(provider, connectionId),
+      ),
+    ),
+  );
+  for (const key of disconnectedCalendarConnections) {
+    if (!discoveredConnectionKeys.has(key)) {
+      disconnectedCalendarConnections.delete(key);
+    }
+  }
+
+  return providerConnections.flatMap(({ provider, connection_ids }) => {
+    const activeConnectionIds = connection_ids.filter(
+      (connectionId) =>
+        !disconnectedCalendarConnections.has(
+          connectionKey(provider, connectionId),
+        ),
+    );
+    return activeConnectionIds.length > 0
+      ? [{ provider, connection_ids: activeConnectionIds }]
+      : [];
+  });
+}
+
+function connectionKey(
+  provider: CalendarProviderType,
+  connectionId: string,
+): string {
+  return `${provider}:${connectionId}`;
+}
+
+function calendarProviderForIntegration(
+  integrationId: string,
+): CalendarProviderType | null {
+  return integrationId === "google-calendar"
+    ? "google"
+    : integrationId === "outlook"
+      ? "outlook"
+      : null;
 }

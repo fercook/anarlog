@@ -15,7 +15,7 @@ pub fn is_model_downloaded(model: &SupportedModel, models_dir: &Path) -> Result<
         return Ok(false);
     }
 
-    let actual = hypr_file::file_size(&path)?;
+    let actual = anlg_file::file_size(&path)?;
     if actual != model.model_size() {
         return Ok(false);
     }
@@ -56,15 +56,16 @@ pub fn list_downloaded_models(models_dir: &Path) -> Result<Vec<SupportedModel>, 
 pub fn list_custom_models() -> Result<Vec<CustomModelInfo>, Error> {
     #[cfg(target_os = "macos")]
     {
-        let app_data_dir = dirs::data_dir().unwrap();
-        let gguf_files = hypr_lmstudio::list_models(app_data_dir)?;
+        let app_data_dir = dirs::data_dir()
+            .ok_or_else(|| Error::Other("application data directory is unavailable".to_string()))?;
+        let gguf_files = anlg_lmstudio::list_models(app_data_dir)?;
 
         let mut custom_models = Vec::new();
         for path_str in gguf_files {
             let path = std::path::Path::new(&path_str);
             if path.exists() {
                 let name = {
-                    use hypr_gguf::GgufExt;
+                    use anlg_gguf::GgufExt;
                     path.model_name()
                 };
 

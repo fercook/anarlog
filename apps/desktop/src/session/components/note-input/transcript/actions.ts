@@ -1,9 +1,10 @@
 import { useCallback } from "react";
 
-import { commands as fsSyncCommands } from "@hypr/plugin-fs-sync";
+import { commands as fsSyncCommands } from "@anlg/plugin-fs-sync";
+import { sonnerToast } from "@anlg/ui/components/ui/toast";
 
+import { withCloudsyncActivity } from "~/db/cloudsync-activity";
 import { getEnhancerService } from "~/services/enhancer";
-import { showTransientToast } from "~/sidebar/toast/transient";
 import { useListener } from "~/stt/contexts";
 import { isStoppedTranscriptionError, useRunBatch } from "~/stt/useRunBatch";
 
@@ -14,10 +15,8 @@ export function useRegenerateTranscript(sessionId: string) {
   return useCallback(async () => {
     const result = await fsSyncCommands.audioPath(sessionId);
     if (result.status === "error") {
-      showTransientToast({
+      sonnerToast.error("Recording not found. It may have been deleted.", {
         id: `transcript-regenerate-audio-missing-${sessionId}`,
-        description: "Recording not found. It may have been deleted.",
-        variant: "error",
       });
       return;
     }
@@ -25,14 +24,26 @@ export function useRegenerateTranscript(sessionId: string) {
     const audioPath = result.data;
 
     try {
-      await runBatch(audioPath);
-      getEnhancerService()?.queueAutoEnhanceIfSummaryEmpty(sessionId);
+      await withCloudsyncActivity(
+        "transcription",
+        `${sessionId}:retranscription:${crypto.randomUUID()}`,
+        async () => {
+          await runBatch(audioPath, {
+            promotion: { scope: "whole_session" },
+          });
+          await getEnhancerService()?.queueAutoEnhanceIfSummaryEmpty(sessionId);
+        },
+      );
     } catch (error) {
       if (isStoppedTranscriptionError(error)) {
         return;
       }
       const msg = error instanceof Error ? error.message : String(error);
       handleBatchFailed(sessionId, msg);
+      sonnerToast.error("Re-transcription failed", {
+        id: `transcript-regenerate-failed-${sessionId}`,
+        description: msg,
+      });
     }
   }, [handleBatchFailed, runBatch, sessionId]);
 }

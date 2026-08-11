@@ -1,48 +1,82 @@
 import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
+
+import type { RenderTranscriptRequest } from "@anlg/plugin-transcription";
 
 import { TRANSCRIPT_RENDER_CACHE_TIME_MS } from "../cache";
-import {
-  useTranscriptRenderData,
-  useTranscriptRowsRevision,
-} from "../render-request-hooks";
+import { useTranscriptRenderData } from "../render-request-hooks";
 
-import * as main from "~/store/tinybase/store/main";
 import {
   getMaxSpeakerNumberForParticipants,
   type Segment,
 } from "~/stt/live-segment";
+import { useSessionTranscripts, useTranscript } from "~/stt/queries";
 import {
   getRenderTranscriptRequestKey,
   renderTranscriptSegments,
 } from "~/stt/render-transcript";
 
-const emptyIds: string[] = [];
-
 export function useRenderedTranscriptSegments(transcriptId: string): Segment[] {
   return useRenderedTranscriptData(transcriptId).segments;
 }
 
-export function useRenderedTranscriptData(transcriptId: string): {
+export function useRenderedTranscriptData(
+  transcriptId: string,
+  currentActive = false,
+  captureGeneration = 0,
+): {
   maxSpeakerNumber?: number;
+  request: RenderTranscriptRequest | null;
   segments: Segment[];
 } {
   const { request } = useTranscriptRenderData(transcriptId);
+  // Recovery needs the persisted prefix. The active key stays stable across
+  // word and assignment writes so tab remounts reuse the same native render.
+  const activeBaselineRef = useRef<{
+    captureGeneration: number;
+    transcriptId: string;
+    request: typeof request;
+  } | null>(null);
+  if (!currentActive) {
+    activeBaselineRef.current = null;
+  } else if (
+    activeBaselineRef.current?.transcriptId !== transcriptId ||
+    activeBaselineRef.current.captureGeneration !== captureGeneration ||
+    activeBaselineRef.current.request === null
+  ) {
+    activeBaselineRef.current = {
+      captureGeneration,
+      transcriptId,
+      request,
+    };
+  }
+  const activeBaselineRequest = currentActive
+    ? (activeBaselineRef.current?.request ?? null)
+    : request;
   const requestKey = useMemo(
-    () => getRenderTranscriptRequestKey(request),
-    [request],
+    () =>
+      currentActive
+        ? `baseline:${captureGeneration}`
+        : getRenderTranscriptRequestKey(request),
+    [captureGeneration, currentActive, request],
   );
 
+  // eslint-disable-next-line @tanstack/query/exhaustive-deps -- active input is frozen and reconciled with current SQLite state in JavaScript.
   const { data = [] } = useQuery({
-    queryKey: ["rendered-transcript-segments", transcriptId, requestKey],
+    queryKey: [
+      "rendered-transcript-segments",
+      transcriptId,
+      currentActive ? "volatile" : "settled",
+      requestKey,
+    ],
     queryFn: async () => {
-      if (!request) {
+      if (!activeBaselineRequest) {
         return [];
       }
 
-      return renderTranscriptSegments(request);
+      return renderTranscriptSegments(activeBaselineRequest);
     },
-    enabled: !!request,
+    enabled: !!activeBaselineRequest,
     staleTime: Number.POSITIVE_INFINITY,
     gcTime: TRANSCRIPT_RENDER_CACHE_TIME_MS,
   });
@@ -58,54 +92,24 @@ export function useRenderedTranscriptData(transcriptId: string): {
     [request],
   );
 
-  return { maxSpeakerNumber, segments: data };
+  return { maxSpeakerNumber, request, segments: data };
 }
 
 export function useTranscriptOffset(transcriptId: string): number {
-  const store = main.UI.useStore(main.STORE_ID);
-  const sessionId = main.UI.useCell(
-    "transcripts",
-    transcriptId,
-    "session_id",
-    main.STORE_ID,
-  );
-
-  const transcriptIds =
-    main.UI.useSliceRowIds(
-      main.INDEXES.transcriptBySession,
-      sessionId ?? "",
-      main.STORE_ID,
-    ) ?? emptyIds;
-  const transcriptRowsRevision = useTranscriptRowsRevision(transcriptIds);
+  const transcript = useTranscript(transcriptId);
+  const transcripts = useSessionTranscripts(transcript?.sessionId ?? "");
 
   return useMemo(() => {
-    if (!store) {
+    if (!transcript) {
       return 0;
     }
 
-    const transcriptStartedAt = store.getCell(
-      "transcripts",
-      transcriptId,
-      "started_at",
+    const earliestStartedAt = Math.min(
+      ...transcripts.map((current) => current.startedAt),
     );
-    if (typeof transcriptStartedAt !== "number") {
-      return 0;
-    }
-
-    let earliestStartedAt = Number.POSITIVE_INFINITY;
-    for (const currentTranscriptId of transcriptIds ?? []) {
-      const startedAt = store.getCell(
-        "transcripts",
-        currentTranscriptId,
-        "started_at",
-      );
-      if (typeof startedAt === "number" && startedAt < earliestStartedAt) {
-        earliestStartedAt = startedAt;
-      }
-    }
 
     return Number.isFinite(earliestStartedAt)
-      ? transcriptStartedAt - earliestStartedAt
+      ? transcript.startedAt - earliestStartedAt
       : 0;
-  }, [store, transcriptId, transcriptIds, transcriptRowsRevision]);
+  }, [transcript, transcripts]);
 }

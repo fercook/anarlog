@@ -1,12 +1,13 @@
-import { Icon } from "@iconify-icon/react";
+import { CircleNotch, FolderOpen } from "@phosphor-icons/react";
 import { useMutation } from "@tanstack/react-query";
-import { Loader2Icon } from "lucide-react";
+import { platform } from "@tauri-apps/plugin-os";
 
-import { commands as fsSyncCommands } from "@hypr/plugin-fs-sync";
-import { commands as openerCommands } from "@hypr/plugin-opener2";
-import { DropdownMenuItem } from "@hypr/ui/components/ui/dropdown-menu";
+import { commands as fsSyncCommands } from "@anlg/plugin-fs-sync";
+import { commands as openerCommands } from "@anlg/plugin-opener2";
+import { DropdownMenuItem } from "@anlg/ui/components/ui/dropdown-menu";
 
-export function ShowInFinder({ sessionId }: { sessionId: string }) {
+export function ShowInFolder({ sessionId }: { sessionId: string }) {
+  const label = platform() === "macos" ? "Show in Finder" : "Show in folder";
   const { mutate, isPending } = useMutation({
     mutationFn: async () => {
       const result = await fsSyncCommands.sessionDir(sessionId);
@@ -27,11 +28,11 @@ export function ShowInFinder({ sessionId }: { sessionId: string }) {
       className="cursor-pointer"
     >
       {isPending ? (
-        <Loader2Icon className="animate-spin" />
+        <CircleNotch className="animate-spin" />
       ) : (
-        <Icon icon="ri:finder-line" />
+        <FolderOpen data-testid="show-in-folder-icon" />
       )}
-      <span>{isPending ? "Opening..." : "Show in Finder"}</span>
+      <span>{isPending ? "Opening..." : label}</span>
     </DropdownMenuItem>
   );
 }

@@ -1,4 +1,4 @@
-use hypr_ws_client::client::Message;
+use anlg_ws_client::client::Message;
 use owhisper_interface::ListenParams;
 use owhisper_interface::stream::StreamResponse;
 
@@ -16,7 +16,7 @@ impl RealtimeSttAdapter for DeepgramAdapter {
 
     fn is_supported_languages(
         &self,
-        languages: &[hypr_language::Language],
+        languages: &[anlg_language::Language],
         model: Option<&str>,
     ) -> bool {
         if languages.is_empty() {
@@ -68,7 +68,7 @@ impl RealtimeSttAdapter for DeepgramAdapter {
 mod tests {
     use std::collections::HashMap;
 
-    use hypr_language::ISO639;
+    use anlg_language::ISO639;
 
     use crate::ListenClient;
     use crate::adapter::RealtimeSttAdapter;
@@ -255,8 +255,7 @@ mod tests {
             ..Default::default()
         };
 
-        let url =
-            adapter.build_ws_url("https://api.hyprnote.com/stt?provider=deepgram", &params, 1);
+        let url = adapter.build_ws_url("https://api.anarlog.so/stt?provider=deepgram", &params, 1);
 
         assert!(url.as_str().contains("provider=deepgram"));
     }
@@ -288,7 +287,8 @@ mod tests {
                     .api_key(std::env::var("DEEPGRAM_API_KEY").expect("DEEPGRAM_API_KEY not set"))
                     .params($params)
                     .build_single()
-                    .await;
+                    .await
+                    .unwrap();
                 run_single_test(client, "deepgram").await;
             }
         };
@@ -299,7 +299,7 @@ mod tests {
         owhisper_interface::ListenParams {
             model: Some("nova-3".to_string()),
             languages: vec![ISO639::En.into()],
-            keywords: vec!["Hyprnote".to_string(), "transcription".to_string()],
+            keywords: vec!["Anarlog".to_string(), "transcription".to_string()],
             ..Default::default()
         }
     );
@@ -334,7 +334,8 @@ mod tests {
                 ..Default::default()
             })
             .build_dual()
-            .await;
+            .await
+            .unwrap();
 
         run_dual_test(client, "deepgram").await;
     }

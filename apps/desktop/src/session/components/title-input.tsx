@@ -13,10 +13,10 @@ import {
 } from "react";
 import { useResizeObserver } from "usehooks-ts";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
 import { useTitleGenerating } from "~/ai/hooks";
-import * as main from "~/store/tinybase/store/main";
+import { useSession, useUpdateSession } from "~/session/queries";
 import { useLiveTitle } from "~/store/zustand/live-title";
 import { type Tab } from "~/store/zustand/tabs";
 
@@ -54,12 +54,7 @@ export const TitleInput = forwardRef<
     const wasGenerating = usePrevious(isGenerating);
     const [showRevealAnimation, setShowRevealAnimation] = useState(false);
     const [generatedTitle, setGeneratedTitle] = useState<string | null>(null);
-    const storeTitle = main.UI.useCell(
-      "sessions",
-      sessionId,
-      "title",
-      main.STORE_ID,
-    ) as string | undefined;
+    const storeTitle = useSession(sessionId)?.title;
 
     const editorId = view ? "active" : "inactive";
     const inputRef = useRef<TitleInputHandle>(null);
@@ -143,6 +138,7 @@ const TitleInputInner = memo(
     {
       sessionId: string;
       editorId: string;
+      placeholder?: string;
       onTransferContentToEditor?: (content: string) => void;
       onFocusEditorAtStart?: () => void;
       onFocusEditorAtPixelWidth?: (pixelWidth: number) => void;
@@ -153,6 +149,7 @@ const TitleInputInner = memo(
       {
         sessionId,
         editorId,
+        placeholder,
         onTransferContentToEditor,
         onFocusEditorAtStart,
         onFocusEditorAtPixelWidth,
@@ -161,12 +158,9 @@ const TitleInputInner = memo(
       ref,
     ) => {
       const { t } = useLingui();
-      const storeTitle = main.UI.useCell(
-        "sessions",
-        sessionId,
-        "title",
-        main.STORE_ID,
-      ) as string | undefined;
+      const untitled = placeholder ?? t`Untitled`;
+      const storeTitle = useSession(sessionId)?.title;
+      const updateSession = useUpdateSession(sessionId);
       const [draftTitle, setDraftTitle] = useState<string | null>(null);
       const [isOverflowing, setIsOverflowing] = useState(false);
       const [overflowDistance, setOverflowDistance] = useState(0);
@@ -174,7 +168,9 @@ const TitleInputInner = memo(
       const [showEndFade, setShowEndFade] = useState(false);
       const [isTitleFocused, setIsTitleFocused] = useState(false);
       const internalRef = useRef<HTMLInputElement>(null);
+      const editRevisionRef = useRef(0);
       const setLiveTitle = useLiveTitle((s) => s.setTitle);
+      const markLiveTitlePersisted = useLiveTitle((s) => s.markTitlePersisted);
       const clearLiveTitle = useLiveTitle((s) => s.clearTitle);
       const title = draftTitle ?? storeTitle ?? "";
 
@@ -237,9 +233,7 @@ const TitleInputInner = memo(
         isOverflowing && !isTitleFocused && title.length > 0;
       const titleHoverScrollStyle = showHoverReveal
         ? ({
-            "--title-hover-scroll-distance": `-${Math.ceil(
-              overflowDistance,
-            )}px`,
+            "--title-hover-scroll-distance": `-${Math.ceil(overflowDistance)}px`,
             "--title-hover-scroll-duration": `${Math.min(
               Math.max(overflowDistance / 48, 2.5),
               8,
@@ -247,8 +241,8 @@ const TitleInputInner = memo(
           } as CSSProperties)
         : undefined;
       const visibleTitleLength = Math.max(
-        title.length || t`Untitled`.length,
-        t`Untitled`.length,
+        title.length || untitled.length,
+        untitled.length,
       );
       const titleShellStyle = {
         ...titleFadeStyle,
@@ -300,12 +294,37 @@ const TitleInputInner = memo(
         requestAnimationFrame(() => updateOverflowState());
       }, [title, updateOverflowState]);
 
-      const setStoreTitle = main.UI.useSetPartialRowCallback(
-        "sessions",
-        sessionId,
-        (title: string) => ({ title }),
-        [],
-        main.STORE_ID,
+      const setStoreTitle = useCallback(
+        (title: string) => updateSession({ title }),
+        [updateSession],
+      );
+
+      const persistTitle = useCallback(
+        (value: string) => {
+          const editRevision = editRevisionRef.current;
+          const previousTitle = storeTitle;
+          return setStoreTitle(value)
+            .then(() => {
+              if (editRevisionRef.current !== editRevision) return;
+              markLiveTitlePersisted(sessionId, value, previousTitle);
+            })
+            .catch((error) => {
+              console.error("[title-input] failed to persist title", error);
+              if (editRevisionRef.current !== editRevision) return;
+              clearLiveTitle(sessionId);
+            })
+            .finally(() => {
+              if (editRevisionRef.current !== editRevision) return;
+              setDraftTitle(null);
+            });
+        },
+        [
+          clearLiveTitle,
+          markLiveTitlePersisted,
+          sessionId,
+          setStoreTitle,
+          storeTitle,
+        ],
       );
 
       const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -320,6 +339,12 @@ const TitleInputInner = memo(
 
         if (e.key === "Enter") {
           e.preventDefault();
+          if (!onTransferContentToEditor && !onFocusEditorAtStart) {
+            editRevisionRef.current += 1;
+            e.currentTarget.blur();
+            return;
+          }
+
           const input = internalRef.current;
           if (!input) return;
 
@@ -327,19 +352,20 @@ const TitleInputInner = memo(
           const beforeCursor = input.value.slice(0, cursorPos);
           const afterCursor = input.value.slice(cursorPos);
 
+          editRevisionRef.current += 1;
           setDraftTitle(beforeCursor);
-          setStoreTitle(beforeCursor);
-          clearLiveTitle(sessionId);
+          setLiveTitle(sessionId, beforeCursor);
+          void persistTitle(beforeCursor);
 
           if (afterCursor) {
             setTimeout(() => onTransferContentToEditor?.(afterCursor), 0);
           } else {
             setTimeout(() => onFocusEditorAtStart?.(), 0);
           }
-        } else if (e.key === "Tab") {
+        } else if (e.key === "Tab" && onFocusEditorAtStart) {
           e.preventDefault();
           setTimeout(() => onFocusEditorAtStart?.(), 0);
-        } else if (e.key === "ArrowRight") {
+        } else if (e.key === "ArrowRight" && onFocusEditorAtStart) {
           const input = internalRef.current;
           if (!input) return;
           const cursorPos = input.selectionStart ?? 0;
@@ -350,7 +376,7 @@ const TitleInputInner = memo(
             e.preventDefault();
             setTimeout(() => onFocusEditorAtStart?.(), 0);
           }
-        } else if (e.key === "ArrowDown") {
+        } else if (e.key === "ArrowDown" && onFocusEditorAtPixelWidth) {
           e.preventDefault();
           const input = internalRef.current;
           if (!input) return;
@@ -386,10 +412,11 @@ const TitleInputInner = memo(
             aria-label={t`Session title`}
             ref={setInputRef}
             id={`title-input-${sessionId}-${editorId}`}
-            placeholder={t`Untitled`}
+            placeholder={untitled}
             type="text"
             onChange={(e) => {
               const value = e.target.value;
+              editRevisionRef.current += 1;
               setDraftTitle(value);
               setLiveTitle(sessionId, value);
               updateOverflowState(e.target);
@@ -404,9 +431,7 @@ const TitleInputInner = memo(
             }}
             onBlur={(e) => {
               setIsTitleFocused(false);
-              setStoreTitle(e.target.value);
-              setDraftTitle(null);
-              clearLiveTitle(sessionId);
+              void persistTitle(e.target.value);
               updateOverflowState(e.target);
             }}
             onScroll={(e) => updateOverflowState(e.currentTarget)}
@@ -450,6 +475,23 @@ const TitleInputInner = memo(
     },
   ),
 );
+
+export function EditableSessionTitle({
+  sessionId,
+  placeholder,
+}: {
+  sessionId: string;
+  placeholder: string;
+}) {
+  return (
+    <TitleInputInner
+      sessionId={sessionId}
+      editorId="header"
+      placeholder={placeholder}
+      variant="breadcrumb"
+    />
+  );
+}
 
 function isComposingKeyEvent(event: React.KeyboardEvent<HTMLInputElement>) {
   return (

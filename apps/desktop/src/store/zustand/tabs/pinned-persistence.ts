@@ -1,6 +1,6 @@
 import type { StateCreator, StoreMutatorIdentifier } from "zustand";
 
-import { getCurrentWebviewWindowLabel } from "@hypr/plugin-windows";
+import { getCurrentWebviewWindowLabel } from "@anlg/plugin-windows";
 
 import {
   getDefaultState,
@@ -15,7 +15,7 @@ export type PinnedTab = TabInput & { pinned: true };
 
 const serializePinnedTabs = (tabs: Tab[]): string => {
   const pinnedTabs = tabs
-    .filter((t) => t.pinned)
+    .filter((t) => t.pinned && t.type !== "shared_note_preview")
     .map((tab): PinnedTab => {
       const { active, slotId, pinned, returnToSlotId, returnToTabId, ...rest } =
         tab as Tab & {
@@ -53,6 +53,7 @@ const deserializePinnedTabs = (data: string): PinnedTab[] => {
       const tabType = (tab as { type: string }).type;
       switch (tabType) {
         case "sessions":
+        case "automations":
         case "contacts":
         case "templates":
         case "humans":

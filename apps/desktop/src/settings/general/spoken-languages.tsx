@@ -1,10 +1,10 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { Search, X } from "lucide-react";
+import { MagnifyingGlass, X } from "@phosphor-icons/react";
 import { useMemo, useState } from "react";
 
-import { Badge } from "@hypr/ui/components/ui/badge";
-import { Button } from "@hypr/ui/components/ui/button";
-import { cn } from "@hypr/utils";
+import { Badge } from "@anlg/ui/components/ui/badge";
+import { Button } from "@anlg/ui/components/ui/button";
+import { cn } from "@anlg/utils";
 
 import {
   getAdditionalSpokenLanguages,
@@ -116,7 +116,7 @@ export function SpokenLanguagesView({
         <Trans>Additional spoken languages</Trans>
       </h3>
       <p className="text-muted-foreground mb-3 text-xs">
-        <Trans>The main language is always included for transcription</Trans>
+        <Trans>Transcribe meetings that use more than one language.</Trans>
       </p>
       <div className="relative">
         <div
@@ -150,7 +150,7 @@ export function SpokenLanguagesView({
             </Badge>
           ))}
           {selectedLanguageCodes.length === 0 && (
-            <Search className="text-muted-foreground size-4 shrink-0" />
+            <MagnifyingGlass className="text-muted-foreground size-4 shrink-0" />
           )}
           <input
             id="language-search-input"

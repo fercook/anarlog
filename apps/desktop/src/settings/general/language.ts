@@ -1,3 +1,4 @@
+const MAX_DISPLAY_NAME_LOCALES = 16;
 const displayNamesByLocale = new Map<string, Intl.DisplayNames>();
 
 export const CORE_TRANSCRIPTION_LANGUAGE_CODES = [
@@ -56,12 +57,15 @@ export function getBaseLanguageDisplayName(
   code: string,
   displayLocale = "en",
 ): string {
-  const { language } = parseLocale(code);
+  const language = getBaseLanguageCode(code);
+  if (!language) {
+    return code;
+  }
   return getDisplayNames(displayLocale).of(language) ?? code;
 }
 
 export function getBaseLanguageCode(code: string): string {
-  return parseLocale(code).language;
+  return tryParseLocale(code)?.language ?? "";
 }
 
 export function getAdditionalSpokenLanguages(
@@ -92,7 +96,19 @@ export function parseLocale(code: string): {
   language: string;
   region?: string;
 } {
-  const locale = new Intl.Locale(code);
+  return tryParseLocale(code) ?? { language: "en" };
+}
+
+function tryParseLocale(code: string): {
+  language: string;
+  region?: string;
+} | null {
+  let locale: Intl.Locale;
+  try {
+    locale = new Intl.Locale(code);
+  } catch {
+    return null;
+  }
   return { language: locale.language, region: locale.region };
 }
 
@@ -101,11 +117,20 @@ function getDisplayNames(displayLocale: string) {
   const existing = displayNamesByLocale.get(locale);
 
   if (existing) {
+    displayNamesByLocale.delete(locale);
+    displayNamesByLocale.set(locale, existing);
     return existing;
   }
 
   const displayNames = new Intl.DisplayNames([locale], { type: "language" });
   displayNamesByLocale.set(locale, displayNames);
+  while (displayNamesByLocale.size > MAX_DISPLAY_NAME_LOCALES) {
+    const oldestLocale = displayNamesByLocale.keys().next().value;
+    if (oldestLocale === undefined) {
+      break;
+    }
+    displayNamesByLocale.delete(oldestLocale);
+  }
 
   return displayNames;
 }

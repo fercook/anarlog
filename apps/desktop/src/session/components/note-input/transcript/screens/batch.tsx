@@ -1,5 +1,5 @@
-import type { DegradedError } from "@hypr/plugin-transcription";
-import { DancingSticks } from "@hypr/ui/components/ui/dancing-sticks";
+import type { DegradedError } from "@anlg/plugin-transcription";
+import { DancingSticks } from "@anlg/ui/components/ui/dancing-sticks";
 
 import { useListener } from "~/stt/contexts";
 
@@ -12,32 +12,50 @@ export function BatchState({
 }) {
   const amplitude = useListener((state) => state.live.amplitude);
   const isFallbackFromLive = requestedLiveTranscription === true;
-  const continuation =
-    "Recording continues and audio will be saved when you stop.";
+  const isReconnecting = isFallbackFromLive && isRetryable(error);
+  const title = isFallbackFromLive
+    ? isReconnecting
+      ? "Reconnecting live transcription"
+      : error
+        ? "Live transcription stopped"
+        : "Live transcription unavailable"
+    : "Batch transcription mode";
+  const description = isFallbackFromLive
+    ? `${error ? `${degradedMessage(error)}. ` : ""}Recording continues${
+        isReconnecting ? " while we reconnect" : ""
+      }. A complete transcript will be generated after you stop.`
+    : "Recording continues. Your transcript will be generated after you stop.";
 
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-8">
-      <DancingSticks
-        amplitude={Math.min(Math.hypot(amplitude.mic, amplitude.speaker), 1)}
-        color="#a3a3a3"
-        height={56}
-        width={120}
-        stickWidth={3.5}
-        gap={4}
-      />
-      <div className="flex max-w-sm flex-col items-center gap-2 text-center">
-        <p className="text-muted-foreground text-base font-semibold">
-          {isFallbackFromLive
-            ? "Live transcription stopped"
-            : "Recording continues"}
-        </p>
+    <div
+      role="status"
+      className="flex h-full min-h-[400px] flex-col items-center justify-center px-6 text-center"
+    >
+      <div className="mb-5">
+        <DancingSticks
+          amplitude={Math.min(Math.hypot(amplitude.mic, amplitude.speaker), 1)}
+          color="#a3a3a3"
+          height={36}
+          width={80}
+          stickWidth={3}
+          gap={3}
+        />
+      </div>
+      <div className="flex max-w-md flex-col gap-2">
+        <p className="text-base font-medium">{title}</p>
         <p className="text-muted-foreground text-sm leading-relaxed">
-          {isFallbackFromLive
-            ? `${error ? degradedMessage(error) : "Live transcription is unavailable."} ${continuation}`
-            : `${continuation}`}
+          {description}
         </p>
       </div>
     </div>
+  );
+}
+
+function isRetryable(error: DegradedError | null) {
+  return (
+    error !== null &&
+    error.type !== "authentication_failed" &&
+    error.type !== "provider_configuration"
   );
 }
 
@@ -49,6 +67,8 @@ function degradedMessage(error: DegradedError): string {
       return error.message;
     case "connection_timeout":
       return "Transcription connection timed out";
+    case "provider_configuration":
+      return `Transcription provider is misconfigured (${error.provider})`;
     case "stream_error":
       return "Transcription stream error";
   }

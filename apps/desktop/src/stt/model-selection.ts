@@ -8,6 +8,35 @@ type PreferredProviderModelOptions = {
   keepUnavailableSavedModel?: boolean;
 };
 
+const DEFAULT_EXTERNAL_STT_MODELS: Record<string, string> = {
+  deepgram: "nova-3-general",
+  assemblyai: "universal-3-pro",
+  openai: "gpt-live-transcribe",
+  openrouter: "openai/gpt-4o-mini-transcribe",
+  cartesia: "ink-2",
+  cloudflare_workers_ai: "nova-3",
+  gladia: "solaria-1",
+  soniox: "stt-rt-v5",
+  elevenlabs: "scribe_v2",
+  mistral: "voxtral-mini-2602",
+  pyannote: "parakeet-tdt-0.6b-v3",
+  aquavoice: "avalon-v1-en",
+  cohere: "cohere-transcribe-03-2026",
+  fireworks: "whisper-v3-turbo",
+  groq: "whisper-large-v3-turbo",
+  xai: "xai-stt",
+  together: "openai/whisper-large-v3",
+  speechmatics: "enhanced",
+  azure_speech: "fast-transcription",
+  google_cloud: "latest_long",
+  aws_transcribe: "amazon-transcribe",
+  revai: "machine",
+};
+
+export function getDefaultSttModel(provider?: string | null) {
+  return provider ? DEFAULT_EXTERNAL_STT_MODELS[provider] : undefined;
+}
+
 export function normalizeStoredSttModel(
   provider: string | undefined,
   model: string | undefined,
@@ -25,6 +54,23 @@ export function normalizeStoredSttModel(
   }
 
   return model;
+}
+
+export function normalizeStoredSttSelection(
+  provider: string | undefined,
+  model: string | undefined,
+) {
+  const normalizedModel = normalizeStoredSttModel(provider, model);
+
+  if (provider === "anarlog" && normalizedModel?.startsWith("soniqo-")) {
+    return { provider: "soniqo", model: normalizedModel };
+  }
+
+  if (provider === "anarlog" && normalizedModel === "apple-speech") {
+    return { provider: "apple_speech", model: normalizedModel };
+  }
+
+  return { provider, model: normalizedModel };
 }
 
 const normalizeSavedModel = (

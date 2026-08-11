@@ -1,6 +1,6 @@
 import type { StoreApi } from "zustand";
 
-import { commands as analyticsCommands } from "@hypr/plugin-analytics";
+import { commands as analyticsCommands } from "@anlg/plugin-analytics";
 
 import type { ChatModeState } from "./chat-mode";
 import type { LifecycleState } from "./lifecycle";
@@ -22,6 +22,7 @@ import { id } from "~/shared/utils";
 import { listenerStore } from "~/store/zustand/listener/instance";
 
 const RETURN_ORIGIN_TAB_TYPES: Tab["type"][] = [
+  "automations",
   "calendar",
   "contacts",
   "settings",
@@ -64,7 +65,7 @@ export const createBasicSlice = <
   openCurrent: (tab) => {
     const { tabs, history, addRecentlyOpened, chatMode } = get();
     const currentActiveTab = tabs.find((t) => t.active);
-    const shouldCloseChat = shouldCloseChatForNavigation(
+    const nextChatMode = getChatModeForNavigation(
       currentActiveTab,
       tab,
       chatMode,
@@ -78,16 +79,16 @@ export const createBasicSlice = <
 
     if (currentActiveTab?.pinned || isCurrentTabListening) {
       set(
-        withChatCollapsedForNavigation(
+        withChatModeForNavigation(
           openTab(tabs, tab, history, true),
-          shouldCloseChat,
+          nextChatMode,
         ),
       );
     } else {
       set(
-        withChatCollapsedForNavigation(
+        withChatModeForNavigation(
           openTab(tabs, tab, history, false),
-          shouldCloseChat,
+          nextChatMode,
         ),
       );
     }
@@ -104,16 +105,16 @@ export const createBasicSlice = <
   openNew: (tab, options) => {
     const { tabs, history, addRecentlyOpened, chatMode } = get();
     const currentActiveTab = tabs.find((t) => t.active);
-    const shouldCloseChat = shouldCloseChatForNavigation(
+    const nextChatMode = getChatModeForNavigation(
       currentActiveTab,
       tab,
       chatMode,
     );
 
     set(
-      withChatCollapsedForNavigation(
+      withChatModeForNavigation(
         openTab(tabs, tab, history, true, options?.position),
-        shouldCloseChat,
+        nextChatMode,
       ),
     );
 
@@ -129,7 +130,7 @@ export const createBasicSlice = <
   select: (tab) => {
     const { tabs, addRecentlyOpened, chatMode } = get();
     const currentActiveTab = tabs.find((t) => t.active);
-    const shouldCloseChat = shouldCloseChatForNavigation(
+    const nextChatMode = getChatModeForNavigation(
       currentActiveTab,
       tab,
       chatMode,
@@ -137,9 +138,9 @@ export const createBasicSlice = <
     const nextTabs = setActiveFlags(tabs, tab);
     const currentTab = nextTabs.find((t) => t.active) || null;
     set(
-      withChatCollapsedForNavigation(
+      withChatModeForNavigation(
         { tabs: nextTabs, currentTab } as Partial<T>,
-        shouldCloseChat,
+        nextChatMode,
       ),
     );
 
@@ -161,7 +162,7 @@ export const createBasicSlice = <
     const currentIndex = tabs.findIndex((t) => isSameTab(t, currentTab));
     const nextIndex = (currentIndex + 1) % tabs.length;
     const nextTab = tabs[nextIndex];
-    const shouldCloseChat = shouldCloseChatForNavigation(
+    const nextChatMode = getChatModeForNavigation(
       currentTab,
       nextTab,
       chatMode,
@@ -169,12 +170,12 @@ export const createBasicSlice = <
 
     const nextTabs = setActiveFlags(tabs, nextTab);
     set(
-      withChatCollapsedForNavigation(
+      withChatModeForNavigation(
         {
           tabs: nextTabs,
           currentTab: { ...nextTab, active: true },
         } as Partial<T>,
-        shouldCloseChat,
+        nextChatMode,
       ),
     );
   },
@@ -185,7 +186,7 @@ export const createBasicSlice = <
     const currentIndex = tabs.findIndex((t) => isSameTab(t, currentTab));
     const prevIndex = (currentIndex - 1 + tabs.length) % tabs.length;
     const prevTab = tabs[prevIndex];
-    const shouldCloseChat = shouldCloseChatForNavigation(
+    const nextChatMode = getChatModeForNavigation(
       currentTab,
       prevTab,
       chatMode,
@@ -193,12 +194,12 @@ export const createBasicSlice = <
 
     const nextTabs = setActiveFlags(tabs, prevTab);
     set(
-      withChatCollapsedForNavigation(
+      withChatModeForNavigation(
         {
           tabs: nextTabs,
           currentTab: { ...prevTab, active: true },
         } as Partial<T>,
-        shouldCloseChat,
+        nextChatMode,
       ),
     );
   },
@@ -237,21 +238,21 @@ export const createBasicSlice = <
       remainingTabs[nextActiveIndex],
     );
     const nextCurrentTab = nextTabs[nextActiveIndex];
-    const shouldCloseChat =
-      tabToClose.active &&
-      shouldCloseChatForNavigation(tabToClose, nextCurrentTab, chatMode);
+    const nextChatMode = tabToClose.active
+      ? getChatModeForNavigation(tabToClose, nextCurrentTab, chatMode)
+      : null;
 
     const nextHistory = new Map(history);
     nextHistory.delete(tabToClose.slotId);
 
     set(
-      withChatCollapsedForNavigation(
+      withChatModeForNavigation(
         {
           tabs: nextTabs,
           currentTab: nextCurrentTab,
           history: nextHistory,
         } as Partial<T>,
-        shouldCloseChat,
+        nextChatMode,
       ),
     );
   },
@@ -293,6 +294,10 @@ export const createBasicSlice = <
     } as unknown as Partial<T>);
   },
   pin: (tab) => {
+    if (tab.type === "shared_sessions" || tab.type === "shared_note_preview") {
+      return;
+    }
+
     const { tabs } = get();
     const tabIndex = tabs.findIndex((t) => isSameTab(t, tab));
     if (tabIndex === -1) return;
@@ -462,6 +467,23 @@ const reuseExistingTab = (
     };
   }
 
+  if (
+    existingTab.type === "sessions" &&
+    requestedTab.type === "sessions" &&
+    requestedTab.state.autoStart
+  ) {
+    const nextTab = applyReturnOriginForReuse(
+      existingTab,
+      requestedTab,
+      preserveReturnOrigin,
+    );
+
+    return {
+      ...nextTab,
+      state: { ...nextTab.state, autoStart: true },
+    };
+  }
+
   return applyReturnOriginForReuse(
     existingTab,
     requestedTab,
@@ -505,36 +527,45 @@ const clearReturnOrigin = <T extends Tab>(tab: T): T => {
   return nextTab;
 };
 
-const shouldCloseChatForNavigation = (
+const getChatModeForNavigation = (
   currentTab: Tab | null | undefined,
   targetTab: Tab | TabInput,
   chatMode: ChatModeState["chatMode"],
-): boolean => {
+): ChatModeState["chatMode"] | null => {
   if (chatMode === "FloatingClosed") {
-    return false;
+    return null;
   }
 
   if (targetTab.type === "settings") {
-    return true;
+    return "FloatingClosed";
+  }
+
+  if (
+    targetTab.type === "shared_sessions" ||
+    targetTab.type === "shared_note_preview"
+  ) {
+    return "FloatingClosed";
   }
 
   if (targetTab.type !== "sessions") {
-    return false;
+    return null;
   }
 
-  return currentTab?.type !== "sessions" || currentTab.id !== targetTab.id;
+  return currentTab?.type !== "sessions" || currentTab.id !== targetTab.id
+    ? "FloatingClosed"
+    : null;
 };
 
-const withChatCollapsedForNavigation = <T extends ChatModeState>(
+const withChatModeForNavigation = <T extends ChatModeState>(
   state: Partial<T>,
-  shouldCloseChat: boolean,
+  chatMode: ChatModeState["chatMode"] | null,
 ): Partial<T> => {
-  if (!shouldCloseChat) {
+  if (!chatMode) {
     return state;
   }
 
   return {
     ...state,
-    chatMode: "FloatingClosed",
+    chatMode,
   } as Partial<T>;
 };

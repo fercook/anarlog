@@ -1,20 +1,24 @@
 import { Trans, useLingui } from "@lingui/react/macro";
+import { FileText, MagnifyingGlass, Users, X } from "@phosphor-icons/react";
 import { Command as CommandPrimitive } from "cmdk";
-import { FileTextIcon, SearchIcon, XIcon } from "lucide-react";
 import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
 } from "react";
 import { createPortal } from "react-dom";
 import { useHotkeys } from "react-hotkeys-hook";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
+import { trackAnalyticsEvent } from "~/analytics";
+import { useAuth } from "~/auth";
+import { useSessionSummaries } from "~/session/queries";
+import { useDurableSharedNotes } from "~/shared-notes/cache";
 import { useMainContentCenterOffset } from "~/shared/main/content-offset";
-import * as main from "~/store/tinybase/store/main";
 import { useTabs } from "~/store/zustand/tabs";
 
 const MAX_RECENT_DISPLAY = 5;
@@ -29,7 +33,8 @@ type OpenNoteDialogContextValue = {
   open: () => void;
 };
 
-type Session = {
+type NoteResult = {
+  resourceType: "session" | "shared_session";
   id: string;
   title: string;
   createdAt: string;
@@ -92,46 +97,64 @@ export function OpenNoteDialog({
   const recentlyOpenedSessionIds = useTabs(
     (state) => state.recentlyOpenedSessionIds,
   );
+  const { session } = useAuth();
 
-  const sessionIds = main.UI.useRowIds("sessions", main.STORE_ID);
-  const store = main.UI.useStore(main.STORE_ID);
+  const sessions = useSessionSummaries();
+  const sharedNotes = useDurableSharedNotes(session?.user.id);
 
   const sessionsMap = useMemo(() => {
-    if (!store || !sessionIds) return new Map<string, Session>();
+    return new Map<string, NoteResult>(
+      sessions.map((session) => [
+        session.id,
+        {
+          resourceType: "session",
+          id: session.id,
+          title: session.title || t`Untitled`,
+          createdAt: session.created_at,
+        },
+      ]),
+    );
+  }, [sessions, t]);
 
-    const map = new Map<string, Session>();
-    for (const id of sessionIds) {
-      map.set(id, {
-        id,
-        title:
-          (store.getCell("sessions", id, "title") as string) || t`Untitled`,
-        createdAt: store.getCell("sessions", id, "created_at") as string,
-      });
-    }
-    return map;
-  }, [sessionIds, store]);
-
-  const allSessionsSortedByDate = useMemo(() => {
-    return Array.from(sessionsMap.values()).sort((a, b) => {
+  const allNotesSortedByDate = useMemo(() => {
+    return [
+      ...sessionsMap.values(),
+      ...sharedNotes
+        .filter(
+          (note) => !(note.manageAccess && sessionsMap.has(note.sessionId)),
+        )
+        .map(
+          (note): NoteResult => ({
+            resourceType: "shared_session",
+            id: note.shareId,
+            title: note.title || t`Untitled`,
+            createdAt: note.publishedAt,
+          }),
+        ),
+    ].sort((a, b) => {
       if (!a.createdAt || !b.createdAt) return 0;
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
-  }, [sessionsMap]);
+  }, [sessionsMap, sharedNotes, t]);
 
   const recentSessions = useMemo(() => {
     return recentlyOpenedSessionIds
       .slice(0, MAX_RECENT_DISPLAY)
       .map((id) => sessionsMap.get(id))
-      .filter((s): s is Session => s !== undefined);
+      .filter((s): s is NoteResult => s !== undefined);
   }, [recentlyOpenedSessionIds, sessionsMap]);
 
   const recentSessionIdSet = useMemo(() => {
     return new Set(recentSessions.map((s) => s.id));
   }, [recentSessions]);
 
-  const otherSessions = useMemo(() => {
-    return allSessionsSortedByDate.filter((s) => !recentSessionIdSet.has(s.id));
-  }, [allSessionsSortedByDate, recentSessionIdSet]);
+  const otherNotes = useMemo(() => {
+    return allNotesSortedByDate.filter(
+      (note) =>
+        note.resourceType === "shared_session" ||
+        !recentSessionIdSet.has(note.id),
+    );
+  }, [allNotesSortedByDate, recentSessionIdSet]);
 
   const filteredRecentSessions = useMemo(() => {
     if (!query.trim()) return recentSessions;
@@ -141,16 +164,34 @@ export function OpenNoteDialog({
     );
   }, [recentSessions, query]);
 
-  const filteredOtherSessions = useMemo(() => {
-    if (!query.trim()) return otherSessions;
+  const filteredOtherNotes = useMemo(() => {
+    if (!query.trim()) return otherNotes;
     const lowerQuery = query.toLowerCase();
-    return otherSessions.filter((s) =>
-      s.title.toLowerCase().includes(lowerQuery),
+    return otherNotes.filter((note) =>
+      note.title.toLowerCase().includes(lowerQuery),
     );
-  }, [otherSessions, query]);
+  }, [otherNotes, query]);
 
   const hasAnyResults =
-    filteredRecentSessions.length > 0 || filteredOtherSessions.length > 0;
+    filteredRecentSessions.length > 0 || filteredOtherNotes.length > 0;
+
+  useEffect(() => {
+    if (!open || !query.trim()) return;
+    const timeout = setTimeout(() => {
+      trackAnalyticsEvent("search_performed", {
+        entry_point: "open_note_dialog",
+        result_count: filteredRecentSessions.length + filteredOtherNotes.length,
+        entity_types: [
+          ...new Set(
+            [...filteredRecentSessions, ...filteredOtherNotes].map(
+              (note) => note.resourceType,
+            ),
+          ),
+        ].sort(),
+      });
+    }, 300);
+    return () => clearTimeout(timeout);
+  }, [filteredOtherNotes.length, filteredRecentSessions.length, open, query]);
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
@@ -167,11 +208,20 @@ export function OpenNoteDialog({
   }, []);
 
   const handleSelect = useCallback(
-    (sessionId: string) => {
+    (note: NoteResult) => {
+      trackAnalyticsEvent("search_result_opened", {
+        entry_point: "open_note_dialog",
+        result_type: note.resourceType,
+        had_query: Boolean(query.trim()),
+      });
       handleOpenChange(false);
-      openCurrent({ type: "sessions", id: sessionId });
+      openCurrent(
+        note.resourceType === "shared_session"
+          ? { type: "shared_sessions", id: note.id }
+          : { type: "sessions", id: note.id },
+      );
     },
-    [handleOpenChange, openCurrent],
+    [handleOpenChange, openCurrent, query],
   );
 
   if (!open) return null;
@@ -208,7 +258,7 @@ export function OpenNoteDialog({
             }}
           >
             <div className="border-border/60 flex items-center gap-3 border-b px-4 py-3">
-              <SearchIcon className="text-muted-foreground h-4 w-4 shrink-0" />
+              <MagnifyingGlass className="text-muted-foreground h-4 w-4 shrink-0" />
               <CommandPrimitive.Input
                 ref={focusInput}
                 value={query}
@@ -230,7 +280,7 @@ export function OpenNoteDialog({
                   "transition-colors",
                 ])}
               >
-                <XIcon className="h-3 w-3" />
+                <X className="h-3 w-3" />
               </button>
             </div>
 
@@ -243,9 +293,7 @@ export function OpenNoteDialog({
                 <>
                   {filteredRecentSessions.length > 0 && (
                     <CommandPrimitive.Group
-                      className={
-                        filteredOtherSessions.length > 0 ? "pb-1.5" : ""
-                      }
+                      className={filteredOtherNotes.length > 0 ? "pb-1.5" : ""}
                       heading={
                         <div className="text-muted-foreground px-2 py-1.5 text-xs font-medium tracking-wider uppercase">
                           <Trans>Recent</Trans>
@@ -256,7 +304,7 @@ export function OpenNoteDialog({
                         <CommandPrimitive.Item
                           key={`recent-${session.id}`}
                           value={`recent-${session.id}`}
-                          onSelect={() => handleSelect(session.id)}
+                          onSelect={() => handleSelect(session)}
                           className={cn([
                             "flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5",
                             "text-muted-foreground text-sm",
@@ -264,14 +312,14 @@ export function OpenNoteDialog({
                             "transition-colors",
                           ])}
                         >
-                          <FileTextIcon className="text-muted-foreground h-4 w-4 shrink-0" />
+                          <FileText className="text-muted-foreground h-4 w-4 shrink-0" />
                           <span className="truncate">{session.title}</span>
                         </CommandPrimitive.Item>
                       ))}
                     </CommandPrimitive.Group>
                   )}
 
-                  {filteredOtherSessions.length > 0 && (
+                  {filteredOtherNotes.length > 0 && (
                     <CommandPrimitive.Group
                       heading={
                         <div className="flex flex-col gap-3">
@@ -284,11 +332,11 @@ export function OpenNoteDialog({
                         </div>
                       }
                     >
-                      {filteredOtherSessions.map((session) => (
+                      {filteredOtherNotes.map((note) => (
                         <CommandPrimitive.Item
-                          key={session.id}
-                          value={session.id}
-                          onSelect={() => handleSelect(session.id)}
+                          key={`${note.resourceType}-${note.id}`}
+                          value={`${note.resourceType}-${note.id}`}
+                          onSelect={() => handleSelect(note)}
                           className={cn([
                             "flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5",
                             "text-muted-foreground text-sm",
@@ -296,8 +344,15 @@ export function OpenNoteDialog({
                             "transition-colors",
                           ])}
                         >
-                          <FileTextIcon className="text-muted-foreground h-4 w-4 shrink-0" />
-                          <span className="truncate">{session.title}</span>
+                          {note.resourceType === "shared_session" ? (
+                            <Users
+                              className="text-muted-foreground h-4 w-4 shrink-0"
+                              data-testid="shared-note-icon"
+                            />
+                          ) : (
+                            <FileText className="text-muted-foreground h-4 w-4 shrink-0" />
+                          )}
+                          <span className="truncate">{note.title}</span>
                         </CommandPrimitive.Item>
                       ))}
                     </CommandPrimitive.Group>

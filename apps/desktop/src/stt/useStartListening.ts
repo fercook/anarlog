@@ -1,259 +1,240 @@
-import { useCallback, useRef } from "react";
+import { useCallback } from "react";
 
-import { commands as analyticsCommands } from "@hypr/plugin-analytics";
-import type { TranscriptStorage } from "@hypr/store";
+import { commands as analyticsCommands } from "@anlg/plugin-analytics";
+import { sonnerToast } from "@anlg/ui/components/ui/toast";
 
+import { useCaptureLifecycle } from "./capture-lifecycle";
 import { useListener } from "./contexts";
-import { getSessionKeywords } from "./useKeywords";
+import { startMeetingChatCapture } from "./meeting-chat-capture";
 import {
-  canRunBatchTranscription,
-  isStoppedTranscriptionError,
-  useRunBatch,
-} from "./useRunBatch";
-import { useSTTConnection } from "./useSTTConnection";
+  MEETING_DISCLOSURE_MESSAGE,
+  startMeetingRecordingDisclosure,
+} from "./meeting-disclosure";
+import { getSessionKeywords } from "./useKeywords";
 
+import { trackAnalyticsEvent } from "~/analytics";
 import { useShell } from "~/contexts/shell";
-import { deleteProcessedAudioForRetention } from "~/services/audio-retention";
-import { getEnhancerService } from "~/services/enhancer";
-import { getSessionEventById } from "~/session/utils";
+import { getSessionEvent } from "~/session/utils";
 import { useConfigValue } from "~/shared/config";
-import { id } from "~/shared/utils";
-import * as main from "~/store/tinybase/store/main";
-import * as settings from "~/store/tinybase/store/settings";
-import type {
-  LiveTranscriptPersistCallback,
-  OnStoppedCallback,
-} from "~/store/zustand/listener/transcript";
+import { useTabs } from "~/store/zustand/tabs";
 import {
   getLiveTranscriptionConfig,
   getTranscriptionLanguages,
 } from "~/stt/capabilities";
-import {
-  createTranscriptAccumulator,
-  parseTranscriptWords,
-  type TranscriptAccumulator,
-} from "~/stt/utils";
+import { useSessionParticipantHumanIds } from "~/stt/queries";
 
-function hasTranscriptContent(
-  store: main.Store,
-  indexes: ReturnType<typeof main.UI.useIndexes> | undefined,
-  sessionId: string,
-) {
-  const transcriptIds =
-    indexes?.getSliceRowIds(main.INDEXES.transcriptBySession, sessionId) ?? [];
-
-  return transcriptIds.some(
-    (transcriptId) => parseTranscriptWords(store, transcriptId).length > 0,
-  );
-}
-
-export function getPostCaptureAction(
-  details: {
-    audioPath: string | null;
-    liveTranscriptionActive: boolean;
-  },
-  canRunBatch: boolean,
-) {
-  if (details.liveTranscriptionActive) {
-    return "enhance_only" as const;
-  }
-
-  if (!!details.audioPath && canRunBatch) {
-    return "batch_then_enhance" as const;
-  }
-
-  return "none" as const;
-}
+export {
+  getPostCaptureAction,
+  getPostCaptureRepairReasons,
+  type PostCaptureRepairReason,
+} from "./capture-lifecycle";
+export {
+  MEETING_DISCLOSURE_MESSAGE,
+  sendMeetingRecordingDisclosure,
+} from "./meeting-disclosure";
+export { useResumeListeningLifecycle } from "./resume-listening";
 
 export function useStartListening(sessionId: string) {
-  const { user_id } = main.UI.useValues(main.STORE_ID);
-  const store = main.UI.useStore(main.STORE_ID);
-  const indexes = main.UI.useIndexes(main.STORE_ID);
-  const settingsStore = settings.UI.useStore(settings.STORE_ID);
+  const {
+    conn,
+    createCaptureLifecycle,
+    session,
+    setStopMeetingChatCapture,
+    stopMeetingChatTasks,
+  } = useCaptureLifecycle(sessionId);
+  const participantHumanIds = useSessionParticipantHumanIds(sessionId);
+  const getSessionMode = useListener((state) => state.getSessionMode);
+  const canStartLiveSession = useListener((state) => state.canStartLiveSession);
 
   const aiLanguage = useConfigValue("ai_language");
   const spokenLanguages = useConfigValue("spoken_languages");
   const dictionaryTerms = useConfigValue("personalization_dictionary_terms");
+  const microphoneDevice = useConfigValue("microphone_device");
+  const meetingDisclosureAutoSendChat = useConfigValue(
+    "consent_auto_send_chat",
+  );
 
   const start = useListener((state) => state.start);
-  const { conn } = useSTTConnection();
-  const runBatch = useRunBatch(sessionId);
   const { leftsidebar } = useShell();
   const setLeftSidebarExpanded = leftsidebar.setExpanded;
-
-  const runBatchRef = useRef(runBatch);
-  const canRunBatchRef = useRef(canRunBatchTranscription(conn));
-  runBatchRef.current = runBatch;
-  canRunBatchRef.current = canRunBatchTranscription(conn);
+  const openNew = useTabs((state) => state.openNew);
 
   const startListening = useCallback(async () => {
-    if (!store) {
+    if (!canStartLiveSession(sessionId)) {
       return;
     }
-
-    let transcriptId: string | null = null;
-    const startedAt = Date.now();
-    const memoMd = store.getCell("sessions", sessionId, "raw_md");
-    const createdAt = new Date().toISOString();
-    const hadTranscriptBeforeStart = hasTranscriptContent(
-      store as main.Store,
-      indexes ?? undefined,
-      sessionId,
-    );
-    const transcriptAccumulatorRef: {
-      current: TranscriptAccumulator | null;
-    } = { current: null };
-    const keywords = getSessionKeywords({
-      store,
+    await stopMeetingChatTasks();
+    const lifecycle = createCaptureLifecycle();
+    await lifecycle.ready;
+    const keywords = await getSessionKeywords({
       sessionId,
       dictionaryTerms,
     });
-
-    const onStopped: OnStoppedCallback = async (_sessionId, details) => {
-      transcriptAccumulatorRef.current?.dispose();
-      transcriptAccumulatorRef.current = null;
-
-      const postCaptureAction = getPostCaptureAction(
-        details,
-        canRunBatchRef.current,
-      );
-
-      if (postCaptureAction === "batch_then_enhance") {
-        try {
-          await runBatchRef.current(details.audioPath!);
-        } catch (error) {
-          if (isStoppedTranscriptionError(error)) {
-            return;
-          }
-          console.error(
-            "[listener] failed to run post-capture transcription",
-            error,
-          );
-          return;
-        }
-      }
-
-      if (postCaptureAction === "none") {
-        return;
-      }
-
-      const service = getEnhancerService();
-      const shouldRegenerateExistingSummary =
-        hadTranscriptBeforeStart &&
-        (transcriptId !== null || postCaptureAction === "batch_then_enhance");
-      if (shouldRegenerateExistingSummary) {
-        service?.resetEnhanceTasks(sessionId);
-        service?.queueAutoEnhance(sessionId);
-      } else {
-        service?.queueAutoEnhanceIfSummaryEmpty(sessionId);
-      }
-
-      if (settingsStore) {
-        await deleteProcessedAudioForRetention(
-          store as main.Store,
-          settingsStore as settings.Store,
-          sessionId,
-        );
-      }
-    };
-
-    const handlePersist: LiveTranscriptPersistCallback = (delta) => {
-      if (delta.new_words.length === 0 && delta.replaced_ids.length === 0) {
-        return;
-      }
-
-      if (!transcriptId) {
-        transcriptId = id();
-        const transcriptRow = {
-          session_id: sessionId,
-          user_id: user_id ?? "",
-          created_at: createdAt,
-          started_at: startedAt,
-          words: "[]",
-          speaker_hints: "[]",
-          memo_md: typeof memoMd === "string" ? memoMd : "",
-        } satisfies TranscriptStorage;
-
-        store.setRow("transcripts", transcriptId, transcriptRow);
-        transcriptAccumulatorRef.current = createTranscriptAccumulator(
-          store,
-          transcriptId,
-          { words: [], hints: [] },
-        );
-      }
-
-      transcriptAccumulatorRef.current ??= createTranscriptAccumulator(
-        store,
-        transcriptId,
-      );
-
-      store.transaction(() => {
-        transcriptAccumulatorRef.current?.applyLiveDelta(delta);
-      });
-    };
-
-    const participantHumanIds: string[] = [];
-    store.forEachRow(
-      "mapping_session_participant",
-      (mappingId, _forEachCell) => {
-        const sid = store.getCell(
-          "mapping_session_participant",
-          mappingId,
-          "session_id",
-        );
-        if (sid !== sessionId) return;
-        const hid = store.getCell(
-          "mapping_session_participant",
-          mappingId,
-          "human_id",
-        );
-        if (typeof hid === "string" && hid) {
-          participantHumanIds.push(hid);
-        }
-      },
-    );
-
     const languages = getTranscriptionLanguages(aiLanguage, spokenLanguages);
     const liveTranscriptionConfig = await getLiveTranscriptionConfig({
       provider: conn?.provider,
       model: conn?.model,
       languages,
     });
+    if (!canStartLiveSession(sessionId)) {
+      return;
+    }
+    try {
+      await lifecycle.acquireCloudsyncLease();
+    } catch (error) {
+      console.error("[listener] failed to defer CloudSync for capture", error);
+      trackAnalyticsEvent("session_start_failed", {
+        failure_stage: "cloud_sync_deferral",
+      });
+      try {
+        await lifecycle.releaseCloudsyncLease();
+      } catch (cleanupError) {
+        console.error(
+          "[listener] failed to release capture CloudSync deferral",
+          cleanupError,
+        );
+      }
+      sonnerToast.error(
+        "Anarlog could not safely start recording. Please try again.",
+        { id: "capture-state-persist-failed" },
+      );
+      return;
+    }
 
-    const started = await start(
-      {
-        session_id: sessionId,
-        languages: liveTranscriptionConfig.languages,
-        onboarding: false,
-        model: conn?.model ?? "",
-        base_url: conn?.baseUrl ?? "",
-        api_key: conn?.apiKey ?? "",
-        keywords,
-        transcription_mode: liveTranscriptionConfig.transcriptionMode,
-        participant_human_ids: participantHumanIds,
-        self_human_id: typeof user_id === "string" ? user_id : null,
-      },
-      {
-        handlePersist,
-        onStopped,
-      },
-    );
+    try {
+      await lifecycle.persistMarker();
+    } catch (error) {
+      console.error(
+        "[listener] failed to prepare durable capture state",
+        error,
+      );
+      trackAnalyticsEvent("session_start_failed", {
+        failure_stage: "recovery_marker",
+      });
+      try {
+        await lifecycle.cleanupFailedStart();
+      } catch (cleanupError) {
+        console.error(
+          "[listener] failed to clean up capture state",
+          cleanupError,
+        );
+      }
+      try {
+        await lifecycle.releaseCloudsyncLease();
+      } catch (releaseError) {
+        console.error(
+          "[listener] failed to release capture CloudSync deferral",
+          releaseError,
+        );
+      }
+      sonnerToast.error(
+        "Anarlog could not safely start recording. Please try again.",
+        { id: "capture-state-persist-failed" },
+      );
+      return;
+    }
+
+    let started = false;
+    try {
+      started = await start(
+        {
+          session_id: sessionId,
+          languages: liveTranscriptionConfig.languages,
+          onboarding: false,
+          model: conn?.model ?? "",
+          base_url: conn?.baseUrl ?? "",
+          api_key: conn?.apiKey ?? "",
+          keywords,
+          mic_device: microphoneDevice || null,
+          transcription_mode: liveTranscriptionConfig.transcriptionMode,
+          participant_human_ids: participantHumanIds,
+          self_human_id: session?.user_id || null,
+        },
+        {
+          handlePersist: lifecycle.handlePersist,
+          onStopped: lifecycle.onStopped,
+        },
+      );
+    } catch (error) {
+      console.error("[listener] failed to start recording", error);
+      trackAnalyticsEvent("session_start_failed", {
+        failure_stage: "capture_start",
+      });
+      try {
+        await lifecycle.cleanupFailedStart();
+      } catch (cleanupError) {
+        console.error(
+          "[listener] failed to clean up capture state",
+          cleanupError,
+        );
+      } finally {
+        await lifecycle.releaseCloudsyncLease();
+      }
+      sonnerToast.error(
+        "Anarlog could not safely start recording. Please try again.",
+        { id: "capture-state-persist-failed" },
+      );
+      return;
+    }
 
     if (!started) {
-      transcriptAccumulatorRef.current?.dispose();
-      transcriptAccumulatorRef.current = null;
-
-      if (transcriptId) {
-        store.delRow("transcripts", transcriptId);
+      trackAnalyticsEvent("session_start_failed", {
+        failure_stage: "capture_rejected",
+      });
+      await stopMeetingChatTasks();
+      try {
+        await lifecycle.cleanupFailedStart();
+      } catch (error) {
+        console.error("[listener] failed to clean up capture state", error);
+        sonnerToast.error(
+          "Anarlog could not safely start recording. Please try again.",
+          { id: "capture-state-persist-failed" },
+        );
+      } finally {
+        await lifecycle.releaseCloudsyncLease();
       }
       return;
     }
 
+    if (!conn) {
+      sonnerToast.warning("Live transcription is not configured", {
+        id: "recording-without-transcription",
+        duration: Infinity,
+        description:
+          "Audio is being saved. Choose a transcription provider to ensure this recording can be transcribed.",
+        action: {
+          label: "Configure",
+          onClick: () => {
+            openNew({
+              type: "settings",
+              state: { tab: "transcription" },
+            });
+          },
+        },
+      });
+    }
+
     setLeftSidebarExpanded(false);
+
+    setStopMeetingChatCapture(
+      startMeetingChatCapture({
+        sessionId,
+        excludedTexts: [MEETING_DISCLOSURE_MESSAGE],
+      }),
+    );
+
+    if (meetingDisclosureAutoSendChat) {
+      startMeetingRecordingDisclosure(
+        sessionId,
+        () => getSessionMode(sessionId) === "active",
+      );
+    }
 
     void analyticsCommands.event({
       event: "session_started",
-      has_calendar_event: !!getSessionEventById(store, sessionId),
+      has_calendar_event: Boolean(
+        getSessionEvent({ event_json: session?.event_json }),
+      ),
       ...(conn
         ? {
             stt_provider: conn.provider,
@@ -263,16 +244,22 @@ export function useStartListening(sessionId: string) {
     });
   }, [
     aiLanguage,
+    canStartLiveSession,
     conn,
+    createCaptureLifecycle,
     dictionaryTerms,
-    store,
-    indexes,
+    getSessionMode,
+    microphoneDevice,
+    openNew,
+    participantHumanIds,
+    session,
     sessionId,
-    start,
-    user_id,
-    spokenLanguages,
+    setStopMeetingChatCapture,
     setLeftSidebarExpanded,
-    settingsStore,
+    meetingDisclosureAutoSendChat,
+    spokenLanguages,
+    start,
+    stopMeetingChatTasks,
   ]);
 
   return startListening;

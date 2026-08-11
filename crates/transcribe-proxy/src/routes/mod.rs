@@ -5,7 +5,7 @@ mod model_resolution;
 pub mod status;
 pub mod streaming;
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use axum::{
     Router,
@@ -15,9 +15,10 @@ use axum::{
     routing::{get, post},
 };
 use owhisper_client::Provider;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use crate::anarlog_routing::{AnarlogRouter, RoutingMode, should_use_anarlog_routing};
 use crate::config::SttProxyConfig;
-use crate::hyprnote_routing::{HyprnoteRouter, RoutingMode, should_use_hyprnote_routing};
 use crate::provider_selector::{ProviderSelector, SelectedProvider};
 use crate::query_params::QueryParams;
 use crate::supabase::SupabaseClient;
@@ -25,13 +26,19 @@ use crate::supabase::SupabaseClient;
 pub(crate) use error::{RouteError, parse_async_provider};
 
 const MAX_BATCH_AUDIO_BODY_BYTES: usize = 512 * 1024 * 1024;
+const MAX_BATCH_CALLBACK_BODY_BYTES: usize = 64 * 1024;
+const MAX_CONCURRENT_BATCH_REQUESTS: usize = 4;
+
+static BATCH_REQUEST_SLOTS: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_BATCH_REQUESTS)));
 
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub config: SttProxyConfig,
     pub selector: ProviderSelector,
-    pub router: Option<Arc<HyprnoteRouter>>,
+    pub router: Option<Arc<AnarlogRouter>>,
     pub client: reqwest::Client,
+    batch_requests: Arc<Semaphore>,
 }
 
 impl FromRequestParts<AppState> for SupabaseClient {
@@ -61,12 +68,19 @@ impl FromRequestParts<AppState> for SupabaseClient {
 }
 
 impl AppState {
+    pub fn try_acquire_batch_slot(&self) -> Result<OwnedSemaphorePermit, RouteError> {
+        self.batch_requests
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| RouteError::TooManyRequests("too many concurrent batch requests"))
+    }
+
     #[allow(clippy::result_large_err)]
     pub fn resolve_provider(&self, params: &mut QueryParams) -> Result<SelectedProvider, Response> {
         let provider_param = params.remove_first("provider");
 
-        if should_use_hyprnote_routing(provider_param.as_deref()) {
-            return self.resolve_hyprnote_provider(params);
+        if should_use_anarlog_routing(provider_param.as_deref()) {
+            return self.resolve_anarlog_provider(params);
         }
 
         let requested = match provider_param {
@@ -75,7 +89,7 @@ impl AppState {
                 Err(_) => {
                     return Err((
                         StatusCode::BAD_REQUEST,
-                        format!("Invalid provider: {}. Supported providers: hyprnote, deepgram, soniox, assemblyai, gladia, elevenlabs, fireworks, openai, mistral, dashscope", s)
+                        format!("Invalid provider: {}. Supported providers: anarlog, deepgram, soniox, assemblyai, gladia, elevenlabs, fireworks, openai, mistral, dashscope", s)
                     ).into_response());
                 }
             },
@@ -85,7 +99,7 @@ impl AppState {
         self.selector.select(requested).map_err(|e| {
             tracing::warn!(
                 error = %e,
-                hyprnote.stt.requested_provider = ?requested,
+                anarlog.stt.requested_provider = ?requested,
                 "provider_selection_failed"
             );
             (StatusCode::BAD_REQUEST, e.to_string()).into_response()
@@ -93,17 +107,10 @@ impl AppState {
     }
 
     #[allow(clippy::result_large_err)]
-    fn resolve_hyprnote_provider(
-        &self,
-        params: &QueryParams,
-    ) -> Result<SelectedProvider, Response> {
+    fn resolve_anarlog_provider(&self, params: &QueryParams) -> Result<SelectedProvider, Response> {
         let router = self.router.as_ref().ok_or_else(|| {
-            tracing::warn!("hyprnote_routing_not_configured");
-            (
-                StatusCode::BAD_REQUEST,
-                "hyprnote routing is not configured",
-            )
-                .into_response()
+            tracing::warn!("anarlog_routing_not_configured");
+            (StatusCode::BAD_REQUEST, "anarlog routing is not configured").into_response()
         })?;
 
         let languages = params.get_languages();
@@ -111,23 +118,23 @@ impl AppState {
         let routed_provider = router.select_provider(&languages, &available_providers);
 
         tracing::debug!(
-            hyprnote.stt.language_codes = ?languages,
-            hyprnote.stt.available_providers = ?available_providers,
-            hyprnote.stt.provider.name = ?routed_provider,
-            "hyprnote_routing"
+            anarlog.stt.language_codes = ?languages,
+            anarlog.stt.available_providers = ?available_providers,
+            anarlog.stt.provider.name = ?routed_provider,
+            "anarlog_routing"
         );
 
         self.selector.select(routed_provider).map_err(|e| {
             tracing::warn!(
                 error = %e,
-                hyprnote.stt.language_codes = ?languages,
-                "hyprnote_routing_failed"
+                anarlog.stt.language_codes = ?languages,
+                "anarlog_routing_failed"
             );
             (StatusCode::BAD_REQUEST, e.to_string()).into_response()
         })
     }
 
-    pub fn resolve_hyprnote_provider_chain_for_mode(
+    pub fn resolve_anarlog_provider_chain_for_mode(
         &self,
         mode: RoutingMode,
         params: &QueryParams,
@@ -149,13 +156,14 @@ impl AppState {
 
 fn make_state(config: SttProxyConfig) -> AppState {
     let selector = config.provider_selector();
-    let router = config.hyprnote_router().map(Arc::new);
+    let router = config.anarlog_router().map(Arc::new);
 
     AppState {
         config,
         selector,
         router,
         client: reqwest::Client::new(),
+        batch_requests: BATCH_REQUEST_SLOTS.clone(),
     }
 }
 
@@ -205,7 +213,7 @@ mod tests {
         let mut env = Env::default();
         env.stt.deepgram_api_key = Some("deepgram-key".to_string());
 
-        let supabase = hypr_api_env::SupabaseEnv {
+        let supabase = anlg_api_env::SupabaseEnv {
             supabase_url: String::new(),
             supabase_anon_key: String::new(),
             supabase_service_role_key: String::new(),
@@ -222,5 +230,19 @@ mod tests {
         let selected = state.resolve_provider(&mut params).unwrap();
 
         assert_eq!(selected.provider(), Provider::Deepgram);
+    }
+
+    #[test]
+    fn batch_admission_is_bounded_and_shared_across_router_states() {
+        let first = test_state();
+        let second = test_state();
+        let permits: Vec<_> = (0..MAX_CONCURRENT_BATCH_REQUESTS)
+            .map(|_| first.try_acquire_batch_slot().unwrap())
+            .collect();
+
+        assert!(first.try_acquire_batch_slot().is_err());
+        assert!(second.try_acquire_batch_slot().is_err());
+        drop(permits);
+        assert!(second.try_acquire_batch_slot().is_ok());
     }
 }

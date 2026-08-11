@@ -2,8 +2,8 @@ mod commands;
 mod ext;
 pub mod runtime;
 
+pub use anlg_fs_sync_core::*;
 pub use ext::*;
-pub use hypr_fs_sync_core::*;
 
 const PLUGIN_NAME: &str = "fs-sync";
 
@@ -22,6 +22,7 @@ fn make_specta_builder<R: tauri::Runtime>() -> tauri_specta::Builder<R> {
             commands::delete_folder::<tauri::Wry>,
             commands::audio_exist::<tauri::Wry>,
             commands::audio_delete::<tauri::Wry>,
+            commands::audio_metadata::<tauri::Wry>,
             commands::audio_delete_orphaned_expired::<tauri::Wry>,
             commands::audio_import::<tauri::Wry>,
             commands::audio_import_data::<tauri::Wry>,

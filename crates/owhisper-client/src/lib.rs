@@ -5,6 +5,8 @@ mod error_detection;
 mod http_client;
 mod live;
 #[cfg(feature = "local")]
+mod local_apple_speech_live;
+#[cfg(feature = "local")]
 mod local_soniqo_live;
 pub(crate) mod polling;
 mod providers;
@@ -20,22 +22,29 @@ pub use providers::{Auth, Provider, is_meta_model};
 pub use adapter::StreamingBatchConfig;
 pub use adapter::deepgram::DeepgramModel;
 pub use adapter::{
-    AdapterKind, AquaVoiceAdapter, ArgmaxAdapter, AssemblyAIAdapter, BatchSttAdapter,
-    CallbackResult, CallbackSttAdapter, CartesiaAdapter, DashScopeAdapter, DeepgramAdapter,
-    ElevenLabsAdapter, FireworksAdapter, GladiaAdapter, HyprnoteAdapter, LanguageQuality,
-    LanguageSupport, MistralAdapter, OpenAIAdapter, PyannoteAdapter, RealtimeSttAdapter,
-    SmallestAIAdapter, SonioxAdapter, WhisperCppAdapter, append_provider_param,
-    documented_language_codes_batch, documented_language_codes_live, is_hyprnote_proxy,
+    AdapterKind, AnarlogAdapter, AquaVoiceAdapter, ArgmaxAdapter, AssemblyAIAdapter,
+    AwsTranscribeAdapter, AzureSpeechAdapter, BatchSttAdapter, CallbackResult, CallbackSttAdapter,
+    CartesiaAdapter, CohereAdapter, DashScopeAdapter, DeepgramAdapter, DeepgramFluxAdapter,
+    ElevenLabsAdapter, FireworksAdapter, GladiaAdapter, GoogleCloudAdapter, GroqAdapter,
+    LanguageQuality, LanguageSupport, MistralAdapter, OpenAIAdapter, OpenRouterAdapter,
+    PyannoteAdapter, RealtimeSttAdapter, RevAiAdapter, SmallestAIAdapter, SonioxAdapter,
+    SpeechmaticsAdapter, TogetherAdapter, WhisperCppAdapter, XaiAdapter, append_provider_param,
+    documented_language_codes_batch, documented_language_codes_live, is_anarlog_proxy,
     is_local_host, normalize_languages,
 };
 pub use adapter::{StreamingBatchEvent, StreamingBatchStream};
 
+pub use anlg_ws_client;
 pub use batch::{BatchClient, BatchClientBuilder};
 pub use error::Error;
-pub use hypr_ws_client;
 pub use live::{
     DualHandle, FinalizeHandle, ListenClient, ListenClientBuilder, ListenClientDual,
     ListenClientDualInput, ListenClientInput,
+};
+#[cfg(feature = "local")]
+pub use local_apple_speech_live::{
+    LocalAppleSpeechLiveClient, LocalAppleSpeechLiveError, LocalAppleSpeechLiveHandle,
+    LocalAppleSpeechLiveStream,
 };
 #[cfg(feature = "local")]
 pub use local_soniqo_live::{

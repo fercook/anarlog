@@ -8,22 +8,23 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { extractReasoningMiddleware, wrapLanguageModel } from "ai";
 import { useMemo, useRef } from "react";
 
-import type { CharTask } from "@hypr/api-client";
-import type { AIProviderStorage } from "@hypr/store";
+import type { CharTask } from "@anlg/api-client";
+import type { AIProviderStorage } from "@anlg/store";
 
+import { createAppleFoundationModel } from "../apple-foundation-model";
 import { createAuthFetch } from "../auth-fetch";
 import { createTracedFetch, tracedFetch } from "../traced-fetch";
 
 import { useAuth } from "~/auth";
-import { useBillingAccess } from "~/auth/billing";
+import { useBillingAccess } from "~/auth/billing-context";
 import { env } from "~/env";
 import { type ProviderId, PROVIDERS } from "~/settings/ai/llm/shared";
-import { providerRowId } from "~/settings/ai/shared";
 import {
   getProviderSelectionBlockers,
   type ProviderEligibilityContext,
 } from "~/settings/ai/shared/eligibility";
-import * as settings from "~/store/tinybase/store/settings";
+import { useAiProvider } from "~/settings/providers";
+import { useConfigValues } from "~/shared/config";
 
 type LanguageModelV3 = Parameters<typeof wrapLanguageModel>[0]["model"];
 
@@ -38,8 +39,8 @@ export type LLMConnectionStatus =
   | { status: "pending"; reason: "missing_provider" }
   | { status: "pending"; reason: "missing_model"; providerId: ProviderId }
   | { status: "error"; reason: "provider_not_found"; providerId: string }
-  | { status: "error"; reason: "unauthenticated"; providerId: "hyprnote" }
-  | { status: "error"; reason: "not_pro"; providerId: "hyprnote" }
+  | { status: "error"; reason: "unauthenticated"; providerId: "anarlog" }
+  | { status: "error"; reason: "not_pro"; providerId: "anarlog" }
   | {
       status: "error";
       reason: "missing_config";
@@ -52,6 +53,9 @@ type LLMConnectionResult = {
   conn: LLMConnectionInfo | null;
   status: LLMConnectionStatus;
 };
+
+export const normalizeLLMProviderId = (providerId: string): string =>
+  providerId === "hyprnote" ? "anarlog" : providerId;
 
 export const useLanguageModel = (task?: CharTask): LanguageModelV3 | null => {
   const { conn } = useLLMConnection();
@@ -66,7 +70,7 @@ export const useLanguageModel = (task?: CharTask): LanguageModelV3 | null => {
     if (!conn) return null;
 
     const hostedFetch =
-      conn.providerId === "hyprnote"
+      conn.providerId === "anarlog"
         ? createAuthFetch(
             task ? createTracedFetch(task) : tracedFetch,
             () => accessTokenRef.current,
@@ -81,14 +85,13 @@ export const useLLMConnection = (): LLMConnectionResult => {
   const auth = useAuth();
   const billing = useBillingAccess();
 
-  const { current_llm_provider, current_llm_model } = settings.UI.useValues(
-    settings.STORE_ID,
-  );
-  const providerConfig = settings.UI.useRow(
-    "ai_providers",
-    current_llm_provider ? providerRowId("llm", current_llm_provider) : "",
-    settings.STORE_ID,
-  ) as AIProviderStorage | undefined;
+  const { current_llm_provider, current_llm_model } = useConfigValues([
+    "current_llm_provider",
+    "current_llm_model",
+  ] as const);
+  const providerConfig = useAiProvider("llm", current_llm_provider) as
+    | AIProviderStorage
+    | undefined;
 
   return useMemo<LLMConnectionResult>(
     () =>
@@ -136,7 +139,7 @@ const resolveLLMConnection = (params: {
     };
   }
 
-  const providerId = rawProviderId as ProviderId;
+  const providerId = normalizeLLMProviderId(rawProviderId) as ProviderId;
 
   if (!modelId) {
     return {
@@ -145,7 +148,7 @@ const resolveLLMConnection = (params: {
     };
   }
 
-  const providerDefinition = PROVIDERS.find((p) => p.id === rawProviderId);
+  const providerDefinition = PROVIDERS.find((p) => p.id === providerId);
 
   if (!providerDefinition) {
     return {
@@ -177,13 +180,13 @@ const resolveLLMConnection = (params: {
 
   if (blockers.length > 0) {
     const blocker = blockers[0];
-    if (blocker.code === "requires_auth" && providerId === "hyprnote") {
+    if (blocker.code === "requires_auth" && providerId === "anarlog") {
       return {
         conn: null,
         status: { status: "error", reason: "unauthenticated", providerId },
       };
     }
-    if (blocker.code === "requires_entitlement" && providerId === "hyprnote") {
+    if (blocker.code === "requires_entitlement" && providerId === "anarlog") {
       return {
         conn: null,
         status: { status: "error", reason: "not_pro", providerId },
@@ -202,7 +205,7 @@ const resolveLLMConnection = (params: {
     }
   }
 
-  if (providerId === "hyprnote" && session) {
+  if (providerId === "anarlog" && session) {
     return {
       conn: {
         providerId,
@@ -238,7 +241,7 @@ const createLanguageModel = (
   hostedFetch?: typeof fetch,
 ): LanguageModelV3 => {
   switch (conn.providerId) {
-    case "hyprnote": {
+    case "anarlog": {
       const provider = createOpenRouter({
         fetch: hostedFetch ?? (task ? createTracedFetch(task) : tracedFetch),
         baseURL: conn.baseUrl,
@@ -322,6 +325,9 @@ const createLanguageModel = (
       });
       return wrapWithThinkingMiddleware(provider.chatModel(conn.modelId));
     }
+
+    case "apple_foundation":
+      return createAppleFoundationModel(conn.modelId);
 
     default: {
       const config: Parameters<typeof createOpenAICompatible>[0] = {

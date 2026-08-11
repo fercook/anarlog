@@ -4,13 +4,12 @@ import { open as selectFile } from "@tauri-apps/plugin-dialog";
 import { Effect, pipe } from "effect";
 import { useCallback } from "react";
 
-import { commands as analyticsCommands } from "@hypr/plugin-analytics";
+import { commands as analyticsCommands } from "@anlg/plugin-analytics";
 import {
   commands as fsSyncCommands,
   events as fsSyncEvents,
-} from "@hypr/plugin-fs-sync";
-import { commands as listener2Commands } from "@hypr/plugin-transcription";
-import type { TranscriptStorage } from "@hypr/store";
+} from "@anlg/plugin-fs-sync";
+import { commands as listener2Commands } from "@anlg/plugin-transcription";
 
 import { estimateUploadedAudioSessionCreatedAt } from "./audio-note-date";
 import { useListener } from "./contexts";
@@ -18,9 +17,13 @@ import { fromResult } from "./fromResult";
 import { ChannelProfile } from "./segment";
 import { isStoppedTranscriptionError, useRunBatch } from "./useRunBatch";
 
+import { withCloudsyncActivity } from "~/db/cloudsync-activity";
 import { getEnhancerService } from "~/services/enhancer";
-import * as main from "~/store/tinybase/store/main";
+import { catalogLocalSessionAudio } from "~/session/attachments";
+import { enqueueSessionAudioOperation } from "~/session/audio-operations";
+import { useSession, useUpdateSession } from "~/session/queries";
 import { type Tab, useTabs } from "~/store/zustand/tabs";
+import { createTranscript } from "~/stt/queries";
 
 export const AUDIO_EXTENSIONS = [
   "wav",
@@ -32,7 +35,9 @@ export const AUDIO_EXTENSIONS = [
   "webm",
   "aac",
 ];
+const AUDIO_TRANSFER_EXTENSIONS = [...AUDIO_EXTENSIONS, "qta"];
 const TRANSCRIPT_EXTENSIONS = ["vtt", "srt"];
+const MAX_IPC_AUDIO_BYTES = 4 * 1024 * 1024;
 
 function fileExtension(value: string) {
   const extension = value.toLowerCase().split(".").pop();
@@ -41,7 +46,7 @@ function fileExtension(value: string) {
 
 export function isAudioUploadFile(file: Pick<File, "name" | "type">) {
   return (
-    AUDIO_EXTENSIONS.includes(fileExtension(file.name)) ||
+    AUDIO_TRANSFER_EXTENSIONS.includes(fileExtension(file.name)) ||
     file.type.startsWith("audio/")
   );
 }
@@ -58,8 +63,8 @@ export function useUploadFile(sessionId: string) {
   const updateBatchProgress = useListener((state) => state.updateBatchProgress);
   const clearBatchSession = useListener((state) => state.clearBatchSession);
 
-  const store = main.UI.useStore(main.STORE_ID) as main.Store | undefined;
-  const { user_id } = main.UI.useValues(main.STORE_ID);
+  const session = useSession(sessionId);
+  const updateSession = useUpdateSession(sessionId);
   const updateSessionTabState = useTabs((state) => state.updateSessionTabState);
   const sessionTab = useTabs((state) => {
     const found = state.tabs.find(
@@ -69,32 +74,38 @@ export function useUploadFile(sessionId: string) {
     return found ?? null;
   });
 
-  const triggerEnhance = useCallback(() => {
-    const result = getEnhancerService()?.enhance(sessionId);
-    if (
-      (result?.type === "started" || result?.type === "already_active") &&
-      sessionTab
-    ) {
-      updateSessionTabState(sessionTab, {
-        ...sessionTab.state,
-        view: { type: "enhanced", id: result.noteId },
-      });
+  const triggerEnhance = useCallback(async () => {
+    const service = getEnhancerService();
+    if (!service) return;
+
+    try {
+      const result = await service.enhance(sessionId);
+      if (
+        (result.type === "started" || result.type === "already_active") &&
+        sessionTab
+      ) {
+        updateSessionTabState(sessionTab, {
+          ...sessionTab.state,
+          view: { type: "enhanced", id: result.noteId },
+        });
+      }
+    } catch (error) {
+      console.error("[enhancer] failed to enhance uploaded file", error);
     }
   }, [sessionId, sessionTab, updateSessionTabState]);
 
-  const triggerEnhanceIfSummaryEmpty = useCallback(() => {
-    getEnhancerService()?.queueAutoEnhanceIfSummaryEmpty(sessionId);
+  const triggerEnhanceIfSummaryEmpty = useCallback(async () => {
+    try {
+      await getEnhancerService()?.queueAutoEnhanceIfSummaryEmpty(sessionId);
+    } catch (error) {
+      console.error("[enhancer] failed to queue uploaded file", error);
+    }
   }, [sessionId]);
 
   const applyEstimatedAudioNoteDate = useCallback(
     async (filePath: string) => {
       try {
-        if (!store) {
-          return;
-        }
-
-        const eventJson = store.getCell("sessions", sessionId, "event_json");
-        if (typeof eventJson === "string" && eventJson.trim()) {
+        if (session?.event_json.trim()) {
           return;
         }
 
@@ -110,23 +121,18 @@ export function useUploadFile(sessionId: string) {
           return;
         }
 
-        store.setCell("sessions", sessionId, "created_at", estimatedCreatedAt);
+        await updateSession({ created_at: estimatedCreatedAt });
       } catch (error) {
         console.error("[upload] audio metadata inspection failed:", error);
       }
     },
-    [sessionId, store],
+    [session?.event_json, updateSession],
   );
 
   const applyDroppedAudioNoteDate = useCallback(
     async (file: File) => {
       try {
-        if (!store) {
-          return;
-        }
-
-        const eventJson = store.getCell("sessions", sessionId, "event_json");
-        if (typeof eventJson === "string" && eventJson.trim()) {
+        if (session?.event_json.trim()) {
           return;
         }
 
@@ -134,17 +140,14 @@ export function useUploadFile(sessionId: string) {
           return;
         }
 
-        store.setCell(
-          "sessions",
-          sessionId,
-          "created_at",
-          new Date(file.lastModified).toISOString(),
-        );
+        await updateSession({
+          created_at: new Date(file.lastModified).toISOString(),
+        });
       } catch (error) {
         console.error("[upload] dropped audio date inspection failed:", error);
       }
     },
-    [sessionId, store],
+    [session?.event_json, updateSession],
   );
 
   const importWithProgress = useCallback(
@@ -156,26 +159,32 @@ export function useUploadFile(sessionId: string) {
             error: string;
           }
       >,
-    ) => {
-      const unlisten = await fsSyncEvents.audioImportEvent.listen((e) => {
-        if (
-          e.payload.type === "audioImportProgress" &&
-          e.payload.session_id === sessionId
-        ) {
-          updateBatchProgress(sessionId, e.payload.percentage);
-        }
-      });
+    ) =>
+      enqueueSessionAudioOperation(sessionId, async () => {
+        const unlisten = await fsSyncEvents.audioImportEvent.listen((e) => {
+          if (
+            e.payload.type === "audioImportProgress" &&
+            e.payload.session_id === sessionId
+          ) {
+            updateBatchProgress(sessionId, e.payload.percentage);
+          }
+        });
 
-      try {
-        const result = await runImport();
-        if (result.status === "error") {
-          throw new Error(result.error);
+        try {
+          const result = await runImport();
+          if (result.status === "error") {
+            throw new Error(result.error);
+          }
+          try {
+            await catalogLocalSessionAudio(sessionId);
+          } catch (error) {
+            console.error("[upload] failed to catalog imported audio", error);
+          }
+          return result.data;
+        } finally {
+          unlisten();
         }
-        return result.data;
-      } finally {
-        unlisten();
-      }
-    },
+      }),
     [sessionId, updateBatchProgress],
   );
 
@@ -215,23 +224,30 @@ export function useUploadFile(sessionId: string) {
         Effect.tap(() => Effect.sync(() => clearBatchSession(sessionId))),
         Effect.flatMap((importedPath) =>
           Effect.tryPromise({
-            try: () => runBatch(importedPath),
+            try: () =>
+              runBatch(importedPath, {
+                promotion: { scope: "whole_session" },
+              }),
             catch: (error) => error,
           }),
         ),
-        Effect.tap(() => Effect.sync(() => triggerEnhanceIfSummaryEmpty())),
+        Effect.tap(() => Effect.promise(triggerEnhanceIfSummaryEmpty)),
         Effect.catchAll((error: unknown) =>
           Effect.sync(() => {
             if (isStoppedTranscriptionError(error)) {
               return;
             }
             const msg = error instanceof Error ? error.message : String(error);
+            console.error("[upload] audio import failed:", error);
             handleBatchFailed(sessionId, msg);
           }),
         ),
       );
 
-      Effect.runPromise(program).catch((error) => {
+      const cloudsyncLeaseKey = `${sessionId}:audio-import:${crypto.randomUUID()}`;
+      void withCloudsyncActivity("transcription", cloudsyncLeaseKey, () =>
+        Effect.runPromise(program),
+      ).catch((error) => {
         console.error("[upload] audio failed:", error);
       });
     },
@@ -260,51 +276,58 @@ export function useUploadFile(sessionId: string) {
 
         const program = pipe(
           fromResult(listener2Commands.parseSubtitle(filePath)),
-          Effect.tap((subtitle) =>
-            Effect.sync(() => {
-              if (!store || subtitle.tokens.length === 0) {
-                return;
-              }
+          Effect.tap((subtitle) => {
+            if (subtitle.tokens.length === 0) {
+              return Effect.void;
+            }
 
-              const transcriptId = crypto.randomUUID();
-              const createdAt = new Date().toISOString();
-              const memoMd = store.getCell("sessions", sessionId, "raw_md");
+            const transcriptId = crypto.randomUUID();
+            const createdAt = new Date().toISOString();
 
-              const words = subtitle.tokens.map((token) => ({
-                id: crypto.randomUUID(),
-                transcript_id: transcriptId,
-                text: token.text,
-                start_ms: token.start_time,
-                end_ms: token.end_time,
-                channel: ChannelProfile.MixedCapture,
-                user_id: user_id ?? "",
-                created_at: new Date().toISOString(),
-              }));
+            const words = subtitle.tokens.map((token) => ({
+              id: crypto.randomUUID(),
+              transcript_id: transcriptId,
+              text: token.text,
+              start_ms: token.start_time,
+              end_ms: token.end_time,
+              channel: ChannelProfile.MixedCapture,
+              user_id: session?.user_id ?? "",
+              created_at: new Date().toISOString(),
+            }));
 
-              const transcriptRow = {
-                session_id: sessionId,
-                user_id: user_id ?? "",
-                created_at: createdAt,
-                started_at: Date.now(),
-                words: JSON.stringify(words),
-                speaker_hints: "[]",
-                memo_md: typeof memoMd === "string" ? memoMd : "",
-              } satisfies TranscriptStorage;
-
-              store.setRow("transcripts", transcriptId, transcriptRow);
-
-              void analyticsCommands.event({
-                event: "file_uploaded",
-                file_type: "transcript",
-                token_count: subtitle.tokens.length,
-              });
-
-              triggerEnhance();
-            }),
-          ),
+            return Effect.tryPromise({
+              try: () =>
+                createTranscript({
+                  id: transcriptId,
+                  sessionId,
+                  ownerUserId: session?.user_id ?? "",
+                  createdAt,
+                  startedAt: Date.now(),
+                  memo: session?.raw_md ?? "",
+                  source: "subtitle_import",
+                  words,
+                }),
+              catch: (error) =>
+                error instanceof Error ? error : new Error(String(error)),
+            }).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  void analyticsCommands.event({
+                    event: "file_uploaded",
+                    file_type: "transcript",
+                    token_count: subtitle.tokens.length,
+                  });
+                }),
+              ),
+              Effect.tap(() => Effect.promise(triggerEnhance)),
+            );
+          }),
         );
 
-        Effect.runPromise(program).catch((error) => {
+        const cloudsyncLeaseKey = `${sessionId}:subtitle-import:${crypto.randomUUID()}`;
+        void withCloudsyncActivity("transcription", cloudsyncLeaseKey, () =>
+          Effect.runPromise(program),
+        ).catch((error) => {
           console.error("[upload] transcript failed:", error);
         });
         return;
@@ -324,17 +347,19 @@ export function useUploadFile(sessionId: string) {
     },
     [
       sessionId,
-      store,
+      session,
       triggerEnhance,
       applyEstimatedAudioNoteDate,
       importWithProgress,
       runAudioImport,
-      user_id,
     ],
   );
 
   const processAudioFile = useCallback(
-    (file: File, options?: { allowUnknownAudio?: boolean }) => {
+    (
+      file: File,
+      options?: { allowUnknownAudio?: boolean; contentType?: string },
+    ) => {
       if (!options?.allowUnknownAudio && !isAudioUploadFile(file)) {
         return;
       }
@@ -348,9 +373,14 @@ export function useUploadFile(sessionId: string) {
             );
           }
 
-          const data = Array.from(new Uint8Array(await file.arrayBuffer()));
+          const data = await readIpcAudioData(file);
           return importWithProgress(() =>
-            fsSyncCommands.audioImportData(sessionId, data, file.name),
+            fsSyncCommands.audioImportData(
+              sessionId,
+              data,
+              file.name,
+              options?.contentType || file.type || null,
+            ),
           );
         },
         () => applyDroppedAudioNoteDate(file),
@@ -410,4 +440,19 @@ export function useUploadFile(sessionId: string) {
 function audioUploadFilePath(file: File) {
   const value = (file as { path?: unknown }).path;
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function assertIpcAudioSize(size: number) {
+  if (size > MAX_IPC_AUDIO_BYTES) {
+    throw new Error(
+      "Audio files without a native path must be smaller than 4 MB",
+    );
+  }
+}
+
+async function readIpcAudioData(file: File) {
+  assertIpcAudioSize(file.size);
+  const arrayBuffer = await file.arrayBuffer();
+  assertIpcAudioSize(arrayBuffer.byteLength);
+  return Array.from(new Uint8Array(arrayBuffer));
 }

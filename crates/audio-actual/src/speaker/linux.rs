@@ -15,10 +15,7 @@ use pulse::sample::{Format, Spec};
 use pulse::stream::{FlagSet as StreamFlagSet, Stream as PaStream};
 use pw::properties::properties;
 use pw::spa::utils::Direction;
-use ringbuf::{
-    HeapCons, HeapProd, HeapRb,
-    traits::{Producer, Split},
-};
+use ringbuf::{HeapCons, HeapProd, HeapRb, traits::Split};
 
 use crate::async_ring::RingbufAsyncReader;
 use crate::rt_ring::push_f32le_bytes_first_channel_to_ringbuf;
@@ -51,6 +48,7 @@ enum BackendControl {
 
 struct PipeWireUserData {
     format: pw::spa::param::audio::AudioInfoRaw,
+    init_tx: Option<std::sync::mpsc::Sender<Result<()>>>,
     producer: HeapProd<f32>,
     waker: Arc<AtomicWaker>,
     wake_pending: Arc<AtomicBool>,
@@ -133,10 +131,14 @@ impl SpeakerStream {
                 let _ = capture_thread.join();
                 return Err(err);
             }
-            Err(_) => {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 let _ = shutdown_tx.send(());
                 let _ = capture_thread.join();
                 anyhow::bail!("Timed out initializing PipeWire speaker capture");
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = capture_thread.join();
+                anyhow::bail!("PipeWire speaker capture stopped during initialization");
             }
         }
 
@@ -200,10 +202,14 @@ impl SpeakerStream {
                 let _ = capture_thread.join();
                 return Err(err);
             }
-            Err(_) => {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 running.store(false, Ordering::Release);
                 let _ = capture_thread.join();
                 anyhow::bail!("Timed out initializing PulseAudio speaker capture");
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = capture_thread.join();
+                anyhow::bail!("PulseAudio speaker capture stopped during initialization");
             }
         }
 
@@ -234,6 +240,40 @@ fn pipewire_capture_loop(
     shutdown_rx: pw::channel::Receiver<()>,
     init_tx: std::sync::mpsc::Sender<Result<()>>,
 ) -> Result<()> {
+    // `init_tx` moves into the listener's user data partway through setup, so any
+    // failure would otherwise just drop the sender and reach the parent as a bare
+    // "stopped during initialization". This clone carries the real error instead.
+    // After a successful init the receiver is gone and the send is a no-op.
+    let setup_err_tx = init_tx.clone();
+
+    let result = pipewire_capture_setup(
+        producer,
+        waker,
+        wake_pending,
+        alive,
+        current_sample_rate,
+        dropped_samples,
+        shutdown_rx,
+        init_tx,
+    );
+
+    if let Err(error) = &result {
+        let _ = setup_err_tx.send(Err(anyhow::anyhow!(error.to_string())));
+    }
+
+    result
+}
+
+fn pipewire_capture_setup(
+    producer: HeapProd<f32>,
+    waker: Arc<AtomicWaker>,
+    wake_pending: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
+    current_sample_rate: Arc<AtomicU32>,
+    dropped_samples: Arc<AtomicUsize>,
+    shutdown_rx: pw::channel::Receiver<()>,
+    init_tx: std::sync::mpsc::Sender<Result<()>>,
+) -> Result<()> {
     pw::init();
     let _deinit_guard = PipeWireDeinitGuard;
 
@@ -247,7 +287,7 @@ fn pipewire_capture_loop(
 
     let stream = pw::stream::StreamBox::new(
         &core,
-        "hyprnote-speaker-capture",
+        "anarlog-speaker-capture",
         properties! {
             *pw::keys::MEDIA_TYPE => "Audio",
             *pw::keys::MEDIA_CATEGORY => "Capture",
@@ -265,6 +305,7 @@ fn pipewire_capture_loop(
     let _listener = stream
         .add_local_listener_with_user_data(PipeWireUserData {
             format: Default::default(),
+            init_tx: Some(init_tx),
             producer,
             waker,
             wake_pending,
@@ -274,10 +315,15 @@ fn pipewire_capture_loop(
         })
         .state_changed({
             let mainloop = mainloop.clone();
-            move |_, _, old, new| {
+            move |_, user_data, old, new| {
                 tracing::debug!(?old, ?new, "pipewire_stream_state_changed");
                 if let pw::stream::StreamState::Error(error) = new {
                     tracing::error!(error = %error, "pipewire_stream_error");
+                    if let Some(init_tx) = user_data.init_tx.take() {
+                        let _ = init_tx.send(Err(anyhow::anyhow!(
+                            "PipeWire stream entered an error state: {error}"
+                        )));
+                    }
                     mainloop.quit();
                 }
             }
@@ -305,9 +351,12 @@ fn pipewire_capture_loop(
                 if rate > 0 {
                     user_data.current_sample_rate.store(rate, Ordering::Release);
                     tracing::info!(
-                        hyprnote.audio.sample_rate_hz = rate,
+                        anarlog.audio.sample_rate_hz = rate,
                         "pipewire_capture_initialized"
                     );
+                    if let Some(init_tx) = user_data.init_tx.take() {
+                        let _ = init_tx.send(Ok(()));
+                    }
                 }
             }
         })
@@ -383,7 +432,6 @@ fn pipewire_capture_loop(
         )
         .context("Failed to connect PipeWire capture stream")?;
 
-    let _ = init_tx.send(Ok(()));
     mainloop.run();
 
     alive.store(false, Ordering::Release);
@@ -409,7 +457,7 @@ fn pulseaudio_capture_loop(
     init_tx: std::sync::mpsc::Sender<Result<()>>,
 ) -> Result<()> {
     let mut mainloop = Mainloop::new().context("Failed to create PulseAudio mainloop")?;
-    let mut context = PaContext::new(&mainloop, "hyprnote-speaker-capture")
+    let mut context = PaContext::new(&mainloop, "anarlog-speaker-capture")
         .context("Failed to create PulseAudio context")?;
 
     context
@@ -434,11 +482,11 @@ fn pulseaudio_capture_loop(
 
         let monitor_device = get_default_monitor_device(&mut mainloop, &context)
             .context("Failed to resolve PulseAudio monitor source")?;
-        tracing::info!(hyprnote.audio.device = %monitor_device, "connecting_to_monitor_device");
+        tracing::info!(anarlog.audio.device = %monitor_device, "connecting_to_monitor_device");
 
         mainloop.lock();
         let stream_result = (|| -> Result<_> {
-            let mut stream = PaStream::new(&mut context, "hyprnote-capture", &spec, None)
+            let mut stream = PaStream::new(&mut context, "anarlog-capture", &spec, None)
                 .context("Failed to create PulseAudio stream")?;
             stream
                 .connect_record(
@@ -475,7 +523,7 @@ fn pulseaudio_capture_loop(
 
     current_sample_rate.store(actual_rate, Ordering::Release);
     tracing::info!(
-        hyprnote.audio.sample_rate_hz = actual_rate,
+        anarlog.audio.sample_rate_hz = actual_rate,
         "pulseaudio_capture_initialized"
     );
     let _ = init_tx.send(Ok(()));

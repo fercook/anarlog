@@ -9,6 +9,7 @@ import {
 } from "./general-batch";
 
 import { parseBatchCompletedNotificationKey } from "~/stt/batch-completed-notification";
+import { BatchResponseProcessingError } from "~/stt/batch-response-processing-error";
 
 const {
   isFocusedMock,
@@ -31,13 +32,13 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 
-vi.mock("@hypr/plugin-notification", () => ({
+vi.mock("@anlg/plugin-notification", () => ({
   commands: {
     showNotification: showNotificationMock,
   },
 }));
 
-vi.mock("@hypr/plugin-transcription", () => ({
+vi.mock("@anlg/plugin-transcription", () => ({
   events: {
     transcriptionEvent: {
       listen: listenMock,
@@ -60,7 +61,7 @@ describe("runBatchSession", () => {
     expect(
       shouldUseSyntheticBatchProgress({
         session_id: "session-1",
-        provider: "hyprnote",
+        provider: "anarlog",
         file_path: "/tmp/session.wav",
         base_url: "",
         api_key: "",
@@ -179,7 +180,7 @@ describe("runBatchSession", () => {
         "session-1",
         {
           session_id: "session-1",
-          provider: "hyprnote",
+          provider: "anarlog",
           file_path: "/tmp/session.wav",
           base_url: "",
           api_key: "",
@@ -280,7 +281,7 @@ describe("runBatchSession", () => {
         "session-1",
         {
           session_id: "session-1",
-          provider: "hyprnote",
+          provider: "anarlog",
           file_path: "/tmp/session.wav",
           base_url: "",
           api_key: "",
@@ -389,7 +390,7 @@ describe("runBatchSession", () => {
       "session-1",
       {
         session_id: "session-1",
-        provider: "hyprnote",
+        provider: "anarlog",
         file_path: "/tmp/session.wav",
         base_url: "",
         api_key: "",
@@ -406,6 +407,97 @@ describe("runBatchSession", () => {
     expect(handleBatchFailed).not.toHaveBeenCalled();
     expect(handleBatchResponseStreamed).not.toHaveBeenCalled();
     expect(showNotificationMock).not.toHaveBeenCalled();
+  });
+
+  test("marks response processing failures after completion as terminal", async () => {
+    const processingError = new Error("database is locked");
+    const handleBatchStarted = vi.fn();
+    const handleBatchResponse = vi.fn(() => {
+      throw processingError;
+    });
+    const handleBatchCompleted = vi.fn();
+    const clearBatchPersist = vi.fn();
+    const clearBatchSession = vi.fn();
+    const handleBatchResponseStreamed = vi.fn();
+    const handleBatchFailed = vi.fn();
+    const handleBatchStopped = vi.fn();
+    const updateBatchProgress = vi.fn();
+    const setBatchPersist = vi.fn();
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    let handler:
+      | ((event: {
+          payload: {
+            type: string;
+            session_id: string;
+            response?: unknown;
+            mode?: "direct" | "streamed";
+          };
+        }) => void)
+      | undefined;
+
+    listenMock.mockImplementation(async (cb) => {
+      handler = cb;
+      return vi.fn();
+    });
+
+    startTranscriptionMock.mockImplementation(async () => {
+      queueMicrotask(() => {
+        handler?.({
+          payload: {
+            type: "completed",
+            session_id: "session-1",
+            mode: "direct",
+            response: {
+              metadata: null,
+              results: { channels: [] },
+            },
+          },
+        });
+      });
+      return { status: "ok", data: null };
+    });
+
+    const run = runBatchSession(
+      () => ({
+        batch: {},
+        batchPreview: {},
+        batchPersist: {},
+        handleBatchStarted,
+        handleBatchResponse,
+        handleBatchCompleted,
+        clearBatchPersist,
+        clearBatchSession,
+        handleBatchResponseStreamed,
+        handleBatchFailed,
+        handleBatchStopped,
+        updateBatchProgress,
+        setBatchPersist,
+      }),
+      "session-1",
+      {
+        session_id: "session-1",
+        provider: "deepgram",
+        file_path: "/tmp/session.wav",
+        base_url: "https://api.deepgram.com/v1",
+        api_key: "test-key",
+      },
+    );
+
+    await expect(run).rejects.toMatchObject({
+      name: BatchResponseProcessingError.name,
+      cause: processingError,
+    });
+    expect(startTranscriptionMock).toHaveBeenCalledOnce();
+    expect(handleBatchFailed).toHaveBeenCalledWith(
+      "session-1",
+      "database is locked",
+    );
+    expect(clearBatchPersist).toHaveBeenCalledWith("session-1");
+    expect(clearBatchSession).not.toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 
   test("shows a completion notification when the window is not focused", async () => {
@@ -480,7 +572,7 @@ describe("runBatchSession", () => {
       "session-1",
       {
         session_id: "session-1",
-        provider: "hyprnote",
+        provider: "anarlog",
         file_path: "/tmp/session.wav",
         base_url: "",
         api_key: "",
@@ -492,6 +584,7 @@ describe("runBatchSession", () => {
       expect.objectContaining({
         title: "Transcription complete",
         message: "Your transcript is ready.",
+        timeout: { secs: 15, nanos: 0 },
         action_label: "Open Anarlog",
         source: { type: "session", session_id: "session-1" },
       }),
@@ -597,7 +690,7 @@ describe("runBatchSession", () => {
       "session-1",
       {
         session_id: "session-1",
-        provider: "hyprnote",
+        provider: "anarlog",
         file_path: "/tmp/session.wav",
         base_url: "",
         api_key: "",
@@ -684,7 +777,7 @@ describe("runBatchSession", () => {
         "session-1",
         {
           session_id: "session-1",
-          provider: "hyprnote",
+          provider: "anarlog",
           file_path: "/tmp/session.wav",
           base_url: "",
           api_key: "",
@@ -758,7 +851,7 @@ describe("runBatchSession", () => {
         "session-1",
         {
           session_id: "session-1",
-          provider: "hyprnote",
+          provider: "anarlog",
           file_path: "/tmp/session.wav",
           base_url: "",
           api_key: "",
@@ -836,7 +929,7 @@ describe("runBatchSession", () => {
         "session-1",
         {
           session_id: "session-1",
-          provider: "hyprnote",
+          provider: "anarlog",
           file_path: "/tmp/session.wav",
           base_url: "",
           api_key: "",

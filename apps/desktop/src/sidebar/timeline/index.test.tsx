@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   currentTab: { type: "empty" } as
     | { type: "empty" }
     | { type: "sessions"; id: string },
-  addDeletion: vi.fn(),
+  deleteSession: vi.fn(),
   configValue: undefined as string | undefined,
   currentTimeMs: undefined as number | undefined,
   isAnchorVisible: true,
@@ -20,12 +20,20 @@ const mocks = vi.hoisted(() => ({
   isIgnored: vi.fn(() => false),
   liveSessionId: null as string | null,
   liveStatus: "inactive" as "inactive" | "active" | "finalizing",
+  nativeContextMenuItems: [] as Array<{
+    id?: string;
+    text?: string;
+    accelerator?: string;
+    action?: () => void;
+    disabled?: boolean;
+  }>,
   selectAll: vi.fn(),
   smartCurrentTimeMs: undefined as number | undefined,
   timelineSelectionAnchorId: null as string | null,
   timelineSelectionSelectedIds: [] as string[],
   timelineEventsTable: {} as Record<string, Record<string, unknown>>,
   timelineSessionsTable: {} as Record<string, Record<string, unknown>>,
+  activatedSessionIds: new Set<string>(),
 }));
 
 const lingui = vi.hoisted(() => {
@@ -104,36 +112,36 @@ vi.mock("~/shared/config", () => ({
   useConfigValue: () => mocks.configValue,
 }));
 
-vi.mock("~/shared/hooks/useNativeContextMenu", () => ({
-  useNativeContextMenu: () => vi.fn(),
+vi.mock("~/auth", () => ({
+  useAuth: () => ({ session: { user: { id: "owner-1" } } }),
 }));
 
-vi.mock("~/store/tinybase/hooks", () => ({
-  useIgnoredEvents: () => ({
-    isIgnored: mocks.isIgnored,
+vi.mock("~/shared-notes/cache", () => ({
+  useActivatedSessionShareIds: () => mocks.activatedSessionIds,
+}));
+
+vi.mock("~/calendar/queries", () => ({
+  useTimelineTables: () => ({
+    timelineEventsTable: mocks.timelineEventsTable,
+    timelineSessionsTable: mocks.timelineSessionsTable,
   }),
 }));
 
-vi.mock("~/store/tinybase/store/deleteSession", () => ({
-  captureSessionData: vi.fn(),
-  deleteSessionCascade: vi.fn(),
-  finalizeSessionDeletion: vi.fn(),
+vi.mock("~/session/hooks/useDeleteSession", () => ({
+  useDeleteSession: () => mocks.deleteSession,
 }));
 
-vi.mock("~/store/tinybase/store/main", () => ({
-  QUERIES: {
-    timelineEvents: "timelineEvents",
-    timelineSessions: "timelineSessions",
+vi.mock("~/shared/hooks/useNativeContextMenu", () => ({
+  useNativeContextMenu: (items: typeof mocks.nativeContextMenuItems) => {
+    mocks.nativeContextMenuItems = items;
+    return vi.fn();
   },
-  STORE_ID: "main",
-  UI: {
-    useIndexes: () => null,
-    useResultTable: (query: string) =>
-      query === "timelineEvents"
-        ? mocks.timelineEventsTable
-        : mocks.timelineSessionsTable,
-    useStore: () => null,
-  },
+}));
+
+vi.mock("~/calendar/ignored-events", () => ({
+  useIgnoredEvents: () => ({
+    isIgnored: mocks.isIgnored,
+  }),
 }));
 
 vi.mock("~/store/zustand/tabs", () => ({
@@ -152,13 +160,6 @@ vi.mock("~/store/zustand/timeline-selection", () => ({
       clear: mocks.clearSelection,
       selectAll: mocks.selectAll,
       selectedIds: mocks.timelineSelectionSelectedIds,
-    }),
-}));
-
-vi.mock("~/store/zustand/undo-delete", () => ({
-  useUndoDelete: (selector: (state: unknown) => unknown) =>
-    selector({
-      addDeletion: mocks.addDeletion,
     }),
 }));
 
@@ -196,6 +197,9 @@ vi.mock("./anchor", async () => {
 });
 
 vi.mock("./item", () => ({
+  ManagedSharedSessionIdsContext: {
+    Provider: ({ children }: { children: ReactNode }) => <>{children}</>,
+  },
   TimelineItemComponent: ({
     isUpcoming,
     item,
@@ -247,12 +251,14 @@ describe("TimelineView", () => {
     mocks.liveSessionId = null;
     mocks.liveStatus = "inactive";
     mocks.currentTab = { type: "empty" };
+    mocks.nativeContextMenuItems = [];
     mocks.selectAll.mockClear();
     mocks.smartCurrentTimeMs = undefined;
     mocks.timelineSelectionAnchorId = null;
     mocks.timelineSelectionSelectedIds = [];
     mocks.timelineEventsTable = {};
     mocks.timelineSessionsTable = {};
+    mocks.activatedSessionIds = new Set();
   });
 
   afterEach(() => {
@@ -435,6 +441,9 @@ describe("TimelineView", () => {
 
     expect(header?.className).toContain("top-12");
     expect(header?.className).toContain("z-20");
+    expect(header?.className).toContain("bg-background");
+    expect(header?.className).not.toContain("backdrop-blur");
+    expect(container.querySelector("[class*='backdrop-blur']")).toBeNull();
     expect(queryTopOccluder(container)?.className).toContain("z-10");
   });
 
@@ -531,6 +540,145 @@ describe("TimelineView", () => {
     ]);
   });
 
+  it.each(["Backspace", "Delete"])(
+    "confirms selected note deletion with %s",
+    (key) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2024-01-15T09:00:00.000Z"));
+      mocks.currentTimeMs = Date.now();
+      mocks.timelineSelectionSelectedIds = [
+        "session-selected-note",
+        "session-other-note",
+      ];
+      mocks.timelineSessionsTable = {
+        "selected-note": {
+          title: "Selected note",
+          created_at: "2024-01-15T12:00:00.000Z",
+        },
+        "other-note": {
+          title: "Other note",
+          created_at: "2024-01-15T11:00:00.000Z",
+        },
+      };
+
+      render(<TimelineView />);
+
+      fireEvent.keyDown(window, { key });
+
+      expect(mocks.deleteSession).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("heading", {
+          name: "Delete 2 selected notes?",
+        }),
+      ).toBeTruthy();
+      expect(screen.getByRole("dialog").className).toContain("max-w-[320px]");
+
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+      expect(mocks.deleteSession).toHaveBeenCalledTimes(2);
+      expect(mocks.deleteSession).toHaveBeenCalledWith("selected-note", {
+        batchId: expect.any(String),
+        title: "Selected note",
+      });
+      expect(mocks.deleteSession).toHaveBeenCalledWith("other-note", {
+        batchId: expect.any(String),
+        title: "Other note",
+      });
+      expect(mocks.deleteSession.mock.calls[0]![1].batchId).toBe(
+        mocks.deleteSession.mock.calls[1]![1].batchId,
+      );
+      expect(mocks.clearSelection).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("keeps selected notes when deletion is canceled", () => {
+    mocks.timelineSelectionSelectedIds = ["session-selected-note"];
+    mocks.timelineSessionsTable = {
+      "selected-note": {
+        title: "Selected note",
+        created_at: "2024-01-15T12:00:00.000Z",
+      },
+    };
+
+    render(<TimelineView />);
+
+    fireEvent.keyDown(window, { key: "Backspace" });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+    expect(mocks.clearSelection).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("shows Backspace beside Delete Selected in the context menu", () => {
+    mocks.timelineSelectionSelectedIds = [
+      "session-selected-note",
+      "session-other-note",
+    ];
+
+    render(<TimelineView />);
+
+    expect(
+      mocks.nativeContextMenuItems.find(
+        (item) => item.id === "delete-selected",
+      ),
+    ).toMatchObject({
+      text: "Delete Selected (2)",
+      accelerator: "Backspace",
+      disabled: false,
+    });
+  });
+
+  it("does not delete selected notes when Backspace starts in the editor", () => {
+    mocks.timelineSelectionSelectedIds = [
+      "session-selected-note",
+      "session-other-note",
+    ];
+
+    render(<TimelineView />);
+
+    const editor = document.createElement("div");
+    editor.className = "ProseMirror";
+    editor.contentEditable = "true";
+    editor.tabIndex = 0;
+    document.body.appendChild(editor);
+    editor.focus();
+
+    fireEvent.keyDown(editor, { key: "Backspace" });
+
+    expect(mocks.deleteSession).not.toHaveBeenCalled();
+
+    editor.remove();
+  });
+
+  it("does not select sidebar notes while the mounted timeline is hidden", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-15T09:00:00.000Z"));
+    mocks.currentTimeMs = Date.now();
+    mocks.currentTab = { type: "sessions", id: "selected-note" };
+    mocks.timelineSelectionAnchorId = "session-selected-note";
+    mocks.timelineSessionsTable = {
+      "selected-note": {
+        title: "Selected note",
+        created_at: "2024-01-15T12:00:00.000Z",
+      },
+      "other-note": {
+        title: "Other note",
+        created_at: "2024-01-15T11:00:00.000Z",
+      },
+    };
+
+    render(
+      <div aria-hidden inert>
+        <TimelineView />
+      </div>,
+    );
+
+    fireEvent.keyDown(window, { key: "a", metaKey: true });
+
+    expect(mocks.selectAll).not.toHaveBeenCalled();
+  });
+
   it("does not select sidebar notes when Cmd+A starts in the editor", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2024-01-15T09:00:00.000Z"));
@@ -617,9 +765,8 @@ describe("TimelineView", () => {
     scroller!.scrollTop = 120;
     fireEvent.scroll(scroller!);
 
-    expect(scroller!.style.maskImage).toBe(
-      "linear-gradient(to bottom, #000 0, #000 calc(100% - 28px), transparent 100%)",
-    );
+    expect(scroller!.style.maskImage).toBe("");
+    expect(queryBottomFade(container)).toBeTruthy();
   });
 
   it("does not show a top scroll fade when future notes are hidden above a sticky header", () => {
@@ -657,9 +804,8 @@ describe("TimelineView", () => {
     expect(screen.getByText("Today")).toBeTruthy();
     expect(queryTopFade(container)).toBeNull();
     expect(queryTopOccluder(container)?.className).toContain("h-12");
-    expect(scroller!.style.maskImage).toBe(
-      "linear-gradient(to bottom, #000 0, #000 calc(100% - 28px), transparent 100%)",
-    );
+    expect(scroller!.style.maskImage).toBe("");
+    expect(queryBottomFade(container)).toBeTruthy();
   });
 
   it("drops the bottom scroll fade at the bottom edge", () => {
@@ -694,7 +840,40 @@ describe("TimelineView", () => {
     scroller!.scrollTop = 1000;
     fireEvent.scroll(scroller!);
 
-    expect(scroller!.style.maskImage).toBe("none");
+    expect(scroller!.style.maskImage).toBe("");
+    expect(queryBottomFade(container)).toBeNull();
+  });
+
+  it("keeps the bottom now chip above the scroll fade", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-15T12:00:00.000Z"));
+    mocks.isAnchorVisible = false;
+    mocks.isScrolledPastAnchor = false;
+    mocks.timelineSessionsTable = {
+      later: {
+        title: "Design sync",
+        created_at: "2024-01-16T11:00:00.000Z",
+      },
+    };
+
+    const { container } = render(<TimelineView />);
+    const scroller = container.querySelector(
+      "[data-sidebar-timeline-scroll]",
+    ) as HTMLDivElement;
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      value: 200,
+    });
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      value: 1200,
+    });
+    scroller.scrollTop = 120;
+    fireEvent.scroll(scroller);
+    const nowChip = screen.getByRole("button", { name: "Go back to now" });
+
+    expect(queryBottomFade(container)?.className).toContain("z-30");
+    expect(nowChip.className).toContain("z-40");
   });
 
   it("shows an imminent meeting chip over the sidebar timeline", () => {
@@ -876,6 +1055,7 @@ describe("TimelineView", () => {
 
     vi.setSystemTime(new Date("2024-01-15T12:01:00.000Z"));
     mocks.currentTimeMs = Date.now();
+    fireEvent.focus(window);
     rerender(<TimelineView topChromeInset showOpenCalendarButton />);
 
     expect(
@@ -885,6 +1065,7 @@ describe("TimelineView", () => {
 
     vi.setSystemTime(new Date("2024-01-15T12:06:01.000Z"));
     mocks.currentTimeMs = Date.now();
+    fireEvent.focus(window);
     rerender(<TimelineView topChromeInset showIgnoredEvents={false} />);
 
     expect(
@@ -894,6 +1075,7 @@ describe("TimelineView", () => {
 
     vi.setSystemTime(new Date("2024-01-15T12:30:01.000Z"));
     mocks.currentTimeMs = Date.now();
+    fireEvent.focus(window);
     rerender(
       <TimelineView
         topChromeInset
@@ -922,7 +1104,9 @@ describe("TimelineView", () => {
 
     expect(scroller).toBeInstanceOf(HTMLDivElement);
 
-    expect(screen.getByRole("button", { name: "Go back to now" })).toBeTruthy();
+    const nowButton = screen.getByRole("button", { name: "Go back to now" });
+    expect(nowButton.className).toContain("bg-card");
+    expect(nowButton.className).not.toContain("backdrop-blur");
     expect(
       container.querySelector("[data-sidebar-timeline-top-chip-stack]")
         ?.className,
@@ -1167,6 +1351,10 @@ function queryTopFade(container: HTMLElement) {
 
 function queryTopOccluder(container: HTMLElement) {
   return container.querySelector("[data-sidebar-timeline-top-occluder]");
+}
+
+function queryBottomFade(container: HTMLElement) {
+  return container.querySelector("[data-sidebar-timeline-bottom-fade]");
 }
 
 function isBefore(first: Element, second: Element) {

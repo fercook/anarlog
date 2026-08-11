@@ -1,21 +1,30 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import { ArrowDownUp, BookText, Plus, Search, X } from "lucide-react";
+import {
+  ArrowsDownUp,
+  BookOpenText,
+  MagnifyingGlass,
+  Plus,
+  Sparkle,
+  X,
+} from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Button } from "@hypr/ui/components/ui/button";
+import { Button } from "@anlg/ui/components/ui/button";
 import {
   AppFloatingPanel,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@hypr/ui/components/ui/dropdown-menu";
-import { cn } from "@hypr/utils";
+} from "@anlg/ui/components/ui/dropdown-menu";
+import { cn } from "@anlg/utils";
 
 import { type WebTemplate } from "./codec";
 import { getTemplateCopyTitle, type UserTemplate } from "./queries";
-import { useTemplateTab } from "./utils";
+import { TemplateIconGlyph } from "./template-icon";
+import { AUTO_TEMPLATE_ID, useTemplateTab } from "./utils";
 
+import { useConfigValue } from "~/shared/config";
 import { useNativeContextMenu } from "~/shared/hooks/useNativeContextMenu";
 import { CustomSidebarHeader } from "~/sidebar/custom-sidebar-header";
 import { type Tab } from "~/store/zustand/tabs";
@@ -31,6 +40,7 @@ export function TemplatesSidebarContent({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState("");
   const [sortOption, setSortOption] = useState<SortOption>("alphabetical");
+  const autoPrompt = useConfigValue("auto_summary_prompt");
 
   const {
     userTemplates,
@@ -53,6 +63,7 @@ export function TemplatesSidebarContent({
         title: getTemplateCopyTitle(template.title),
         description: template.description ?? "",
         category: template.category,
+        icon: template.icon,
         targets: template.targets,
         sections: template.sections.map((section) => ({ ...section })),
       });
@@ -151,6 +162,13 @@ export function TemplatesSidebarContent({
   const combinedTemplates = useMemo<
     Array<
       | {
+          key: typeof AUTO_TEMPLATE_ID;
+          title: "Auto";
+          selected: boolean;
+          source: "auto";
+          customized: boolean;
+        }
+      | {
           key: string;
           title: string;
           selected: boolean;
@@ -169,6 +187,20 @@ export function TemplatesSidebarContent({
         }
     >
   >(() => {
+    const query = search.trim().toLowerCase();
+    const auto =
+      !query || "auto".includes(query)
+        ? [
+            {
+              key: AUTO_TEMPLATE_ID as typeof AUTO_TEMPLATE_ID,
+              title: "Auto" as const,
+              selected:
+                !isWebMode && effectiveSelectedMineId === AUTO_TEMPLATE_ID,
+              source: "auto" as const,
+              customized: Boolean(autoPrompt.trim()),
+            },
+          ]
+        : [];
     const mine = filteredMine.map((template) => ({
       key: template.id,
       title: template.title?.trim() || "Untitled",
@@ -188,13 +220,15 @@ export function TemplatesSidebarContent({
       template,
     }));
 
-    return [...mine, ...web];
+    return [...auto, ...mine, ...web];
   }, [
+    autoPrompt,
     effectiveSelectedMineId,
     effectiveSelectedWebIndex,
     filteredMine,
     filteredWeb,
     isWebMode,
+    search,
   ]);
 
   const hasResults = combinedTemplates.length > 0;
@@ -204,6 +238,9 @@ export function TemplatesSidebarContent({
     (
       item:
         | {
+            source: "auto";
+          }
+        | {
             source: "user";
             template: UserTemplate;
           }
@@ -212,6 +249,11 @@ export function TemplatesSidebarContent({
             index: number;
           },
     ) => {
+      if (item.source === "auto") {
+        setSelectedMineId(AUTO_TEMPLATE_ID);
+        return;
+      }
+
       if (item.source === "user") {
         setSelectedMineId(item.template.id);
         return;
@@ -295,16 +337,16 @@ export function TemplatesSidebarContent({
   return (
     <div className="flex h-full w-full flex-col overflow-hidden">
       <div>
-        <CustomSidebarHeader title={<Trans>Templates</Trans>}>
+        <CustomSidebarHeader>
           {userTemplates.length > 1 && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
                   size="icon"
                   variant="ghost"
-                  className="text-muted-foreground relative z-[60] hover:text-black"
+                  className="text-muted-foreground hover:text-foreground relative z-[60]"
                 >
-                  <ArrowDownUp size={16} />
+                  <ArrowsDownUp size={16} />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent variant="app" align="end">
@@ -327,7 +369,7 @@ export function TemplatesSidebarContent({
           <Button
             size="icon"
             variant="ghost"
-            className="text-muted-foreground relative z-[60] hover:text-black"
+            className="text-muted-foreground hover:text-foreground relative z-[60]"
             onClick={createDefaultTemplate}
           >
             <Plus size={16} />
@@ -341,7 +383,7 @@ export function TemplatesSidebarContent({
               "focus-within:bg-accent transition-colors",
             ])}
           >
-            <Search className="text-muted-foreground h-4 w-4 shrink-0" />
+            <MagnifyingGlass className="text-muted-foreground h-4 w-4 shrink-0" />
             <input
               type="text"
               value={search}
@@ -377,7 +419,7 @@ export function TemplatesSidebarContent({
       >
         {isEmpty ? (
           <div className="text-muted-foreground px-3 py-8 text-center">
-            <BookText
+            <BookOpenText
               size={32}
               className="text-muted-foreground/70 mx-auto mb-2"
             />
@@ -398,7 +440,32 @@ export function TemplatesSidebarContent({
             {hasResults && (
               <div className="pt-1">
                 {combinedTemplates.map((item) =>
-                  item.source === "user" ? (
+                  item.source === "auto" ? (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => setSelectedMineId(AUTO_TEMPLATE_ID)}
+                      data-template-selected={item.selected}
+                      className={cn([
+                        "w-full rounded-lg px-3 py-2 text-left text-sm transition-colors select-none",
+                        item.selected ? "bg-accent" : "hover:bg-accent/50",
+                      ])}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Sparkle className="size-4 text-violet-500" />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium">
+                            {item.title}
+                          </div>
+                          {item.customized ? (
+                            <div className="text-muted-foreground truncate text-xs">
+                              <Trans>Customized</Trans>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </button>
+                  ) : item.source === "user" ? (
                     <TemplateListItem
                       key={item.key}
                       template={item.template}
@@ -419,7 +486,10 @@ export function TemplatesSidebarContent({
                       ])}
                     >
                       <div className="flex items-center gap-2">
-                        <BookText className="text-muted-foreground h-4 w-4 shrink-0" />
+                        <TemplateIconGlyph
+                          icon={item.template.icon}
+                          className="size-4 text-sm"
+                        />
                         <div className="min-w-0 flex-1">
                           <div className="truncate font-medium">
                             {item.title}
@@ -506,7 +576,7 @@ function TemplateListItem({
       ])}
     >
       <div className="flex items-center gap-2">
-        <BookText className="text-muted-foreground h-4 w-4 shrink-0" />
+        <TemplateIconGlyph icon={template.icon} className="size-4 text-sm" />
         <div className="min-w-0 flex-1">
           <div className="truncate font-medium">
             {template.title?.trim() || "Untitled"}

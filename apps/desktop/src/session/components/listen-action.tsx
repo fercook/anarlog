@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 
-import { Spinner } from "@hypr/ui/components/ui/spinner";
+import { Spinner } from "@anlg/ui/components/ui/spinner";
 
 import { OptionsMenu } from "./floating/options-menu";
 import { ActionableTooltipContent, FloatingButton } from "./floating/shared";
@@ -13,16 +13,20 @@ import {
 import { useTabs } from "~/store/zustand/tabs";
 import { useListener } from "~/stt/contexts";
 import { useStartListening } from "~/stt/useStartListening";
+import {
+  isMainWebviewWindow,
+  requestMainListenerControl,
+} from "~/stt/window-control";
 
 export function ListenActionButton({ sessionId }: { sessionId: string }) {
-  const { shouldRender, isDisabled, warningMessage } =
+  const { shouldRender, isDisabled, warningMessage, recoverySettingsTab } =
     useListenButtonState(sessionId);
   const loading = useListener(
     (state) => state.live.loading && state.live.sessionId === sessionId,
   );
 
   if (loading) {
-    return <StopListeningButton />;
+    return <StopListeningButton sessionId={sessionId} />;
   }
 
   if (!shouldRender) {
@@ -34,15 +38,27 @@ export function ListenActionButton({ sessionId }: { sessionId: string }) {
       sessionId={sessionId}
       isDisabled={isDisabled}
       warningMessage={warningMessage}
+      recoverySettingsTab={recoverySettingsTab}
     />
   );
 }
 
-function StopListeningButton() {
+function StopListeningButton({ sessionId }: { sessionId: string }) {
   const stop = useListener((state) => state.stop);
 
+  const handleStop = useCallback(() => {
+    // Starts are proxied to the main window, so stops must be too — a local
+    // stop cannot end a session the main window owns.
+    if (!isMainWebviewWindow()) {
+      void requestMainListenerControl("stop", sessionId);
+      return;
+    }
+
+    stop();
+  }, [sessionId, stop]);
+
   return (
-    <FloatingButton onClick={stop}>
+    <FloatingButton onClick={handleStop}>
       <Spinner />
     </FloatingButton>
   );
@@ -52,19 +68,31 @@ function StartListeningButton({
   sessionId,
   isDisabled,
   warningMessage,
+  recoverySettingsTab,
 }: {
   sessionId: string;
   isDisabled: boolean;
   warningMessage: string;
+  recoverySettingsTab: "permissions" | null;
 }) {
   const startListening = useStartListening(sessionId);
   const openNew = useTabs((state) => state.openNew);
   const noteHasContent = useCurrentNoteHasContent(sessionId, { type: "raw" });
 
+  const handleStart = useCallback(() => {
+    if (!isMainWebviewWindow()) {
+      void requestMainListenerControl("start", sessionId);
+      return;
+    }
+
+    void startListening();
+  }, [sessionId, startListening]);
+
   const handleConfigure = useCallback(() => {
-    startListening();
-    openNew({ type: "settings", state: { tab: "transcription" } });
-  }, [startListening, openNew]);
+    if (recoverySettingsTab) {
+      openNew({ type: "settings", state: { tab: recoverySettingsTab } });
+    }
+  }, [openNew, recoverySettingsTab]);
 
   return (
     <div>
@@ -73,10 +101,10 @@ function StartListeningButton({
         disabled={isDisabled}
         warningMessage={warningMessage}
         hideUploadActions={noteHasContent}
-        onConfigure={handleConfigure}
+        onConfigure={recoverySettingsTab ? handleConfigure : undefined}
       >
         <FloatingButton
-          onClick={startListening}
+          onClick={handleStart}
           disabled={isDisabled}
           className="w-[148px] justify-start gap-2 pr-7 pl-3"
           tooltip={
@@ -86,10 +114,14 @@ function StartListeningButton({
                   content: (
                     <ActionableTooltipContent
                       message={warningMessage}
-                      action={{
-                        label: "Configure",
-                        handleClick: handleConfigure,
-                      }}
+                      action={
+                        recoverySettingsTab
+                          ? {
+                              label: "Configure",
+                              handleClick: handleConfigure,
+                            }
+                          : undefined
+                      }
                     />
                   ),
                 }

@@ -1,6 +1,6 @@
 use crate::{Event, Participant, Transcript, common_derives};
 #[allow(unused_imports)]
-use hypr_askama_utils::filters;
+use anlg_askama_utils::filters;
 
 common_derives! {
     pub struct SessionContext {
@@ -8,6 +8,7 @@ common_derives! {
         pub date: Option<String>,
         pub raw_content: Option<String>,
         pub enhanced_content: Option<String>,
+        pub meeting_chat: Option<String>,
         pub transcript: Option<Transcript>,
         pub participants: Vec<Participant>,
         pub event: Option<Event>,
@@ -33,7 +34,7 @@ common_derives! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hypr_askama_utils::tpl_snapshot_with_assert;
+    use anlg_askama_utils::tpl_snapshot_with_assert;
 
     tpl_snapshot_with_assert!(
         test_chat_system,
@@ -70,6 +71,10 @@ mod tests {
                 date: Some("2025-03-01".to_string()),
                 raw_content: None,
                 enhanced_content: Some("Summary of Q1 goals.".to_string()),
+                meeting_chat: Some(
+                    "- Slack · 10:42 AM · Ada · received\n  Review the rollout plan."
+                        .to_string(),
+                ),
                 transcript: None,
                 participants: vec![],
                 event: None,
@@ -85,6 +90,10 @@ mod tests {
 
     Enhanced Meeting Summary:
     Summary of Q1 goals.
+
+    Meeting Chat:
+    - Slack · 10:42 AM · Ada · received
+      Review the rollout plan.
     </context>
     "#);
 }

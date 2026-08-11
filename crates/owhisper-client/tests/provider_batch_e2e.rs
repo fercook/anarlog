@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use owhisper_client::{
-    AssemblyAIAdapter, BatchClient, BatchSttAdapter, DeepgramAdapter, ElevenLabsAdapter,
-    FireworksAdapter, GladiaAdapter, OpenAIAdapter, Provider, SonioxAdapter,
+    AssemblyAIAdapter, BatchClient, BatchSttAdapter, CohereAdapter, DeepgramAdapter,
+    ElevenLabsAdapter, FireworksAdapter, GladiaAdapter, MistralAdapter, OpenAIAdapter, Provider,
+    SonioxAdapter,
 };
 use owhisper_interface::ListenParams;
 
@@ -26,13 +27,13 @@ async fn run_direct_batch_e2e<A: BatchSttAdapter>(provider: Provider) {
         .api_key(api_key)
         .params(ListenParams {
             model: Some(provider.default_batch_model().to_string()),
-            languages: vec![hypr_language::ISO639::En.into()],
+            languages: vec![anlg_language::ISO639::En.into()],
             ..Default::default()
         })
         .build();
 
     let response = client
-        .transcribe_file(PathBuf::from(hypr_data::english_1::AUDIO_PATH))
+        .transcribe_file(PathBuf::from(anlg_data::english_1::AUDIO_PATH))
         .await
         .unwrap_or_else(|error| panic!("[{provider}] batch transcription failed: {error}"));
     let transcript = batch_transcript(&response);
@@ -65,4 +66,6 @@ mod direct_batch {
     direct_batch_test!(fireworks, FireworksAdapter, Provider::Fireworks);
     direct_batch_test!(openai, OpenAIAdapter, Provider::OpenAI);
     direct_batch_test!(elevenlabs, ElevenLabsAdapter, Provider::ElevenLabs);
+    direct_batch_test!(mistral, MistralAdapter, Provider::Mistral);
+    direct_batch_test!(cohere, CohereAdapter, Provider::Cohere);
 }

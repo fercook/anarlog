@@ -1,8 +1,11 @@
+import { Trans } from "@lingui/react/macro";
+import { CheckCircle, PencilSimple } from "@phosphor-icons/react";
 import type { RefObject } from "react";
 import { useCallback } from "react";
 
-import { Spinner } from "@hypr/ui/components/ui/spinner";
+import { cn } from "@anlg/utils";
 
+import { useRegenerateTranscript } from "./actions";
 import { TranscriptViewer } from "./renderer";
 import { BatchState } from "./screens/batch";
 import { TranscriptEmptyState } from "./screens/empty";
@@ -12,15 +15,68 @@ import { useTranscriptScreen } from "./state";
 import { useListener } from "~/stt/contexts";
 import { useUploadFile } from "~/stt/useUploadFile";
 
+export function TranscriptEditButton({
+  editMode,
+  onEditModeChange,
+}: {
+  editMode: boolean;
+  onEditModeChange: (editMode: boolean) => void;
+}) {
+  return (
+    <div className="mr-1 shrink-0">
+      <button
+        type="button"
+        data-tauri-drag-region="false"
+        aria-pressed={editMode}
+        onClick={() => onEditModeChange(!editMode)}
+        className={cn([
+          "border-border bg-card text-foreground flex h-7 items-center gap-1.5 rounded-full border px-2 text-sm font-medium",
+          "hover:bg-accent focus-visible:ring-ring transition-colors focus-visible:ring-2 focus-visible:outline-hidden",
+          editMode ? "border-primary/30 bg-primary/10 text-primary" : null,
+        ])}
+      >
+        {editMode ? (
+          <CheckCircle aria-hidden className="size-3.5" />
+        ) : (
+          <PencilSimple aria-hidden className="size-3.5" />
+        )}
+        {editMode ? <Trans>Done writing</Trans> : <Trans>Write</Trans>}
+      </button>
+    </div>
+  );
+}
+
 export function Transcript({
   sessionId,
   scrollRef,
+  editMode = false,
 }: {
   sessionId: string;
   scrollRef: RefObject<HTMLDivElement | null>;
+  editMode?: boolean;
+}) {
+  return (
+    <TranscriptContent
+      key={sessionId}
+      sessionId={sessionId}
+      scrollRef={scrollRef}
+      editMode={editMode}
+    />
+  );
+}
+
+function TranscriptContent({
+  sessionId,
+  scrollRef,
+  editMode,
+}: {
+  sessionId: string;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  editMode: boolean;
 }) {
   const screen = useTranscriptScreen({ sessionId });
   const { uploadAudio, uploadTranscript } = useUploadFile(sessionId);
+  const regenerateTranscript = useRegenerateTranscript(sessionId);
   const stopTranscription = useListener((state) => state.stopTranscription);
   const handleStopTranscription = useCallback(() => {
     void stopTranscription(sessionId);
@@ -52,30 +108,21 @@ export function Transcript({
           isBatching={false}
           hasAudio={screen.hasAudio}
           error={screen.error}
+          onRetranscribe={regenerateTranscript}
           onUploadAudio={uploadAudio}
           onUploadTranscript={uploadTranscript}
         />
       )}
       {screen.kind === "ready" && (
-        <>
-          {screen.isFinalizing ? <FinalizingTranscriptBanner /> : null}
-          <TranscriptViewer
-            transcriptIds={screen.transcriptIds}
-            liveSegments={screen.liveSegments}
-            currentActive={screen.currentActive}
-            scrollRef={scrollRef}
-          />
-        </>
+        <TranscriptViewer
+          transcriptIds={screen.transcriptIds}
+          liveSegments={screen.liveSegments}
+          currentActive={screen.currentActive}
+          captureGeneration={screen.captureGeneration}
+          scrollRef={scrollRef}
+          editMode={editMode && !screen.currentActive}
+        />
       )}
-    </div>
-  );
-}
-
-function FinalizingTranscriptBanner() {
-  return (
-    <div className="bg-background/95 pointer-events-none absolute top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium shadow-sm">
-      <Spinner size={14} />
-      <span>Finalizing transcript...</span>
     </div>
   );
 }

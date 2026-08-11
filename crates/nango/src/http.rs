@@ -10,7 +10,7 @@ impl<'a> NangoHttpClient<'a> {
     }
 }
 
-impl<'a> hypr_http::HttpClient for NangoHttpClient<'a> {
+impl<'a> anlg_http::HttpClient for NangoHttpClient<'a> {
     async fn get(&self, path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let response = self.proxy.get(path)?.send().await?;
         let bytes = response.error_for_status()?.bytes().await?;
@@ -74,9 +74,15 @@ impl OwnedNangoHttpClient {
         self.proxy = self.proxy.base_url_override(base_url);
         self
     }
+
+    /// For providers that need request headers the `HttpClient` trait cannot
+    /// express (e.g. `Notion-Version`).
+    pub fn into_proxy(self) -> OwnedNangoProxy {
+        self.proxy
+    }
 }
 
-impl hypr_http::HttpClient for OwnedNangoHttpClient {
+impl anlg_http::HttpClient for OwnedNangoHttpClient {
     async fn get(&self, path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let response = self.proxy.get(path)?.send().await?;
         let bytes = response.error_for_status()?.bytes().await?;

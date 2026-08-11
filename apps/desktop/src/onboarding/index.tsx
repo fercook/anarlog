@@ -1,13 +1,12 @@
 import { Trans } from "@lingui/react/macro";
+import { SpeakerHigh, SpeakerX } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { platform } from "@tauri-apps/plugin-os";
-import { Volume2Icon, VolumeXIcon } from "lucide-react";
 import { motion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { commands as analyticsCommands } from "@hypr/plugin-analytics";
-import { commands as sfxCommands } from "@hypr/plugin-sfx";
-import { cn } from "@hypr/utils";
+import { commands as sfxCommands } from "@anlg/plugin-sfx";
+import { cn } from "@anlg/utils";
 
 import { LoginSection } from "./account";
 import { CalendarSection } from "./calendar";
@@ -19,9 +18,11 @@ import {
 } from "./config";
 import { FinalDescription, FinalSection, finishOnboarding } from "./final";
 import { FolderLocationSection } from "./folder-location";
+import { ImportSection } from "./imports";
 import { PermissionsSection } from "./permissions";
 import { OnboardingSection } from "./shared";
 
+import { trackAnalyticsEvent } from "~/analytics";
 import { useAuth } from "~/auth";
 import { StandaloneWindowShell } from "~/shared/window-shell";
 import { type Tab, useTabs } from "~/store/zustand/tabs";
@@ -31,19 +32,23 @@ export function TabContentOnboarding({
 }: {
   tab: Extract<Tab, { type: "onboarding" }>;
 }) {
-  const close = useTabs((state) => state.close);
-  const currentTab = useTabs((state) => state.currentTab);
+  const openCurrent = useTabs((state) => state.openCurrent);
 
-  const handleFinish = useCallback(() => {
-    if (currentTab) {
-      close(currentTab);
-    }
-  }, [close, currentTab]);
+  const handleFinish = useCallback(
+    (sessionId: string) => {
+      openCurrent({ type: "sessions", id: sessionId });
+    },
+    [openCurrent],
+  );
 
   return <OnboardingScreen onFinish={handleFinish} />;
 }
 
-function OnboardingScreen({ onFinish }: { onFinish: () => void }) {
+function OnboardingScreen({
+  onFinish,
+}: {
+  onFinish: (sessionId: string) => void;
+}) {
   return (
     <OnboardingScreenContent
       onFinish={onFinish}
@@ -56,7 +61,7 @@ function OnboardingScreen({ onFinish }: { onFinish: () => void }) {
 export function StandaloneOnboardingScreen({
   onFinish,
 }: {
-  onFinish: () => void;
+  onFinish: (sessionId: string) => void;
 }) {
   return (
     <StandaloneWindowShell>
@@ -74,7 +79,7 @@ function OnboardingScreenContent({
   headerClassName,
   headerDragRegion = false,
 }: {
-  onFinish: () => void;
+  onFinish: (sessionId: string) => void;
   headerClassName: string;
   headerDragRegion?: boolean;
 }) {
@@ -87,9 +92,22 @@ function OnboardingScreenContent({
   const currentPlatform = platform();
 
   const goNext = useCallback(() => {
+    trackAnalyticsEvent("onboarding_step_completed", {
+      step: currentStep,
+      platform: currentPlatform,
+    });
     const next = getNextStep(currentStep);
     if (next) setCurrentStep(next);
-  }, [currentStep]);
+  }, [currentPlatform, currentStep]);
+
+  const skipCurrentStep = useCallback(() => {
+    trackAnalyticsEvent("onboarding_step_skipped", {
+      step: currentStep,
+      platform: currentPlatform,
+    });
+    const next = getNextStep(currentStep);
+    if (next) setCurrentStep(next);
+  }, [currentPlatform, currentStep]);
 
   const goBack = useCallback(() => {
     const prev = getPrevStep(currentStep);
@@ -102,8 +120,7 @@ function OnboardingScreenContent({
   }, [auth]);
 
   useEffect(() => {
-    void analyticsCommands.event({
-      event: "onboarding_step_viewed",
+    trackAnalyticsEvent("onboarding_step_viewed", {
       step: currentStep,
       platform: currentPlatform,
     });
@@ -129,10 +146,17 @@ function OnboardingScreenContent({
     }
   }, []);
 
-  const handleFinish = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: ["onboarding-needed"] });
-    onFinish();
-  }, [onFinish, queryClient]);
+  const handleFinish = useCallback(
+    (sessionId: string) => {
+      trackAnalyticsEvent("onboarding_step_completed", {
+        step: "final",
+        platform: currentPlatform,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["onboarding-needed"] });
+      onFinish(sessionId);
+    },
+    [currentPlatform, onFinish, queryClient],
+  );
 
   return (
     <div className="bg-card relative flex h-full min-h-0 flex-col overflow-hidden">
@@ -179,9 +203,9 @@ function OnboardingScreenContent({
           aria-label={isMuted ? "Unmute" : "Mute"}
         >
           {isMuted ? (
-            <VolumeXIcon size={16} className="text-muted-foreground" />
+            <SpeakerX size={16} className="text-muted-foreground" />
           ) : (
-            <Volume2Icon size={16} className="text-muted-foreground" />
+            <SpeakerHigh size={16} className="text-muted-foreground" />
           )}
         </button>
       </div>
@@ -204,10 +228,18 @@ function OnboardingScreenContent({
             title={<Trans>Start with permissions</Trans>}
             completedTitle={<Trans>Permissions granted</Trans>}
             description={
-              <Trans>
-                Anarlog needs access to your microphone and system audio to
-                record and transcribe your meetings
-              </Trans>
+              currentPlatform === "macos" ? (
+                <Trans>
+                  Anarlog needs microphone and system audio to transcribe your
+                  meetings, plus Accessibility to read meeting controls, visible
+                  chat, and participant status.
+                </Trans>
+              ) : (
+                <Trans>
+                  Anarlog needs access to your microphone and system audio to
+                  record and transcribe your meetings
+                </Trans>
+              )
             }
             status={getStepStatus("permissions", currentStep)}
             skippable={false}
@@ -239,9 +271,13 @@ function OnboardingScreenContent({
             onNext={goNext}
             onSkip={() => {
               setDidSkipLogin(true);
-              void analyticsCommands.event({
-                event: "onboarding_login_skipped",
+              trackAnalyticsEvent("onboarding_login_skipped");
+              trackAnalyticsEvent("onboarding_step_skipped", {
+                step: "login",
+                platform: currentPlatform,
               });
+              const next = getNextStep("login");
+              if (next) setCurrentStep(next);
             }}
           >
             <LoginSection
@@ -261,11 +297,29 @@ function OnboardingScreenContent({
             status={getStepStatus("calendar", currentStep)}
             onBack={goBack}
             onNext={goNext}
+            onSkip={skipCurrentStep}
           >
             <CalendarSection
               onContinue={goNext}
               onSignIn={handleCalendarSignIn}
             />
+          </OnboardingSection>
+
+          <OnboardingSection
+            title={<Trans>Bring your meeting history</Trans>}
+            description={
+              <Trans>
+                Import notes and transcripts from the meeting apps you already
+                use.
+              </Trans>
+            }
+            completedTitle={<Trans>Meeting history imported</Trans>}
+            status={getStepStatus("imports", currentStep)}
+            onBack={goBack}
+            onNext={goNext}
+            onSkip={skipCurrentStep}
+          >
+            <ImportSection onContinue={goNext} onSkip={skipCurrentStep} />
           </OnboardingSection>
 
           <OnboardingSection
@@ -277,6 +331,7 @@ function OnboardingScreenContent({
             status={getStepStatus("folder-location", currentStep)}
             onBack={goBack}
             onNext={goNext}
+            onSkip={skipCurrentStep}
           >
             <FolderLocationSection onContinue={goNext} />
           </OnboardingSection>

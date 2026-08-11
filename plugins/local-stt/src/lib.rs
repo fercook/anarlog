@@ -1,9 +1,10 @@
-use hypr_model_downloader::ModelDownloadManager;
-use hypr_supervisor::dynamic::DynamicSupervisorMsg;
+use anlg_model_downloader::ModelDownloadManager;
+use anlg_supervisor::dynamic::DynamicSupervisorMsg;
 use ractor::{ActorCell, ActorRef};
 use tauri::{Manager, Wry};
 
 mod commands;
+mod download_pollers;
 mod error;
 mod ext;
 mod model;
@@ -25,6 +26,7 @@ pub struct State {
     pub stt_supervisor: Option<ActorRef<DynamicSupervisorMsg>>,
     pub supervisor_handle: Option<SupervisorHandle>,
     pub model_downloader: ModelDownloadManager<LocalModel>,
+    pub(crate) download_pollers: download_pollers::DownloadPollers,
 }
 
 #[derive(Default)]
@@ -54,7 +56,7 @@ fn make_specta_builder<R: tauri::Runtime>() -> tauri_specta::Builder<R> {
         .events(tauri_specta::collect_events![
             types::DownloadProgressPayload,
         ])
-        .typ::<hypr_whisper_local_model::WhisperModel>()
+        .typ::<anlg_whisper_local_model::WhisperModel>()
         .error_handling(tauri_specta::ErrorHandlingMode::Result)
 }
 
@@ -75,6 +77,7 @@ pub fn init<R: tauri::Runtime>(options: InitOptions) -> tauri::plugin::TauriPlug
                 stt_supervisor: None,
                 supervisor_handle: None,
                 model_downloader,
+                download_pollers: download_pollers::DownloadPollers::default(),
             }));
 
             app.manage(state.clone());

@@ -11,24 +11,25 @@ mod api;
 mod error;
 mod listener;
 mod listener2;
+mod voiceprint;
 
-pub use api::*;
-pub use error::{Error, Result};
-pub use hypr_transcription_core::listener::{
+pub use anlg_transcription_core::listener::{
     DegradedError, ListenerRuntime, LiveTranscriptDelta, LiveTranscriptEngine,
     LiveTranscriptSegment, LiveTranscriptSegmentDelta, LiveTranscriptUpdate,
 };
-pub use hypr_transcription_core::listener2::{
+pub use anlg_transcription_core::listener2::{
     DenoiseEvent, DenoiseParams, DenoiseRuntime, Error as Listener2Error,
     Result as Listener2Result, Subtitle, Token, VttWord, export_words_to_vtt_file,
     is_supported_languages_batch, list_documented_language_codes_batch, parse_subtitle_from_path,
     run_denoise, suggest_providers_for_languages_batch,
 };
+pub use api::*;
+pub use error::{Error, Result};
 pub use listener::{Listener, ListenerPluginExt};
 pub use listener2::{Listener2, Listener2PluginExt};
 
-use hypr_audio::AudioProvider;
-use hypr_transcription_core::listener::actors::{RootActor, RootArgs};
+use anlg_audio::AudioProvider;
+use anlg_transcription_core::listener::actors::{RootActor, RootArgs};
 
 const PLUGIN_NAME: &str = "transcription";
 
@@ -38,7 +39,14 @@ pub struct PluginState {
     pub app: tauri::AppHandle,
 }
 
-pub type SessionStateCache = Arc<StdMutex<HashMap<String, (bool, bool)>>>;
+#[derive(Default)]
+pub struct SessionStateSnapshot {
+    pub requested_live_transcription: bool,
+    pub live_transcription_active: bool,
+    pub live_segments: Vec<anlg_transcription_core::listener::LiveTranscriptSegment>,
+}
+
+pub type SessionStateCache = Arc<StdMutex<HashMap<String, SessionStateSnapshot>>>;
 
 pub struct BatchSessionRegistry {
     pub sessions: StdMutex<HashMap<String, BatchSessionEntry>>,
@@ -47,6 +55,7 @@ pub struct BatchSessionRegistry {
 pub struct BatchSessionEntry {
     pub control: Arc<BatchSessionControl>,
     pub abort_handle: Option<AbortHandle>,
+    pub wait_for_native_completion: bool,
 }
 
 pub struct BatchSessionControl {
@@ -88,6 +97,9 @@ fn make_specta_builder<R: tauri::Runtime>() -> tauri_specta::Builder<R> {
             listener2::commands::is_supported_languages_batch::<tauri::Wry>,
             listener2::commands::suggest_providers_for_languages_batch::<tauri::Wry>,
             listener2::commands::list_documented_language_codes_batch::<tauri::Wry>,
+            voiceprint::extract_voiceprint_candidates::<tauri::Wry>,
+            voiceprint::promote_voiceprint_candidates::<tauri::Wry>,
+            voiceprint::cleanup_expired_voiceprint_candidates::<tauri::Wry>,
         ])
         .events(tauri_specta::collect_events![
             CaptureLifecycleEvent,

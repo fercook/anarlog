@@ -1,18 +1,56 @@
 import {
   type NodeViewComponentProps,
   useEditorEventCallback,
-  useEditorState,
+  useIsNodeSelected,
 } from "@handlewithcare/react-prosemirror";
 import type { NodeSpec } from "prosemirror-model";
 import { forwardRef, useCallback, useRef, useState } from "react";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
+import {
+  useAttachmentEditingEnabled,
+  useAttachmentResolver,
+} from "./attachment-resolver";
 import { getSafeNodePos } from "./error-boundary";
 
 const MIN_IMAGE_WIDTH = 15;
 const MAX_IMAGE_WIDTH = 100;
 const DEFAULT_IMAGE_WIDTH = 80;
+
+export function listenForImageResize({
+  onCancel,
+  onCommit,
+  onMove,
+}: {
+  onCancel: () => void;
+  onCommit: () => void;
+  onMove: (event: PointerEvent) => void;
+}) {
+  let active = true;
+  const cleanup = () => {
+    if (!active) return;
+    active = false;
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", handleCommit);
+    window.removeEventListener("pointercancel", handleCancel);
+    window.removeEventListener("blur", handleCancel);
+  };
+  const handleCommit = () => {
+    cleanup();
+    onCommit();
+  };
+  const handleCancel = () => {
+    cleanup();
+    onCancel();
+  };
+
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", handleCommit);
+  window.addEventListener("pointercancel", handleCancel);
+  window.addEventListener("blur", handleCancel);
+  return cleanup;
+}
 
 function clampImageWidth(value: number) {
   if (Number.isNaN(value)) return DEFAULT_IMAGE_WIDTH;
@@ -41,6 +79,7 @@ export const imageNodeSpec: NodeSpec = {
     alt: { default: null },
     title: { default: null },
     attachmentId: { default: null },
+    sharedAttachmentId: { default: null },
     editorWidth: { default: DEFAULT_IMAGE_WIDTH },
   },
   parseDOM: [
@@ -55,6 +94,7 @@ export const imageNodeSpec: NodeSpec = {
           alt: el.getAttribute("alt"),
           title: metadata.title,
           attachmentId: el.getAttribute("data-attachment-id"),
+          sharedAttachmentId: el.getAttribute("data-shared-attachment-id"),
           editorWidth: clampImageWidth(
             parseInt(
               el.getAttribute("data-editor-width") ??
@@ -74,6 +114,9 @@ export const imageNodeSpec: NodeSpec = {
     if (node.attrs.attachmentId) {
       attrs["data-attachment-id"] = node.attrs.attachmentId;
     }
+    if (node.attrs.sharedAttachmentId) {
+      attrs["data-shared-attachment-id"] = node.attrs.sharedAttachmentId;
+    }
     if (node.attrs.editorWidth) {
       attrs["data-editor-width"] = String(node.attrs.editorWidth);
     }
@@ -86,11 +129,37 @@ export const ResizableImageView = forwardRef<
   NodeViewComponentProps
 >(function ResizableImageView({ nodeProps, ...htmlAttrs }, ref) {
   const { node, getPos } = nodeProps;
+  const resolveAttachment = useAttachmentResolver();
+  const attachmentEditingEnabled = useAttachmentEditingEnabled();
+  const attachmentId =
+    typeof node.attrs.sharedAttachmentId === "string"
+      ? node.attrs.sharedAttachmentId
+      : node.attrs.attachmentId;
+  const resolvedAttachment =
+    typeof attachmentId === "string" ? resolveAttachment?.(attachmentId) : null;
   const [isHovered, setIsHovered] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [draftWidth, setDraftWidth] = useState<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
+  const activeResizeCleanupRef = useRef<(() => void) | null>(null);
+  const attachContainer = useCallback((element: HTMLDivElement | null) => {
+    if (!element) {
+      activeResizeCleanupRef.current?.();
+      activeResizeCleanupRef.current = null;
+      containerRef.current = null;
+      return;
+    }
+
+    containerRef.current = element;
+    return () => {
+      activeResizeCleanupRef.current?.();
+      activeResizeCleanupRef.current = null;
+      if (containerRef.current === element) {
+        containerRef.current = null;
+      }
+    };
+  }, []);
   const updateAttributes = useEditorEventCallback(
     (view, attrs: Record<string, unknown>) => {
       if (!view) return;
@@ -105,15 +174,7 @@ export const ResizableImageView = forwardRef<
     },
   );
 
-  // to detect whether a nodeview is selected:
-  // see: https://discuss.prosemirror.net/t/is-this-the-right-way-to-determine-if-a-nodeview-is-selected/2208/2
-  // also: https://github.com/handlewithcarecollective/react-prosemirror/issues/161
-  const pos = getSafeNodePos(getPos);
-  const { selection } = useEditorState();
-  const isSelected =
-    pos !== null &&
-    pos >= selection.from &&
-    pos + node.nodeSize <= selection.to;
+  const isSelected = useIsNodeSelected();
 
   // we register all resize event handlers during resize start and unregister them on resize end.
   // all drag state lives inside this callback scope.
@@ -126,10 +187,12 @@ export const ResizableImageView = forwardRef<
     ) => {
       const containerEl = containerRef.current;
       const imageEl = imageRef.current;
-      if (!containerEl || !imageEl) return;
+      if (!attachmentEditingEnabled || !containerEl || !imageEl) return;
 
       event.preventDefault();
       event.stopPropagation();
+      activeResizeCleanupRef.current?.();
+      activeResizeCleanupRef.current = null;
 
       const editorEl = containerEl.closest(".ProseMirror");
       const maxWidth =
@@ -148,25 +211,37 @@ export const ResizableImageView = forwardRef<
         setDraftWidth(currentWidth);
       };
 
-      const handlePointerUp = () => {
-        window.removeEventListener("pointermove", handlePointerMove);
-        window.removeEventListener("pointerup", handlePointerUp);
-
-        updateAttributes({
-          editorWidth: clampImageWidth((currentWidth / maxWidth) * 100),
-        });
-
+      const resetDraft = () => {
         setIsResizing(false);
         setDraftWidth(null);
       };
-
-      window.addEventListener("pointermove", handlePointerMove);
-      window.addEventListener("pointerup", handlePointerUp);
+      let releaseListeners = () => {};
+      const clearActiveResize = () => {
+        if (activeResizeCleanupRef.current === releaseListeners) {
+          activeResizeCleanupRef.current = null;
+        }
+      };
+      releaseListeners = listenForImageResize({
+        onMove: handlePointerMove,
+        onCommit: () => {
+          clearActiveResize();
+          updateAttributes({
+            editorWidth: clampImageWidth((currentWidth / maxWidth) * 100),
+          });
+          resetDraft();
+        },
+        onCancel: () => {
+          clearActiveResize();
+          resetDraft();
+        },
+      });
+      activeResizeCleanupRef.current = releaseListeners;
     },
-    [updateAttributes],
+    [attachmentEditingEnabled, updateAttributes],
   );
 
-  const showControls = isHovered || isSelected || isResizing;
+  const showControls =
+    attachmentEditingEnabled && (isHovered || isSelected || isResizing);
   const editorWidth = clampImageWidth(node.attrs.editorWidth);
   const imageWidth =
     draftWidth !== null ? `${draftWidth}px` : `${editorWidth}%`;
@@ -178,7 +253,7 @@ export const ResizableImageView = forwardRef<
       className="relative overflow-visible select-none [&_*::selection]:bg-transparent [&::selection]:bg-transparent"
     >
       <div
-        ref={containerRef}
+        ref={attachContainer}
         className="relative inline-block w-fit max-w-full overflow-visible"
         style={imageWidth ? { width: imageWidth } : undefined}
         onMouseEnter={() => setIsHovered(true)}
@@ -186,13 +261,13 @@ export const ResizableImageView = forwardRef<
       >
         <img
           ref={imageRef}
-          src={node.attrs.src}
+          src={resolvedAttachment?.src ?? node.attrs.src}
           alt={node.attrs.alt || ""}
           title={parseImageMetadata(node.attrs.title).title ?? undefined}
           className={cn([
             "prosemirror-image bg-card max-w-full rounded-md transition-[box-shadow,border-color] select-none",
             isSelected
-              ? "ring-offset-card ring-2 ring-blue-500 ring-offset-2"
+              ? "ring-foreground/55 ring-offset-card ring-1 ring-offset-2"
               : "",
             isHovered && !isSelected
               ? "ring-border ring-offset-card ring-1 ring-offset-2"

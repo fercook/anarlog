@@ -1,41 +1,46 @@
 import { useQuery } from "@tanstack/react-query";
+import { arch, platform } from "@tauri-apps/plugin-os";
 import {
-  createContext,
   type ReactNode,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 
-import { canStartTrial as canStartTrialApi } from "@hypr/api-client";
-import { createClient } from "@hypr/api-client/client";
-import { commands as authCommands } from "@hypr/plugin-auth";
-import { commands as openerCommands } from "@hypr/plugin-opener2";
-import { openUrlWithInstruction } from "@hypr/plugin-windows";
 import {
-  type BillingInfo,
-  deriveBillingInfo,
-  type SupabaseJwtPayload,
-} from "@hypr/supabase";
+  canStartTrial as canStartTrialApi,
+  startTrial as startTrialApi,
+} from "@anlg/api-client";
+import { createClient } from "@anlg/api-client/client";
+import { commands as analyticsCommands } from "@anlg/plugin-analytics";
+import { commands as authCommands } from "@anlg/plugin-auth";
+import { commands as openerCommands } from "@anlg/plugin-opener2";
+import { openUrlWithInstruction } from "@anlg/plugin-windows";
+import { deriveBillingInfo, type SupabaseJwtPayload } from "@anlg/supabase";
 
 import { TrialEndedDialog } from "../billing/trial-ended-dialog";
+import { TrialPaymentReminderDialog } from "../billing/trial-payment-reminder-dialog";
 import { TrialStartedDialog } from "../billing/trial-started-dialog";
 import { env } from "../env";
+import { waitForBillingUpdate } from "../shared/billing";
 import { configurePaidSettings } from "../shared/config/configure-paid-settings";
+import { startTrialOnce } from "../shared/trial-start";
 import { buildWebAppUrl } from "../shared/utils";
-import { useAuth } from "./context";
+import { useAuth } from "./auth-context";
+import { type BillingAccess, BillingContext } from "./billing-context";
 
-import * as settings from "~/store/tinybase/store/settings";
+import { setSettingValues } from "~/settings/queries";
+import { useConfigValues } from "~/shared/config";
+import { getUnsupportedDesktopLocalSttRepair } from "~/stt/capabilities";
 
 async function getClaimsFromToken(
   accessToken: string,
 ): Promise<SupabaseJwtPayload | null> {
   const result = await authCommands.decodeClaims(accessToken);
   if (result.status === "error") {
-    return null;
+    throw new Error(result.error);
   }
   return {
     sub: result.data.sub,
@@ -43,21 +48,14 @@ async function getClaimsFromToken(
     entitlements: result.data.entitlements,
     subscription_status: result.data.subscription_status,
     trial_end: result.data.trial_end,
+    has_payment_method: result.data.has_payment_method,
   };
 }
 
-type BillingContextValue = BillingInfo & {
-  isReady: boolean;
-  canStartTrial: { data: boolean; isPending: boolean };
-  upgradeToPro: () => void;
-};
-
-export type BillingAccess = BillingContextValue;
-
-const BillingContext = createContext<BillingContextValue | null>(null);
-
 const TRIAL_STARTED_SEEN_PREFIX = "anarlog:trial_started_seen:";
 const TRIAL_ENDED_SEEN_PREFIX = "anarlog:trial_ended_seen:";
+const TRIAL_PAYMENT_REMINDER_SEEN_PREFIX =
+  "anarlog:trial_payment_reminder_seen:";
 
 function readSeen(key: string): boolean {
   try {
@@ -77,18 +75,30 @@ function markSeen(key: string): void {
 
 export function BillingProvider({ children }: { children: ReactNode }) {
   const auth = useAuth();
-  const settingsStore = settings.UI.useStore(settings.STORE_ID);
-  const { current_llm_provider } = settings.UI.useValues(settings.STORE_ID);
+  const {
+    current_llm_provider: currentLlmProvider,
+    current_stt_provider: currentSttProvider,
+    current_stt_model: currentSttModel,
+  } = useConfigValues([
+    "current_llm_provider",
+    "current_stt_provider",
+    "current_stt_model",
+  ] as const);
 
   const claimsQuery = useQuery({
     queryKey: ["tokenInfo", auth?.session?.access_token ?? ""],
     queryFn: () => getClaimsFromToken(auth!.session!.access_token),
     enabled: !!auth?.session?.access_token,
+    placeholderData: (previous) =>
+      previous?.sub === auth?.session?.user.id ? previous : undefined,
   });
 
   const billing = deriveBillingInfo(claimsQuery.data ?? null);
   const isReady = !claimsQuery.isPending && !claimsQuery.isError;
+  const claimsAreCurrent =
+    !claimsQuery.isFetching && !claimsQuery.isPlaceholderData;
 
+  // eslint-disable-next-line @tanstack/query/exhaustive-deps -- Auth supplies request headers; the user ID is the eligibility identity.
   const canTrialQuery = useQuery({
     enabled: !!auth?.session && !billing.isPaid,
     queryKey: [auth?.session?.user.id ?? "", "canStartTrial"],
@@ -123,30 +133,153 @@ export function BillingProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  const upgradeToPro = useCallback(async () => {
-    const url = await buildWebAppUrl("/app/checkout", { period: "monthly" });
-    await openUrlWithInstruction(url, "billing", (u) =>
-      openerCommands.openUrl(u, null),
-    );
-  }, []);
+  // eslint-disable-next-line @tanstack/query/exhaustive-deps -- The user ID owns one automatic attempt; a refreshed token must not trigger another start.
+  useQuery({
+    enabled:
+      !!auth?.session &&
+      isReady &&
+      claimsAreCurrent &&
+      !billing.isPaid &&
+      canTrialQuery.data?.canStartTrial === true,
+    queryKey: [auth?.session?.user.id ?? "", "startEligibleTrial"],
+    queryFn: async () => {
+      const userId = auth?.session?.user.id;
+      const headers = auth?.getHeaders();
+      if (!userId || !headers) {
+        throw new Error("No authentication headers available");
+      }
+
+      return startTrialOnce(userId, async () => {
+        const client = createClient({ baseUrl: env.VITE_API_URL, headers });
+        const { data, error } = await startTrialApi({
+          client,
+          query: { interval: "monthly" },
+        });
+        if (error) {
+          throw error;
+        }
+
+        await waitForBillingUpdate(
+          () => auth.refreshSession(),
+          data?.started ? 3000 : 1500,
+        );
+        return data;
+      });
+    },
+    retry: 1,
+    refetchOnWindowFocus: false,
+  });
+
+  const [isUpgradingToPro, setIsUpgradingToPro] = useState(false);
+  // State alone cannot gate re-entry: a second click can land before the
+  // disabled state renders, and its finally would re-enable the buttons
+  // while the first open is still in flight.
+  const upgradeInFlightRef = useRef(false);
+
+  const openUpgrade = useCallback(
+    async (source: "feature_gate" | "trial_ended") => {
+      if (upgradeInFlightRef.current) {
+        return;
+      }
+      upgradeInFlightRef.current = true;
+
+      void analyticsCommands.event({
+        event: "upgrade_clicked",
+        plan: "pro",
+        period: "monthly",
+        source,
+      });
+
+      setIsUpgradingToPro(true);
+      try {
+        const url = await buildWebAppUrl("/app/checkout", {
+          period: "monthly",
+          source,
+        });
+        await openUrlWithInstruction(url, "billing", (u) =>
+          openerCommands.openUrl(u, null),
+        );
+      } finally {
+        upgradeInFlightRef.current = false;
+        setIsUpgradingToPro(false);
+      }
+    },
+    [],
+  );
+
+  const upgradeToPro = useCallback(() => {
+    void openUpgrade("feature_gate");
+  }, [openUpgrade]);
+
+  const openBillingPortal = useCallback(
+    async (intent: "manage" | "payment_method_update" = "manage") => {
+      const url = await buildWebAppUrl(
+        "/app/portal",
+        intent === "manage" ? undefined : { intent },
+      );
+      await openUrlWithInstruction(url, "billing", (u) =>
+        openerCommands.openUrl(u, null),
+      );
+    },
+    [],
+  );
 
   useEffect(() => {
-    if (!auth?.session?.user.id || !isReady || billing.isPaid) {
+    if (
+      !auth?.session?.user.id ||
+      !isReady ||
+      !claimsAreCurrent ||
+      billing.isPaid
+    ) {
       return;
     }
 
-    if (current_llm_provider !== "hyprnote") {
+    if (currentLlmProvider !== "anarlog") {
       return;
     }
 
-    settingsStore?.setValue("current_llm_provider", "");
-    settingsStore?.setValue("current_llm_model", "");
+    void setSettingValues({
+      current_llm_provider: "",
+      current_llm_model: "",
+    });
   }, [
     auth?.session?.user.id,
     billing.isPaid,
-    current_llm_provider,
+    claimsAreCurrent,
+    currentLlmProvider,
     isReady,
-    settingsStore,
+  ]);
+
+  useEffect(() => {
+    if (
+      auth.session === undefined ||
+      (auth.session !== null && (!isReady || !claimsAreCurrent))
+    ) {
+      return;
+    }
+
+    const repair = getUnsupportedDesktopLocalSttRepair(
+      platform(),
+      arch(),
+      currentSttProvider,
+      currentSttModel,
+      isReady && billing.isPaid && !!auth?.session,
+    );
+    if (!repair) {
+      return;
+    }
+
+    void setSettingValues({
+      current_stt_provider: repair.provider,
+      current_stt_model: repair.model,
+    });
+  }, [
+    auth.session,
+    billing.isPaid,
+    claimsAreCurrent,
+    currentSttModel,
+    currentSttProvider,
+    isReady,
   ]);
 
   const prevIsPaidRef = useRef(billing.isPaid);
@@ -154,12 +287,16 @@ export function BillingProvider({ children }: { children: ReactNode }) {
     const wasPaid = prevIsPaidRef.current;
     prevIsPaidRef.current = billing.isPaid;
 
-    if (!wasPaid && billing.isPaid && isReady && settingsStore) {
-      configurePaidSettings(settingsStore);
+    if (!wasPaid && billing.isPaid && isReady) {
+      void configurePaidSettings();
     }
-  }, [billing.isPaid, isReady, settingsStore]);
+  }, [billing.isPaid, isReady]);
 
   const [trialStartedOpen, setTrialStartedOpen] = useState(false);
+  const [trialPaymentReminderOpen, setTrialPaymentReminderOpen] =
+    useState(false);
+  const [trialPaymentReminderThreshold, setTrialPaymentReminderThreshold] =
+    useState<3 | 7 | null>(null);
   const [trialEndedOpen, setTrialEndedOpen] = useState(false);
   const [trialEligibilityRefreshedUserId, setTrialEligibilityRefreshedUserId] =
     useState<string | null>(null);
@@ -177,6 +314,29 @@ export function BillingProvider({ children }: { children: ReactNode }) {
       if (!readSeen(key)) {
         setTrialStartedOpen(true);
         markSeen(key);
+        return;
+      }
+
+      const daysRemaining = billing.trialDaysRemaining;
+      const reminderThreshold =
+        daysRemaining != null && daysRemaining <= 3
+          ? 3
+          : daysRemaining != null && daysRemaining <= 7
+            ? 7
+            : null;
+
+      if (reminderThreshold && !billing.hasPaymentMethod) {
+        const reminderKey = `${TRIAL_PAYMENT_REMINDER_SEEN_PREFIX}${userId}:${reminderThreshold}`;
+        if (!readSeen(reminderKey)) {
+          setTrialPaymentReminderThreshold(reminderThreshold);
+          setTrialPaymentReminderOpen(true);
+          markSeen(reminderKey);
+          void analyticsCommands.event({
+            event: "trial_payment_reminder_shown",
+            days_remaining: daysRemaining,
+            reminder_threshold: reminderThreshold,
+          });
+        }
       }
       return;
     }
@@ -192,8 +352,7 @@ export function BillingProvider({ children }: { children: ReactNode }) {
     ) {
       if (trialEligibilityRefreshPendingRef.current !== userId) {
         trialEligibilityRefreshPendingRef.current = userId;
-        void auth
-          .refreshSession()
+        void waitForBillingUpdate(() => auth.refreshSession(), 3000)
           .catch(() => null)
           .finally(() => {
             setTrialEligibilityRefreshedUserId(userId);
@@ -217,6 +376,8 @@ export function BillingProvider({ children }: { children: ReactNode }) {
   }, [
     auth?.session?.user.id,
     billing.isTrialing,
+    billing.trialDaysRemaining,
+    billing.hasPaymentMethod,
     hasTrial,
     billing.isPaid,
     isReady,
@@ -226,14 +387,15 @@ export function BillingProvider({ children }: { children: ReactNode }) {
     auth.refreshSession,
   ]);
 
-  const value = useMemo<BillingContextValue>(
+  const value = useMemo<BillingAccess>(
     () => ({
       ...billing,
       isReady,
       canStartTrial,
       upgradeToPro,
+      isUpgradingToPro,
     }),
-    [billing, isReady, canStartTrial, upgradeToPro],
+    [billing, isReady, canStartTrial, upgradeToPro, isUpgradingToPro],
   );
 
   return (
@@ -243,22 +405,26 @@ export function BillingProvider({ children }: { children: ReactNode }) {
         open={trialStartedOpen}
         onOpenChange={setTrialStartedOpen}
         trialDaysRemaining={billing.trialDaysRemaining}
+        hasPaymentMethod={billing.hasPaymentMethod}
+      />
+      <TrialPaymentReminderDialog
+        open={trialPaymentReminderOpen}
+        onOpenChange={setTrialPaymentReminderOpen}
+        daysRemaining={billing.trialDaysRemaining ?? 0}
+        onAddPaymentMethod={() => {
+          void analyticsCommands.event({
+            event: "trial_payment_method_clicked",
+            days_remaining: billing.trialDaysRemaining,
+            reminder_threshold: trialPaymentReminderThreshold,
+          });
+          void openBillingPortal("payment_method_update");
+        }}
       />
       <TrialEndedDialog
         open={trialEndedOpen}
         onOpenChange={setTrialEndedOpen}
-        onUpgrade={upgradeToPro}
+        onUpgrade={() => void openUpgrade("trial_ended")}
       />
     </BillingContext.Provider>
   );
-}
-
-export function useBillingAccess() {
-  const context = useContext(BillingContext);
-
-  if (!context) {
-    throw new Error("useBillingAccess must be used within BillingProvider");
-  }
-
-  return context;
 }

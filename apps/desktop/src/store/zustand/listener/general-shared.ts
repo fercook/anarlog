@@ -4,7 +4,7 @@ import type { StoreApi } from "zustand";
 import type {
   DegradedError,
   CaptureStatusEvent,
-} from "@hypr/plugin-transcription";
+} from "@anlg/plugin-transcription";
 
 export type LiveSessionStatus = "inactive" | "active" | "finalizing";
 export type SessionMode = LiveSessionStatus | "running_batch";
@@ -20,10 +20,15 @@ export type LoadingPhase =
 export type LiveStartBlockReason =
   | "session_active"
   | "session_finalizing"
+  | "post_stop_processing"
   | "another_session_active"
   | "start_in_progress";
 
 export type LiveIntervalId = ReturnType<typeof setInterval>;
+
+export const TRANSCRIPTION_STALL_AMPLITUDE_THRESHOLD = 0.05;
+export const TRANSCRIPTION_STALL_AUDIBLE_SECONDS = 45;
+export const TRANSCRIPTION_FINAL_STALL_AUDIBLE_SECONDS = 90;
 
 export type GeneralState = {
   live: {
@@ -33,18 +38,28 @@ export type GeneralState = {
     status: LiveSessionStatus;
     amplitude: { mic: number; speaker: number };
     seconds: number;
+    captureGenerationCounter: number;
+    captureGenerationBySession: Record<string, number>;
     intervalId?: LiveIntervalId;
     sessionId: string | null;
     muted: boolean;
     lastError: string | null;
+    lastErrorSessionId: string | null;
+    lastErrorIsAudioRelated: boolean;
     device: string | null;
     degraded: DegradedError | null;
     requestedLiveTranscription: boolean | null;
     liveTranscriptionActive: boolean | null;
+    needsBatchRepair: boolean;
+    stallAudibleSeconds: number;
+    finalStallAudibleSeconds: number;
+    transcriptionStalled: boolean;
     finalizingBySession: Record<
       string,
-      { startedAtMs: number; seconds: number }
+      { startedAtMs: number; seconds: number; needsBatchRepair: boolean }
     >;
+    batchTranscriptionPendingBySession: Record<string, boolean>;
+    postStopProcessingBySession: Record<string, boolean>;
     triggerAppIds: string[] | null;
   };
 };
@@ -58,14 +73,24 @@ const initialLiveState: LiveState = {
   loadingPhase: "idle",
   amplitude: { mic: 0, speaker: 0 },
   seconds: 0,
+  captureGenerationCounter: 0,
+  captureGenerationBySession: {},
   sessionId: null,
   muted: false,
   lastError: null,
+  lastErrorSessionId: null,
+  lastErrorIsAudioRelated: false,
   device: null,
   degraded: null,
   requestedLiveTranscription: null,
   liveTranscriptionActive: null,
+  needsBatchRepair: false,
+  stallAudibleSeconds: 0,
+  finalStallAudibleSeconds: 0,
+  transcriptionStalled: false,
   finalizingBySession: {},
+  batchTranscriptionPendingBySession: {},
+  postStopProcessingBySession: {},
   triggerAppIds: null,
 };
 
@@ -76,10 +101,18 @@ export const initialGeneralState: GeneralState = {
 export const getLiveStartBlockReason = (
   live: Pick<
     LiveState,
-    "status" | "loading" | "sessionId" | "finalizingBySession"
+    | "status"
+    | "loading"
+    | "sessionId"
+    | "finalizingBySession"
+    | "postStopProcessingBySession"
   >,
   targetSessionId: string,
 ): LiveStartBlockReason | null => {
+  if (live.postStopProcessingBySession[targetSessionId]) {
+    return "post_stop_processing";
+  }
+
   if (live.sessionId === targetSessionId) {
     if (live.status === "active") {
       return "session_active";
@@ -118,13 +151,41 @@ export const setLiveState = <T extends GeneralState>(
   );
 };
 
+const ensureLiveCaptureGeneration = (live: LiveState, sessionId: string) => {
+  if (live.captureGenerationBySession[sessionId] === undefined) {
+    live.captureGenerationCounter += 1;
+    live.captureGenerationBySession[sessionId] = live.captureGenerationCounter;
+  }
+};
+
+export const releaseLiveCaptureGeneration = (
+  live: LiveState,
+  sessionId: string,
+) => {
+  delete live.captureGenerationBySession[sessionId];
+};
+
+export const markLiveCaptureStarted = (live: LiveState, sessionId: string) => {
+  ensureLiveCaptureGeneration(live, sessionId);
+  live.status = "active";
+  live.loading = false;
+  live.sessionId = sessionId;
+};
+
 export const markLiveStartRequested = (live: LiveState, sessionId: string) => {
+  ensureLiveCaptureGeneration(live, sessionId);
   live.loading = true;
   live.status = "inactive";
   live.sessionId = sessionId;
   live.lastError = null;
+  live.lastErrorSessionId = null;
+  live.lastErrorIsAudioRelated = false;
   live.requestedLiveTranscription = null;
   live.liveTranscriptionActive = null;
+  live.needsBatchRepair = false;
+  live.stallAudibleSeconds = 0;
+  live.finalStallAudibleSeconds = 0;
+  live.transcriptionStalled = false;
 };
 
 export const markLiveActive = (
@@ -135,43 +196,85 @@ export const markLiveActive = (
   liveTranscriptionActive: boolean,
   degraded: DegradedError | null,
 ) => {
-  live.status = "active";
-  live.loading = false;
+  markLiveCaptureStarted(live, sessionId);
   live.loadingPhase = "idle";
   live.seconds = 0;
   live.intervalId = intervalId;
-  live.sessionId = sessionId;
   live.degraded = degraded;
   live.requestedLiveTranscription = requestedLiveTranscription;
   live.liveTranscriptionActive = liveTranscriptionActive;
+  live.needsBatchRepair ||=
+    requestedLiveTranscription &&
+    (!liveTranscriptionActive || degraded !== null);
+  live.stallAudibleSeconds = 0;
+  live.finalStallAudibleSeconds = 0;
+  live.transcriptionStalled = false;
 };
 
 export const markLiveFinalizing = (live: LiveState, sessionId: string) => {
-  const seconds = live.sessionId === sessionId ? live.seconds : 0;
+  const existing = live.finalizingBySession[sessionId];
+  const seconds =
+    live.sessionId === sessionId ? live.seconds : (existing?.seconds ?? 0);
+  const needsBatchRepair =
+    live.sessionId === sessionId
+      ? live.needsBatchRepair
+      : (existing?.needsBatchRepair ?? false);
+  ensureLiveCaptureGeneration(live, sessionId);
   if (live.sessionId === sessionId) {
     live.status = "finalizing";
     live.loading = true;
     live.intervalId = undefined;
   }
-  live.finalizingBySession[sessionId] = { startedAtMs: Date.now(), seconds };
+  live.finalizingBySession[sessionId] = {
+    startedAtMs: existing?.startedAtMs ?? Date.now(),
+    seconds,
+    needsBatchRepair,
+  };
 };
 
-export const markLiveInactive = (live: LiveState, error: string | null) => {
+export const markLiveInactive = (
+  live: LiveState,
+  sessionId: string,
+  error: string | null,
+) => {
+  const isAudioRelated =
+    error !== null &&
+    live.sessionId === sessionId &&
+    live.lastErrorSessionId === sessionId &&
+    live.lastErrorIsAudioRelated;
+  const audioError = isAudioRelated ? live.lastError : null;
   live.status = "inactive";
   live.loading = false;
   live.loadingPhase = "idle";
   live.sessionId = null;
   live.intervalId = undefined;
-  live.lastError = error;
+  live.lastError = audioError ?? error;
+  live.lastErrorSessionId = error === null ? null : sessionId;
+  live.lastErrorIsAudioRelated = isAudioRelated;
   live.device = null;
   live.degraded = null;
   live.requestedLiveTranscription = null;
   live.liveTranscriptionActive = null;
+  live.needsBatchRepair = false;
+  live.stallAudibleSeconds = 0;
+  live.finalStallAudibleSeconds = 0;
+  live.transcriptionStalled = false;
   live.muted = initialLiveState.muted;
   live.triggerAppIds = null;
 };
 
-export const markLiveStartFailed = (live: LiveState) => {
+export const markLiveStartFailed = (
+  live: LiveState,
+  sessionId: string,
+  error: string,
+) => {
+  const audioError =
+    live.sessionId === sessionId &&
+    live.lastErrorSessionId === sessionId &&
+    live.lastErrorIsAudioRelated
+      ? live.lastError
+      : null;
+  releaseLiveCaptureGeneration(live, sessionId);
   live.intervalId = undefined;
   live.loading = false;
   live.loadingPhase = "idle";
@@ -180,12 +283,70 @@ export const markLiveStartFailed = (live: LiveState) => {
   live.seconds = 0;
   live.sessionId = null;
   live.muted = initialLiveState.muted;
-  live.lastError = null;
+  live.lastError = audioError ?? error;
+  live.lastErrorSessionId = sessionId;
+  live.lastErrorIsAudioRelated = audioError !== null;
   live.device = null;
   live.degraded = null;
   live.requestedLiveTranscription = null;
   live.liveTranscriptionActive = null;
+  live.needsBatchRepair = false;
+  live.stallAudibleSeconds = 0;
+  live.finalStallAudibleSeconds = 0;
+  live.transcriptionStalled = false;
   live.triggerAppIds = null;
+};
+
+// Live STT can hang mid-session without any error or degraded event from the
+// capture pipeline: either the stream stops delivering anything, or it keeps
+// streaming partial words that never finalize (only finalized words are
+// persisted, so the live view looks fine while nothing reaches the database).
+// Count audible seconds since the last activity of each kind; past either
+// threshold, flag the session so stop() runs a batch repair from the recording.
+export const tickTranscriptionStallWatchdog = (live: LiveState): boolean => {
+  // Mic mute must not disable the watchdog: speaker audio keeps feeding live
+  // STT, and the amplitude gate below already ignores silent stretches.
+  if (
+    live.status !== "active" ||
+    live.requestedLiveTranscription !== true ||
+    live.liveTranscriptionActive !== true ||
+    live.transcriptionStalled
+  ) {
+    return false;
+  }
+
+  const audible =
+    Math.max(live.amplitude.mic, live.amplitude.speaker) >=
+    TRANSCRIPTION_STALL_AMPLITUDE_THRESHOLD;
+  if (!audible) {
+    return false;
+  }
+
+  live.stallAudibleSeconds += 1;
+  live.finalStallAudibleSeconds += 1;
+  if (
+    live.stallAudibleSeconds < TRANSCRIPTION_STALL_AUDIBLE_SECONDS &&
+    live.finalStallAudibleSeconds < TRANSCRIPTION_FINAL_STALL_AUDIBLE_SECONDS
+  ) {
+    return false;
+  }
+
+  live.transcriptionStalled = true;
+  live.needsBatchRepair = true;
+  return true;
+};
+
+// Partials only prove the stream is alive; finalized words are what gets
+// persisted, so only they mark the pipeline healthy again.
+export const noteLiveTranscriptActivity = (
+  live: LiveState,
+  activity: { hasFinalWords: boolean },
+) => {
+  live.stallAudibleSeconds = 0;
+  if (activity.hasFinalWords) {
+    live.finalStallAudibleSeconds = 0;
+    live.transcriptionStalled = false;
+  }
 };
 
 export const updateLiveProgress = (
@@ -196,6 +357,8 @@ export const updateLiveProgress = (
     case "audio_initializing":
       live.loadingPhase = "audio_initializing";
       live.lastError = null;
+      live.lastErrorSessionId = null;
+      live.lastErrorIsAudioRelated = false;
       return;
     case "audio_ready":
       live.loadingPhase = "audio_ready";
@@ -209,12 +372,16 @@ export const updateLiveProgress = (
       return;
     case "audio_error":
       live.lastError = payload.error;
+      live.lastErrorSessionId = payload.session_id;
+      live.lastErrorIsAudioRelated = true;
       if (payload.is_fatal) {
         live.loading = false;
       }
       return;
     case "connection_error":
       live.lastError = payload.error;
+      live.lastErrorSessionId = payload.session_id;
+      live.lastErrorIsAudioRelated = false;
       return;
   }
 };
@@ -244,3 +411,16 @@ export const getLiveCaptureUiMode = (
 
   return "live";
 };
+
+export const isBatchTranscriptionPending = (
+  sessionMode: SessionMode,
+  live: Pick<
+    LiveState,
+    "requestedLiveTranscription" | "liveTranscriptionActive"
+  >,
+  postStopBatchPending = false,
+) =>
+  postStopBatchPending ||
+  sessionMode === "running_batch" ||
+  ((sessionMode === "active" || sessionMode === "finalizing") &&
+    getLiveCaptureUiMode(live) !== "live");

@@ -1,8 +1,9 @@
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
 import {
   SettingsAccount,
   SettingsApp,
+  SettingsMeetings,
   SettingsNotifications,
   SettingsPermissions,
 } from "./general";
@@ -10,7 +11,12 @@ import { SettingsTodo } from "./todo";
 
 import { LLM } from "~/settings/ai/llm";
 import { STT } from "~/settings/ai/stt";
-import { SettingsPersonalization } from "~/settings/personalization";
+import { SettingsAppearance } from "~/settings/appearance";
+import { SettingsDevelopers } from "~/settings/developers";
+import { SettingsDictionary } from "~/settings/dictionary";
+import { SettingsHydrationBoundary } from "~/settings/hydration-boundary";
+import { SettingsImports } from "~/settings/imports";
+import { SettingsSync } from "~/settings/sync";
 import { StandardContentWrapper } from "~/shared/main";
 import { type Tab } from "~/store/zustand/tabs";
 
@@ -21,14 +27,23 @@ export function TabContentSettings({
 }) {
   return (
     <StandardContentWrapper>
-      <SettingsView tab={tab} />
+      <SettingsHydrationBoundary>
+        <SettingsView tab={tab} />
+      </SettingsHydrationBoundary>
     </StandardContentWrapper>
   );
 }
 
 function SettingsView({ tab }: { tab: Extract<Tab, { type: "settings" }> }) {
   const requestedTab = tab.state.tab as string | undefined;
-  const activeTab = requestedTab === "data" ? "app" : (tab.state.tab ?? "app");
+  const activeTab =
+    requestedTab === "data"
+      ? "imports"
+      : requestedTab === "personalization"
+        ? "dictionary"
+        : requestedTab === "audio"
+          ? "meetings"
+          : (tab.state.tab ?? "app");
 
   const renderContent = () => {
     switch (activeTab) {
@@ -36,12 +51,22 @@ function SettingsView({ tab }: { tab: Extract<Tab, { type: "settings" }> }) {
         return <SettingsAccount />;
       case "app":
         return <SettingsApp />;
+      case "meetings":
+        return <SettingsMeetings />;
+      case "appearance":
+        return <SettingsAppearance />;
       case "notifications":
         return <SettingsNotifications />;
+      case "sync":
+        return <SettingsSync />;
+      case "imports":
+        return <SettingsImports />;
       case "permissions":
         return <SettingsPermissions />;
-      case "personalization":
-        return <SettingsPersonalization />;
+      case "developers":
+        return <SettingsDevelopers />;
+      case "dictionary":
+        return <SettingsDictionary />;
       case "transcription":
         return <STT />;
       case "intelligence":

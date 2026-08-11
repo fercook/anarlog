@@ -3,8 +3,8 @@ use std::str::FromStr;
 
 use crate::listener::ListenerPluginExt;
 use crate::{CaptureConfigUpdate, CaptureParams, CaptureSnapshot, CaptureState};
-use hypr_transcript::{RenderTranscriptRequest, RenderedTranscriptSegment};
-use hypr_transcription_core::listener2 as listener2_core;
+use anlg_transcript::{RenderTranscriptRequest, RenderedTranscriptSegment};
+use anlg_transcription_core::listener2 as listener2_core;
 
 #[tauri::command]
 #[specta::specta]
@@ -86,7 +86,10 @@ pub async fn get_capture_state<R: tauri::Runtime>(
 pub async fn get_capture_snapshot<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<CaptureSnapshot, String> {
-    Ok(app.listener().get_capture_snapshot().await)
+    app.listener()
+        .get_capture_snapshot()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -103,7 +106,7 @@ pub async fn is_supported_languages_live<R: tauri::Runtime>(
 
     let languages_parsed = languages
         .iter()
-        .map(|s| hypr_language::Language::from_str(s))
+        .map(|s| anlg_language::Language::from_str(s))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("unknown_language: {}", e))?;
 
@@ -118,7 +121,7 @@ pub async fn suggest_providers_for_languages_live<R: tauri::Runtime>(
 ) -> Result<Vec<String>, String> {
     let languages_parsed = languages
         .iter()
-        .map(|s| hypr_language::Language::from_str(s))
+        .map(|s| anlg_language::Language::from_str(s))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("unknown_language: {}", e))?;
 
@@ -133,6 +136,7 @@ pub async fn suggest_providers_for_languages_live<R: tauri::Runtime>(
         AdapterKind::ElevenLabs,
         AdapterKind::DashScope,
         AdapterKind::Mistral,
+        AdapterKind::Xai,
     ];
 
     let mut with_support: Vec<_> = all_providers
@@ -167,5 +171,5 @@ pub async fn list_documented_language_codes_live<R: tauri::Runtime>(
 pub async fn render_transcript_segments(
     params: RenderTranscriptRequest,
 ) -> Result<Vec<RenderedTranscriptSegment>, String> {
-    Ok(hypr_transcript::render_transcript_segments(params))
+    Ok(anlg_transcript::render_transcript_segments(params))
 }

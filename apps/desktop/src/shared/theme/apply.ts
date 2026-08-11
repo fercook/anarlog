@@ -1,14 +1,17 @@
-import { commands as settingsCommands } from "@hypr/plugin-settings";
-
 import { resolveIsDarkMode, type ThemePreference } from "./resolve";
 
-const THEME_STORAGE_KEY = "hypr-theme";
+import { getStoredSettingValues } from "~/settings/queries";
+
+const THEME_STORAGE_KEY = "anarlog-theme";
+const LEGACY_THEME_STORAGE_KEY = "hypr-theme";
 const THEME_BOOTSTRAP_TIMEOUT_MS = 150;
 
 /** Keep `public/theme-boot.js` aligned with normalizeThemePreference + resolveIsDarkMode. */
 
 export function readStoredThemePreference(): ThemePreference {
-  const stored = localStorage.getItem(THEME_STORAGE_KEY);
+  const stored =
+    localStorage.getItem(THEME_STORAGE_KEY) ??
+    localStorage.getItem(LEGACY_THEME_STORAGE_KEY);
   return normalizeThemePreference(stored);
 }
 
@@ -36,39 +39,25 @@ export function writeStoredThemePreference(theme: ThemePreference): void {
   }
 }
 
-export function applyDocumentTheme(theme: ThemePreference): boolean {
-  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+export function applyDocumentTheme(
+  theme: ThemePreference,
+  prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches,
+): boolean {
   const isDark = resolveIsDarkMode(theme, prefersDark);
   document.documentElement.classList.toggle("dark", isDark);
   return isDark;
 }
 
-export function themePreferenceFromSettings(
-  settings: Record<string, unknown> | undefined,
-): ThemePreference {
-  const general = settings?.general;
-  const theme =
-    general && typeof general === "object" && "theme" in general
-      ? (general as { theme?: unknown }).theme
-      : null;
-
-  return normalizeThemePreference(typeof theme === "string" ? theme : null);
-}
-
 async function loadThemeFromSettings(): Promise<void> {
   try {
-    const result = await settingsCommands.load();
-    if (result.status !== "ok") {
-      return;
-    }
-
-    const preference = themePreferenceFromSettings(
-      result.data as Record<string, unknown>,
+    const stored = await getStoredSettingValues();
+    const preference = normalizeThemePreference(
+      stored.hasValues.has("theme") ? (stored.values.theme ?? null) : null,
     );
     applyDocumentTheme(preference);
     writeStoredThemePreference(preference);
   } catch {
-    // Non-Tauri dev sessions can skip persisted settings bootstrap.
+    // Non-Tauri dev sessions can skip persisted theme bootstrap.
   }
 }
 

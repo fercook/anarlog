@@ -1,7 +1,7 @@
-import { ChevronRight, Loader2 } from "lucide-react";
+import { CaretRight, CircleNotch } from "@phosphor-icons/react";
 import { type ReactNode } from "react";
 
-import { cn } from "@hypr/utils";
+import { cn } from "@anlg/utils";
 
 import { useChatAppearance } from "~/chat/hooks/use-chat-appearance";
 
@@ -126,12 +126,12 @@ export function Disclosure({
           disabled && "cursor-default",
         ])}
       >
-        {disabled ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+        {disabled ? <CircleNotch className="h-3 w-3 animate-spin" /> : null}
         {!disabled && icon && <span className="shrink-0">{icon}</span>}
         <span className={cn(["flex-1 truncate", "group-open:font-medium"])}>
           {title}
         </span>
-        <ChevronRight className="h-3 w-3 shrink-0 transition-transform group-open:rotate-90" />
+        <CaretRight className="h-3 w-3 shrink-0 transition-transform group-open:rotate-90" />
       </summary>
       <div className="border-border mt-1 border-t px-1 pt-2">{children}</div>
     </details>
