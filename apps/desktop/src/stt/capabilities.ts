@@ -235,11 +235,13 @@ function baseLanguageCode(language: string) {
 }
 
 function languageSupportProvider(provider: string) {
-  if (provider === "custom" || provider === "cloudflare_workers_ai") {
+  if (provider === "apple_speech") {
+    return "apple-speech";
+  } else if (provider === "cloudflare_workers_ai") {
     return "deepgram";
+  } else {
+    return provider;
   }
-
-  return provider === "apple_speech" ? "apple-speech" : provider;
 }
 
 export async function isSupportedLanguagesLive(

@@ -421,7 +421,7 @@ describe("getLiveTranscriptionConfig", () => {
     });
   });
 
-  test("checks custom providers as Deepgram-compatible for language fallback", async () => {
+  test("checks custom providers as themselves for language fallback", async () => {
     isSupportedLanguagesLiveMock.mockImplementation(
       (_provider, _model, languages) =>
         Promise.resolve({
@@ -432,11 +432,11 @@ describe("getLiveTranscriptionConfig", () => {
 
     await getLiveTranscriptionConfig({
       provider: "custom",
-      model: "nova-3-general",
+      model: "large-v3",
       languages: ["en", "ko"],
     });
 
-    expect(isSupportedLanguagesLiveMock.mock.calls[0]?.[0]).toBe("deepgram");
+    expect(isSupportedLanguagesLiveMock.mock.calls[0]?.[0]).toBe("custom");
   });
 
   test("checks Cloudflare Workers AI as Deepgram-compatible for language fallback", async () => {

@@ -107,7 +107,7 @@ export function getBatchProvider(
   provider: string,
   model: string,
 ): TranscriptionParams["provider"] | null {
-  if (provider === "cloudflare_workers_ai") {
+  if (provider === "cloudflare_workers_ai" || provider === "custom") {
     return "deepgram";
   }
 
@@ -163,7 +163,7 @@ export function getBatchFallbackTarget({
 }
 
 async function canUseBatchTarget(
-  provider: TranscriptionParams["provider"],
+  provider: string,
   model: string,
   languages: readonly string[],
 ) {
@@ -729,11 +729,11 @@ export const useRunBatch = (sessionId: string) => {
             }
           : null;
       const selectedTargetSupported =
-        selectedTarget &&
-        (!isOnDeviceSttModel(conn?.provider, selectedModel) ||
-          isDesktopLocalSttAvailable(currentPlatform, currentArch))
+        selectedTarget &&. //   maybe this works better:      conn && selectedTarget
+        (!isOnDeviceSttModel(conn?.provider, selectedModel) ||  // if not, remove this
+          isDesktopLocalSttAvailable(currentPlatform, currentArch)) // if not, remove this
           ? await canUseBatchTarget(
-              selectedTarget.provider,
+              selectedTarget.provider, // conn.provider, // for on device
               selectedTarget.model,
               languages,
             )

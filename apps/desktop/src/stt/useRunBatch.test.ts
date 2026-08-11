@@ -211,6 +211,10 @@ describe("getBatchProvider", () => {
     );
   });
 
+  test("maps custom providers to the Deepgram-compatible batch provider", () => {
+    expect(getBatchProvider("custom", "large-v3")).toBe("deepgram");
+  });
+
   test("maps local soniqo models to soniqo batch provider", () => {
     expect(getBatchProvider("anarlog", "soniqo-parakeet-batch")).toBe("soniqo");
     expect(getBatchProvider("soniqo", "soniqo-parakeet-batch")).toBe("soniqo");
@@ -1204,7 +1208,42 @@ describe("useRunBatch", () => {
     );
   });
 
-  test("falls back to local Soniqo when the selected provider is not batch-capable", async () => {
+  test("runs custom providers against their own endpoint via the Deepgram-compatible batch provider", async () => {
+    useSTTConnectionMock.mockReturnValue({
+      conn: {
+        provider: "custom",
+        model: "large-v3",
+        baseUrl: "http://127.0.0.1:7860/v1",
+        apiKey: "custom-key",
+      },
+    });
+    startTranscriptionMock.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useRunBatch("session-1"));
+
+    await act(async () => {
+      await result.current("/tmp/session.wav");
+    });
+
+    expect(startTranscriptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "deepgram",
+        model: "large-v3",
+        base_url: "http://127.0.0.1:7860/v1",
+        api_key: "custom-key",
+      }),
+      expect.any(Object),
+    );
+    expect(isSupportedLanguagesBatchMock).toHaveBeenCalledWith(
+      "custom",
+      "large-v3",
+      expect.any(Array),
+    );
+    expect(sonnerToastMessageMock).not.toHaveBeenCalled();
+  });
+
+  test("falls back to local Soniqo when the selected provider does not support the languages", async () => {
+    isSupportedLanguagesBatchMock.mockResolvedValue(false);
     useSTTConnectionMock.mockReturnValue({
       conn: {
         provider: "custom",
