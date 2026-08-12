@@ -1,4 +1,5 @@
 import {
+  AlibabaCloud,
   Anthropic,
   Apple,
   Aws,
@@ -7,17 +8,21 @@ import {
   Cerebras,
   Cloudflare,
   Cohere,
+  DeepSeek,
   Fireworks,
   Gemini,
   GoogleCloud,
   Groq,
   LmStudio,
   Mistral,
+  Moonshot,
   Ollama,
   OpenAI,
   OpenRouter,
+  SiliconCloud,
   Together,
   XAI,
+  ZAI,
 } from "@lobehub/icons";
 import { Shuffle } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
@@ -29,6 +34,7 @@ import { checkAppleFoundationModelAvailability } from "~/settings/ai/shared/list
 import {
   checkLMStudioAvailability,
   checkOllamaAvailability,
+  checkUnslothAvailability,
 } from "~/settings/ai/shared/local-provider-availability";
 import { sortProviders } from "~/settings/ai/shared/sort-providers";
 
@@ -111,6 +117,37 @@ const _PROVIDERS = [
     },
   },
   {
+    id: "unsloth",
+    displayName: "Unsloth",
+    badge: null,
+    // Rendered unfiltered: the brand filter flattens this multi-color mark
+    // into a solid blob in dark mode.
+    icon: (
+      <img
+        src="/assets/unsloth-mark.png"
+        alt="Unsloth"
+        className="size-full object-contain object-center"
+      />
+    ),
+    baseUrl: "http://127.0.0.1:8888/v1",
+    requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+    checkAvailability: checkUnslothAvailability,
+    links: {
+      download: {
+        label: "Download Unsloth",
+        url: "https://unsloth.ai/docs/desktop",
+      },
+      models: {
+        label: "Available models",
+        url: "https://huggingface.co/unsloth",
+      },
+      setup: {
+        label: "Setup guide",
+        url: "https://docs.anarlog.so/ai-setup#unsloth",
+      },
+    },
+  },
+  {
     id: "openrouter",
     displayName: "OpenRouter",
     badge: null,
@@ -125,6 +162,96 @@ const _PROVIDERS = [
     icon: <OpenAI />,
     baseUrl: "https://api.openai.com/v1",
     requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+  },
+  {
+    id: "moonshot",
+    displayName: "Moonshot AI",
+    badge: null,
+    icon: <Moonshot />,
+    baseUrl: "https://api.moonshot.ai/v1",
+    requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+    links: {
+      models: {
+        label: "Available models",
+        url: "https://platform.kimi.ai/docs/api/list-models",
+      },
+      setup: {
+        label: "Quickstart",
+        url: "https://platform.kimi.ai/docs/overview",
+      },
+    },
+  },
+  {
+    id: "zai",
+    displayName: "Z.AI",
+    badge: null,
+    icon: <ZAI />,
+    baseUrl: "https://api.z.ai/api/paas/v4",
+    requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+    links: {
+      models: {
+        label: "Available models",
+        url: "https://docs.z.ai/guides/overview/overview",
+      },
+      setup: {
+        label: "API setup",
+        url: "https://docs.z.ai/api-reference/introduction",
+      },
+    },
+  },
+  {
+    id: "deepseek",
+    displayName: "DeepSeek",
+    badge: null,
+    icon: <DeepSeek />,
+    baseUrl: "https://api.deepseek.com",
+    requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+    links: {
+      models: {
+        label: "Available models",
+        url: "https://api-docs.deepseek.com/quick_start/pricing",
+      },
+      setup: {
+        label: "API keys",
+        url: "https://platform.deepseek.com/api_keys",
+      },
+    },
+  },
+  {
+    id: "alibaba_cloud",
+    displayName: "Alibaba Cloud Model Studio",
+    badge: null,
+    icon: <AlibabaCloud />,
+    baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+    links: {
+      models: {
+        label: "Available models",
+        url: "https://www.alibabacloud.com/help/en/model-studio/getting-started/models",
+      },
+      setup: {
+        label: "Regional endpoints",
+        url: "https://www.alibabacloud.com/help/en/model-studio/base-url",
+      },
+    },
+  },
+  {
+    id: "siliconflow",
+    displayName: "SiliconFlow",
+    badge: null,
+    icon: <SiliconCloud />,
+    baseUrl: "https://api.siliconflow.com/v1",
+    requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+    links: {
+      models: {
+        label: "Available models",
+        url: "https://docs.siliconflow.com/en/userguide/introduction",
+      },
+      setup: {
+        label: "Quickstart",
+        url: "https://docs.siliconflow.com/en/userguide/quickstart",
+      },
+    },
   },
   {
     id: "cohere",
@@ -355,6 +482,11 @@ const PROVIDER_ORDER = [
   "anthropic",
   "google_generative_ai",
   "openrouter",
+  "moonshot",
+  "zai",
+  "deepseek",
+  "alibaba_cloud",
+  "siliconflow",
   "amazon_bedrock",
   "azure_openai",
   "google_vertex_ai",
@@ -369,6 +501,7 @@ const PROVIDER_ORDER = [
   "cloudflare_workers_ai",
   "cerebras",
   "lmstudio",
+  "unsloth",
   "apple_foundation",
 ] as const;
 

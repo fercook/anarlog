@@ -26,12 +26,14 @@ mod openrouter;
 mod owhisper;
 mod pyannote;
 mod revai;
+mod siliconflow;
 mod smallestai;
 pub(crate) mod soniox;
 mod speechmatics;
 mod together;
 mod whispercpp;
 mod xai;
+mod zai;
 
 pub use anarlog::*;
 pub use aquavoice::*;
@@ -54,18 +56,21 @@ pub use openai::*;
 pub use openrouter::*;
 pub use pyannote::*;
 pub use revai::*;
+pub use siliconflow::*;
 pub use smallestai::*;
 pub use soniox::*;
 pub use speechmatics::*;
 pub use together::*;
 pub use whispercpp::*;
 pub use xai::*;
+pub use zai::*;
 
 use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::str::FromStr;
+use std::time::Duration;
 
 use anlg_ws_client::client::Message;
 use owhisper_interface::ListenParams;
@@ -422,6 +427,18 @@ pub fn append_provider_param(base_url: &str, provider: &str) -> String {
     }
 }
 
+const OPENAI_COMPATIBLE_MAX_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatchUploadLimit {
+    pub max_bytes: u64,
+    /// Doubles as the length of each split segment, so it must stay short enough
+    /// that one segment of mono 64 kbps MP3 fits in `max_bytes` (~53 minutes at
+    /// 25 MB); otherwise splitting a long recording still produces oversized
+    /// uploads.
+    pub max_duration: Duration,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::EnumString)]
 pub enum AdapterKind {
     #[strum(serialize = "aquavoice")]
@@ -442,6 +459,10 @@ pub enum AdapterKind {
     OpenAI,
     #[strum(serialize = "openrouter")]
     OpenRouter,
+    #[strum(serialize = "siliconflow")]
+    SiliconFlow,
+    #[strum(serialize = "zai")]
+    Zai,
     #[strum(serialize = "gladia")]
     Gladia,
     #[strum(serialize = "elevenlabs")]
@@ -496,9 +517,48 @@ impl AdapterKind {
             return Self::OpenRouter;
         }
 
+        if host_matches(base_url, |host| {
+            host == "siliconflow.com"
+                || host.ends_with(".siliconflow.com")
+                || host == "siliconflow.cn"
+                || host.ends_with(".siliconflow.cn")
+        }) {
+            return Self::SiliconFlow;
+        }
+
+        if host_matches(base_url, |host| host == "z.ai" || host.ends_with(".z.ai")) {
+            return Self::Zai;
+        }
+
         Provider::from_url(base_url)
             .map(Self::from)
             .unwrap_or(Self::Deepgram)
+    }
+
+    /// Providers that reject oversized multipart uploads or time out on long
+    /// audio. Recordings past either bound are split into one request per segment
+    /// instead of failing at the provider.
+    pub fn batch_upload_limit(&self) -> Option<BatchUploadLimit> {
+        let (max_bytes, max_duration) = match self {
+            // OpenRouter's upstream providers time out after 60s per request, so
+            // its segments stay well below the size cap.
+            Self::OpenRouter => (
+                OPENAI_COMPATIBLE_MAX_UPLOAD_BYTES,
+                Duration::from_secs(10 * 60),
+            ),
+            Self::OpenAI | Self::Groq | Self::Together | Self::Xai => (
+                OPENAI_COMPATIBLE_MAX_UPLOAD_BYTES,
+                Duration::from_secs(25 * 60),
+            ),
+            Self::Zai => (OPENAI_COMPATIBLE_MAX_UPLOAD_BYTES, Duration::from_secs(25)),
+            Self::SiliconFlow => (50 * 1024 * 1024, Duration::from_secs(50 * 60)),
+            _ => return None,
+        };
+
+        Some(BatchUploadLimit {
+            max_bytes,
+            max_duration,
+        })
     }
 
     pub fn has_live_mode(&self) -> bool {
@@ -512,6 +572,8 @@ impl AdapterKind {
             | Self::GoogleCloud
             | Self::Groq
             | Self::OpenRouter
+            | Self::SiliconFlow
+            | Self::Zai
             | Self::RevAi
             | Self::Speechmatics
             | Self::Together => false,
@@ -547,6 +609,7 @@ impl AdapterKind {
             Self::Gladia => GladiaAdapter::language_support_live(languages, model),
             Self::OpenAI => OpenAIAdapter::language_support_live(languages),
             Self::OpenRouter => LanguageSupport::NotSupported,
+            Self::SiliconFlow | Self::Zai => LanguageSupport::NotSupported,
             Self::Fireworks => FireworksAdapter::language_support_live(languages),
             Self::ElevenLabs => ElevenLabsAdapter::language_support_live(languages),
             Self::DashScope => DashScopeAdapter::language_support_live(languages),
@@ -583,6 +646,8 @@ impl AdapterKind {
             Self::Gladia => GladiaAdapter::language_support_batch(languages, model),
             Self::OpenAI => OpenAIAdapter::language_support_batch(languages),
             Self::OpenRouter => OpenRouterAdapter::language_support_batch(languages),
+            Self::SiliconFlow => SiliconFlowAdapter::language_support_batch(languages),
+            Self::Zai => ZaiAdapter::language_support_batch(languages),
             Self::Fireworks => FireworksAdapter::language_support_batch(languages),
             Self::ElevenLabs => ElevenLabsAdapter::language_support_batch(languages),
             Self::DashScope => DashScopeAdapter::language_support_batch(languages),

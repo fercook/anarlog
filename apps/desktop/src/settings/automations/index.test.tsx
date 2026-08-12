@@ -184,13 +184,46 @@ describe("AutomationsContent", () => {
 
     const { container } = renderAutomations();
 
+    const header = screen
+      .getByRole("heading", {
+        level: 2,
+        name: "Share a meeting recap in Slack",
+      })
+      .closest("header");
     const slackIcon = container.querySelector(
       'iconify-icon[icon="logos:slack-icon"]',
     );
 
+    expect(header).toBeTruthy();
     expect(slackIcon).toBeTruthy();
+    expect(slackIcon?.closest("header")).toBe(header);
+    expect(
+      screen
+        .getByRole("button", { name: "Automation actions" })
+        .closest("header"),
+    ).toBe(header);
     expect(slackIcon?.parentElement?.className).not.toContain("bg-muted");
     expect(slackIcon?.parentElement?.className).not.toContain("rounded");
+  });
+
+  it("matches the templates header and body gutters", () => {
+    mocks.selection = { kind: "starter", starterId: "slack-recap" };
+
+    renderAutomations();
+
+    const header = screen
+      .getByRole("heading", {
+        level: 2,
+        name: "Share a meeting recap in Slack",
+      })
+      .closest("header");
+    const body = header?.nextElementSibling;
+
+    expect(header?.className).toContain("h-12");
+    expect(header?.className).toContain("pl-3");
+    expect(header?.className).toContain("pr-1");
+    expect(body?.className).toContain("px-6");
+    expect(body?.className).toContain("pt-3");
   });
 
   it("saves the selected draft for Pro users", async () => {

@@ -97,7 +97,7 @@ function HeroWorkflowDemo() {
                       }, 800);
                     }, 800);
                   }, 800);
-                }, 500);
+                }, 2000);
               }
             }, 50);
           }
@@ -118,15 +118,15 @@ function HeroWorkflowDemo() {
   return (
     <div className="relative left-1/2 mt-10 w-screen max-w-[500px] -translate-x-1/2 px-8 sm:px-10">
       <div
-        className="pointer-events-none absolute top-10 bottom-24 left-8 z-0 w-12 rounded-full bg-neutral-950/10 blur-2xl sm:left-10"
+        className="pointer-events-none absolute top-10 bottom-24 left-8 w-12 rounded-full bg-neutral-950/10 blur-2xl sm:left-10"
         aria-hidden="true"
       />
       <div
-        className="pointer-events-none absolute top-10 right-8 bottom-24 z-0 w-12 rounded-full bg-neutral-950/10 blur-2xl sm:right-10"
+        className="pointer-events-none absolute top-10 right-8 bottom-24 w-12 rounded-full bg-neutral-950/10 blur-2xl sm:right-10"
         aria-hidden="true"
       />
       <div
-        className="relative z-10 mx-auto max-w-[420px] overflow-hidden rounded-3xl border-x border-t border-neutral-200 bg-white shadow-[0_24px_70px_rgba(24,22,19,0.08)] [corner-shape:squircle]"
+        className="relative mx-auto max-w-[420px] overflow-hidden rounded-3xl border-x border-t border-neutral-200 bg-white shadow-[0_24px_70px_rgba(24,22,19,0.08)] [corner-shape:squircle]"
         style={{
           WebkitMaskImage:
             "linear-gradient(to bottom, black 0%, black calc(100% - 5rem), transparent 100%)",
@@ -155,7 +155,7 @@ function HeroWorkflowDemo() {
         <div className="relative min-h-[260px] overflow-hidden text-left text-sm sm:min-h-[300px]">
           <div
             className={cn([
-              "absolute inset-0 space-y-3 p-5 transition-opacity duration-500 sm:p-6",
+              "absolute inset-0 space-y-3 px-5 pt-2 pb-5 transition-opacity duration-500 sm:px-6 sm:pt-3 sm:pb-6",
               isSummaryPhase ? "opacity-0" : "opacity-100",
             ])}
           >
@@ -190,7 +190,7 @@ function HeroWorkflowDemo() {
           </div>
           <div
             className={cn([
-              "absolute inset-0 space-y-4 overflow-hidden p-5 text-left transition-opacity duration-500 sm:p-6",
+              "absolute inset-0 space-y-4 overflow-hidden px-5 pt-2 pb-5 text-left transition-opacity duration-500 sm:px-6 sm:pt-3 sm:pb-6",
               isSummaryPhase ? "opacity-100" : "opacity-0",
             ])}
           >
@@ -297,7 +297,24 @@ function HeroWorkflowDemo() {
         </div>
       </div>
       <div
-        className="pointer-events-none absolute right-0 bottom-0 left-0 z-10 h-28 bg-linear-to-t from-white to-transparent"
+        className={cn([
+          "pointer-events-none absolute right-1 bottom-9 z-10 w-[66%] transition-all duration-500 sm:-right-2 sm:bottom-12 sm:w-[68%]",
+          isSummaryPhase
+            ? "translate-y-2 opacity-0"
+            : "translate-y-0 opacity-100",
+        ])}
+      >
+        <img
+          src="/images/hero-meeting-participants.webp"
+          alt="Four participants in a video meeting"
+          width={1200}
+          height={215}
+          className="h-auto w-full rounded-xl shadow-xl"
+          decoding="async"
+        />
+      </div>
+      <div
+        className="pointer-events-none absolute right-0 bottom-0 left-0 h-28 bg-linear-to-t from-white to-transparent"
         aria-hidden="true"
       />
     </div>
@@ -381,7 +398,7 @@ function DownloadButton() {
       {open && (
         <div
           role="menu"
-          className="surface border-color-brand absolute top-[calc(100%+0.5rem)] left-0 z-10 w-72 max-w-[calc(100vw-2.5rem)] rounded-2xl border p-2 text-left shadow-[0_14px_40px_rgba(24,22,19,0.12)]"
+          className="surface border-color-brand absolute top-[calc(100%+0.5rem)] left-0 w-72 max-w-[calc(100vw-2.5rem)] rounded-2xl border p-2 text-left shadow-[0_14px_40px_rgba(24,22,19,0.12)]"
         >
           {orderedSections.map((section) =>
             section.downloads.map((download) => {

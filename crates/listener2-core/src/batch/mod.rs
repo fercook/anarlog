@@ -1,6 +1,7 @@
 mod accumulator;
 mod progressive;
 mod simple;
+mod upload;
 
 use std::sync::Arc;
 
@@ -26,6 +27,8 @@ pub enum BatchProvider {
     Fireworks,
     OpenAI,
     OpenRouter,
+    SiliconFlow,
+    Zai,
     Gladia,
     ElevenLabs,
     Pyannote,
@@ -65,6 +68,8 @@ impl BatchProvider {
             Self::Fireworks => Some(AdapterKind::Fireworks),
             Self::OpenAI => Some(AdapterKind::OpenAI),
             Self::OpenRouter => Some(AdapterKind::OpenRouter),
+            Self::SiliconFlow => Some(AdapterKind::SiliconFlow),
+            Self::Zai => Some(AdapterKind::Zai),
             Self::Gladia => Some(AdapterKind::Gladia),
             Self::ElevenLabs => Some(AdapterKind::ElevenLabs),
             Self::Pyannote => Some(AdapterKind::Pyannote),
@@ -323,6 +328,13 @@ pub(super) fn format_user_friendly_error(error: &str) -> String {
     {
         return "Could not connect to the transcription service. Please check your internet connection.".to_string();
     }
+    if error_lower.contains("413")
+        || error_lower.contains("payload too large")
+        || error_lower.contains("file too large")
+        || error_lower.contains("upload limit")
+    {
+        return "This recording is too large for the selected transcription provider. Try another provider or split the recording.".to_string();
+    }
     if error_lower.contains("invalid audio")
         || error_lower.contains("unsupported format")
         || error_lower.contains("codec")
@@ -460,5 +472,14 @@ mod tests {
         let params = batch_params(BatchProvider::Am, "http://localhost:50060/v1");
 
         assert!(expects_progressive_batch(&params));
+    }
+
+    #[test]
+    fn provider_upload_limit_errors_are_explained() {
+        let message = format_user_friendly_error(
+            r#"UnexpectedStatus { status: 400, body: "Audio file exceeds the 25 MB multipart upload limit." }"#,
+        );
+
+        assert!(message.starts_with("This recording is too large"));
     }
 }

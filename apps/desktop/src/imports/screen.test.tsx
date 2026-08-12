@@ -1,10 +1,17 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   detectImportSources: vi.fn(),
+  cancelConnectedImport: vi.fn(),
   connectConnectedImport: vi.fn(),
   disconnectConnectedImport: vi.fn(),
 }));
@@ -21,6 +28,7 @@ vi.mock("./queries", () => ({
 }));
 
 vi.mock("./connected-import", () => ({
+  cancelConnectedImport: mocks.cancelConnectedImport,
   connectConnectedImport: mocks.connectConnectedImport,
   disconnectConnectedImport: mocks.disconnectConnectedImport,
   connectedImportCredentialsQueryKey: (providerId: string) => [
@@ -92,6 +100,11 @@ function mockDetected(ids: string[]) {
 }
 
 describe("MeetingImportScreen", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.cancelConnectedImport.mockResolvedValue(true);
+  });
+
   afterEach(cleanup);
 
   it("lists only detected apps with native icons", async () => {
@@ -124,6 +137,7 @@ describe("MeetingImportScreen", () => {
     expect(screen.getAllByRole("button", { name: "Use files" })).toHaveLength(
       2,
     );
+    expect(screen.queryByRole("menuitem", { name: "Use files" })).toBeNull();
     expect(
       screen.getAllByRole("button", { name: "Choose files" }),
     ).toHaveLength(3);
@@ -134,6 +148,21 @@ describe("MeetingImportScreen", () => {
       container.querySelectorAll('img[src^="data:image/png;base64,"]'),
     ).toHaveLength(5);
     expect(container.querySelector("iconify-icon")).toBeNull();
+  });
+
+  it("offers file import from the connected provider menu", async () => {
+    mockDetected(["granola"]);
+
+    renderImports();
+
+    const trigger = await screen.findByRole("button", {
+      name: "Use files",
+    });
+    fireEvent.pointerDown(trigger);
+
+    expect(
+      await screen.findByRole("menuitem", { name: "Use files" }),
+    ).toBeTruthy();
   });
 
   it("renders the same detected list in the compact onboarding layout", async () => {
@@ -164,6 +193,40 @@ describe("MeetingImportScreen", () => {
       await screen.findByRole("button", { name: "Skip for now" }),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+  });
+
+  it("lets the user cancel an abandoned browser connection and retry", async () => {
+    mockDetected(["granola"]);
+    mocks.connectConnectedImport.mockImplementation(
+      (_provider: unknown, signal: AbortSignal) =>
+        new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+    );
+
+    renderImports();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Connect & import" }),
+    );
+    const cancelButton = await screen.findByRole("button", { name: "Cancel" });
+    fireEvent.click(cancelButton);
+
+    await waitFor(() => {
+      expect(mocks.cancelConnectedImport.mock.calls[0]?.[0]).toBe("granola");
+      expect(
+        screen
+          .getByRole("button", { name: "Connect & import" })
+          .hasAttribute("disabled"),
+      ).toBe(false);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect & import" }));
+    await waitFor(() => {
+      expect(mocks.connectConnectedImport).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("shows the empty state when nothing is detected", async () => {
