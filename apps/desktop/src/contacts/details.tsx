@@ -1,7 +1,7 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import {
   Buildings,
-  FileText,
+  CircleNotch,
   MagnifyingGlass,
   MinusCircle,
   Plus,
@@ -24,6 +24,7 @@ import {
   persistContactAvatar,
 } from "./contact-avatar";
 import { ContactPageHeader } from "./contact-page-header";
+import { useContactSummary } from "./contact-summary";
 import {
   createOrganization,
   type HumanRecord,
@@ -33,6 +34,7 @@ import {
   updateHuman,
   useHumanSessions,
 } from "./queries";
+import { RelatedNotesSection } from "./related-notes";
 import { ContactFacehash } from "./shared";
 
 export function DetailsColumn({
@@ -49,7 +51,17 @@ export function DetailsColumn({
   onDelete: (id: string) => void;
 }) {
   const { t } = useLingui();
+  const [showCompactIdentity, setShowCompactIdentity] = useState(false);
   const personSessions = useHumanSessions(human?.id ?? "");
+  const organizationName =
+    organizations.find(
+      (organization) => organization.id === human?.organizationId,
+    )?.name ?? null;
+  const contactSummary = useContactSummary({
+    human,
+    organizationName,
+    sessions: personSessions,
+  });
   const duplicatesWithData = React.useMemo(
     () =>
       human?.email
@@ -78,6 +90,15 @@ export function DetailsColumn({
       {human ? (
         <>
           <ContactPageHeader
+            title={human.name || human.email || t`Unnamed`}
+            compactIdentity={
+              human.avatarDataUrl ? (
+                <ContactImage src={human.avatarDataUrl} size={24} />
+              ) : (
+                <ContactFacehash name={facehashName} size={24} />
+              )
+            }
+            showCompactIdentity={showCompactIdentity}
             pinned={Boolean(human.pinned)}
             onTogglePin={() => {
               void toggleContactPin("human", human.id).catch((error) => {
@@ -92,7 +113,12 @@ export function DetailsColumn({
             }
           />
 
-          <div className="flex-1 overflow-y-auto">
+          <div
+            className="flex-1 overflow-y-auto"
+            onScroll={(event) => {
+              setShowCompactIdentity(event.currentTarget.scrollTop > 0);
+            }}
+          >
             <div className="border-border flex items-center justify-center border-b py-6">
               <AvatarUploadButton
                 label={t`Change photo`}
@@ -219,55 +245,13 @@ export function DetailsColumn({
             </div>
 
             {personSessions.length > 0 && (
-              <div className="border-border border-b p-6">
-                <h3 className="text-muted-foreground mb-3 text-sm font-medium">
-                  <Trans>Summary</Trans>
-                </h3>
-                <div className="border-border bg-muted rounded-lg border p-4">
-                  <p className="text-muted-foreground text-sm leading-relaxed">
-                    <Trans>
-                      AI-generated summary of all interactions and notes with
-                      this contact will appear here. This will synthesize key
-                      discussion points, action items, and relationship context
-                      across all meetings and notes.
-                    </Trans>
-                  </p>
-                </div>
-              </div>
+              <ContactSummarySection summary={contactSummary} />
             )}
 
-            <div className="p-6">
-              <h3 className="text-muted-foreground mb-4 text-sm font-medium">
-                <Trans>Related Notes</Trans>
-              </h3>
-              <div className="flex flex-col gap-2">
-                {personSessions.length > 0 ? (
-                  personSessions.map((session) => (
-                    <button
-                      key={session.id}
-                      onClick={() => handleSessionClick(session.id)}
-                      className="border-border hover:bg-accent w-full rounded-md border p-3 text-left transition-colors"
-                    >
-                      <div className="mb-1 flex items-center gap-2">
-                        <FileText className="text-muted-foreground h-4 w-4" />
-                        <span className="text-sm font-medium">
-                          {session.title || t`Untitled Note`}
-                        </span>
-                      </div>
-                      {session.createdAt && (
-                        <div className="text-muted-foreground mt-1 text-xs">
-                          {new Date(session.createdAt).toLocaleDateString()}
-                        </div>
-                      )}
-                    </button>
-                  ))
-                ) : (
-                  <p className="text-muted-foreground text-sm">
-                    <Trans>No related notes found</Trans>
-                  </p>
-                )}
-              </div>
-            </div>
+            <RelatedNotesSection
+              sessions={personSessions}
+              onSessionClick={handleSessionClick}
+            />
 
             <div className="pb-96" />
           </div>
@@ -279,6 +263,88 @@ export function DetailsColumn({
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+function ContactSummarySection({
+  summary,
+}: {
+  summary: ReturnType<typeof useContactSummary>;
+}) {
+  const hasFacts = summary.facts.length > 0;
+
+  return (
+    <div className="border-border border-b p-6">
+      <div className="mb-3 flex items-center gap-2">
+        <h3 className="text-muted-foreground text-sm font-medium">
+          <Trans>Summary</Trans>
+        </h3>
+        {summary.isGenerating && (
+          <>
+            <CircleNotch
+              aria-hidden="true"
+              className="text-muted-foreground h-3.5 w-3.5 animate-spin"
+            />
+            <span className="sr-only">
+              <Trans>Loading...</Trans>
+            </span>
+          </>
+        )}
+      </div>
+
+      <div className="border-border bg-muted rounded-lg border p-4">
+        {hasFacts ? (
+          <ul className="text-foreground list-disc space-y-2 pl-5 text-sm leading-relaxed">
+            {summary.facts.map((fact) => (
+              <li key={fact}>{fact}</li>
+            ))}
+          </ul>
+        ) : summary.isGenerating ? (
+          <div aria-hidden="true" className="space-y-3 py-1">
+            <div className="bg-muted-foreground/15 h-3 w-11/12 animate-pulse rounded" />
+            <div className="bg-muted-foreground/15 h-3 w-4/5 animate-pulse rounded" />
+            <div className="bg-muted-foreground/15 h-3 w-10/12 animate-pulse rounded" />
+          </div>
+        ) : summary.error ? (
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-muted-foreground text-sm">
+              <Trans>Summary generation failed</Trans>
+            </p>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => void summary.retry()}
+            >
+              <Trans>Try again</Trans>
+            </Button>
+          </div>
+        ) : (
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            <Trans>
+              AI-generated summary of all interactions and notes with this
+              contact will appear here. This will synthesize key discussion
+              points, action items, and relationship context across all meetings
+              and notes.
+            </Trans>
+          </p>
+        )}
+
+        {hasFacts && summary.error && (
+          <div className="border-border mt-3 flex items-center justify-between gap-3 border-t pt-3">
+            <p className="text-muted-foreground text-xs">
+              <Trans>Summary generation failed</Trans>
+            </p>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => void summary.retry()}
+            >
+              <Trans>Try again</Trans>
+            </Button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

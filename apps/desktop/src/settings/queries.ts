@@ -11,7 +11,7 @@ import { commands as windowsCommands } from "@anlg/plugin-windows";
 
 import { executeTransaction, liveQueryClient, useLiveQuery } from "~/db";
 import { enqueueDatabaseWrite } from "~/db/write-queue";
-import { disableSessionReplay } from "~/error-reporting";
+import { setErrorReportingEnabled } from "~/error-reporting";
 import { normalizeAudioRetention } from "~/services/audio-retention-policy";
 import {
   LEGACY_MAIN_VALUES_ID,
@@ -51,9 +51,6 @@ const JSON_ARRAY_KEYS = new Set<SettingKey>([
 const LEGACY_SUMMARY_TEMPLATE_TOKEN = /\{\{\s*template\s*\}\}/g;
 const LEGACY_DEFAULT_SUMMARY_INSTRUCTION =
   "Use the selected summary template for the summary structure and section headings.";
-const MIGRATED_SUMMARY_INSTRUCTIONS_HEADER = `# Custom Summary Instructions
-
-For structure, formatting, tone, and emphasis, these instructions take precedence over the Format Requirements. They do not override the requirements to stay accurate, use only the provided source material, and return only the summary.`;
 
 // Synced rows sort after device rows so parseSettingRows' last-write-wins map
 // prefers the synced value when a key exists in both tables.
@@ -109,6 +106,13 @@ export async function initializeApplicationSettings(): Promise<void> {
     stored.values.current_stt_provider,
     stored.values.current_stt_model,
   );
+
+  if (
+    !stored.hasValues.has("crash_reporting_consent") &&
+    stored.hasValues.has("telemetry_consent")
+  ) {
+    updates.crash_reporting_consent = stored.values.telemetry_consent ?? true;
+  }
 
   if (normalizedSttSelection.provider !== stored.values.current_stt_provider) {
     updates.current_stt_provider = normalizedSttSelection.provider;
@@ -175,12 +179,12 @@ async function migrateLegacyAutoSummaryPrompt(
 
   try {
     const sourceResult =
-      await templateCommands.getTemplateSource("enhanceSystem");
+      await templateCommands.getTemplateSource("enhanceFormat");
     if (sourceResult.status === "error" || !sourceResult.data.trim()) {
       return null;
     }
 
-    return `${sourceResult.data.trimEnd()}\n\n${MIGRATED_SUMMARY_INSTRUCTIONS_HEADER}\n\n${escapeJinjaOpeners(legacyInstructions)}`;
+    return `${sourceResult.data.trimEnd()}\n\n${escapeJinjaOpeners(legacyInstructions)}`;
   } catch {
     return null;
   }
@@ -450,13 +454,14 @@ function applySettingSideEffects(values: SettingValues): void {
       .catch(console.error);
   }
   if (values.telemetry_consent !== undefined) {
-    const telemetryConsent = values.telemetry_consent;
     void analyticsCommands
-      .setDisabled(!telemetryConsent)
-      .catch(console.error)
-      .finally(() => {
-        if (!telemetryConsent) disableSessionReplay();
-      });
+      .setDisabled(!values.telemetry_consent)
+      .catch(console.error);
+  }
+  if (values.crash_reporting_consent !== undefined) {
+    void setErrorReportingEnabled(values.crash_reporting_consent).catch(
+      console.error,
+    );
   }
   if (values.show_app_in_dock !== undefined) {
     void windowsCommands

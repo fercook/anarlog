@@ -11,6 +11,7 @@ const footerGroups = [
       { label: "Enterprise", to: "/enterprise/" },
       { label: "Blog", to: "/blog/" },
       { label: "Changelog", to: "/changelog/" },
+      { label: "Docs", href: "https://docs.anarlog.so" },
       { label: "Status", href: "https://status.anarlog.so" },
     ],
   },
@@ -20,6 +21,7 @@ const footerGroups = [
       { label: "GitHub", href: "https://github.com/fastrepl/anarlog" },
       { label: "X", href: "https://x.com/anarlogapp" },
       { label: "Discord", to: "/discord/" },
+      { label: "Reddit", href: "https://www.reddit.com/r/anarlog/" },
     ],
   },
   {

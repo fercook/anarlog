@@ -10687,6 +10687,7 @@ name = "listener2-core"
 version = "0.1.0"
 dependencies = [
  "aspasia",
+ "async-stream",
  "audio-chunking",
  "audio-utils",
  "axum 0.8.9",
@@ -18613,6 +18614,7 @@ dependencies = [
  "tauri-specta",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "url",
  "uuid",
 ]

@@ -23,7 +23,9 @@ import { Route as PricingIndexRouteImport } from './routes/pricing/index'
 import { Route as EnterpriseIndexRouteImport } from './routes/enterprise/index'
 import { Route as ChangelogIndexRouteImport } from './routes/changelog/index'
 import { Route as BlogIndexRouteImport } from './routes/blog/index'
+import { Route as TLinkIdRouteImport } from './routes/t/$linkId'
 import { Route as ShareShareIdRouteImport } from './routes/share/$shareId'
+import { Route as InviteCodeRouteImport } from './routes/invite/$code'
 import { Route as ChangelogVersionRouteImport } from './routes/changelog/$version'
 import { Route as BlogSlugRouteImport } from './routes/blog/$slug'
 import { Route as ApiTemplatesRouteImport } from './routes/api/templates'
@@ -50,11 +52,6 @@ import { Route as ViewAppIntegrationRouteImport } from './routes/_view/app/integ
 import { Route as ViewAppCheckoutRouteImport } from './routes/_view/app/checkout'
 import { Route as ViewAppAccountRouteImport } from './routes/_view/app/account'
 import { Route as ApiOgBlogSlugRouteImport } from './routes/api/og/blog/$slug'
-import { Route as ApiAdminStarsResearchRouteImport } from './routes/api/admin/stars/research'
-import { Route as ApiAdminStarsPipelineRouteImport } from './routes/api/admin/stars/pipeline'
-import { Route as ApiAdminStarsLeadsRouteImport } from './routes/api/admin/stars/leads'
-import { Route as ApiAdminStarsFetchRouteImport } from './routes/api/admin/stars/fetch'
-import { Route as ApiAdminStarsDigestRouteImport } from './routes/api/admin/stars/digest'
 import { Route as ApiAdminMediaUploadRouteImport } from './routes/api/admin/media/upload'
 import { Route as ApiAdminMediaRegisterRouteImport } from './routes/api/admin/media/register'
 import { Route as ApiAdminMediaMoveRouteImport } from './routes/api/admin/media/move'
@@ -80,6 +77,7 @@ import { Route as ApiAdminContentDeleteRouteImport } from './routes/api/admin/co
 import { Route as ApiAdminContentCreateRouteImport } from './routes/api/admin/content/create'
 import { Route as ApiAdminContentAuditRouteImport } from './routes/api/admin/content/audit'
 import { Route as ApiAdminBlogUploadImageRouteImport } from './routes/api/admin/blog/upload-image'
+import { Route as ApiOgShareTLinkIdRouteImport } from './routes/api/og/share/t/$linkId'
 import { Route as ApiOgSharePublicPublicSlugRouteImport } from './routes/api/og/share/public/$publicSlug'
 import { Route as ApiOgShareLinkShareIdRouteImport } from './routes/api/og/share/link/$shareId'
 
@@ -152,9 +150,19 @@ const BlogIndexRoute = BlogIndexRouteImport.update({
   path: '/blog/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TLinkIdRoute = TLinkIdRouteImport.update({
+  id: '/t/$linkId',
+  path: '/t/$linkId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ShareShareIdRoute = ShareShareIdRouteImport.update({
   id: '/share/$shareId',
   path: '/share/$shareId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InviteCodeRoute = InviteCodeRouteImport.update({
+  id: '/invite/$code',
+  path: '/invite/$code',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ChangelogVersionRoute = ChangelogVersionRouteImport.update({
@@ -289,31 +297,6 @@ const ApiOgBlogSlugRoute = ApiOgBlogSlugRouteImport.update({
   path: '/api/og/blog/$slug',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiAdminStarsResearchRoute = ApiAdminStarsResearchRouteImport.update({
-  id: '/api/admin/stars/research',
-  path: '/api/admin/stars/research',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiAdminStarsPipelineRoute = ApiAdminStarsPipelineRouteImport.update({
-  id: '/api/admin/stars/pipeline',
-  path: '/api/admin/stars/pipeline',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiAdminStarsLeadsRoute = ApiAdminStarsLeadsRouteImport.update({
-  id: '/api/admin/stars/leads',
-  path: '/api/admin/stars/leads',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiAdminStarsFetchRoute = ApiAdminStarsFetchRouteImport.update({
-  id: '/api/admin/stars/fetch',
-  path: '/api/admin/stars/fetch',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiAdminStarsDigestRoute = ApiAdminStarsDigestRouteImport.update({
-  id: '/api/admin/stars/digest',
-  path: '/api/admin/stars/digest',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ApiAdminMediaUploadRoute = ApiAdminMediaUploadRouteImport.update({
   id: '/api/admin/media/upload',
   path: '/api/admin/media/upload',
@@ -444,6 +427,11 @@ const ApiAdminBlogUploadImageRoute = ApiAdminBlogUploadImageRouteImport.update({
   path: '/api/admin/blog/upload-image',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiOgShareTLinkIdRoute = ApiOgShareTLinkIdRouteImport.update({
+  id: '/api/og/share/t/$linkId',
+  path: '/api/og/share/t/$linkId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiOgSharePublicPublicSlugRoute =
   ApiOgSharePublicPublicSlugRouteImport.update({
     id: '/api/og/share/public/$publicSlug',
@@ -471,7 +459,9 @@ export interface FileRoutesByFullPath {
   '/api/templates': typeof ApiTemplatesRoute
   '/blog/$slug': typeof BlogSlugRoute
   '/changelog/$version': typeof ChangelogVersionRoute
+  '/invite/$code': typeof InviteCodeRoute
   '/share/$shareId': typeof ShareShareIdRoute
+  '/t/$linkId': typeof TLinkIdRoute
   '/blog/': typeof BlogIndexRoute
   '/changelog/': typeof ChangelogIndexRoute
   '/enterprise/': typeof EnterpriseIndexRoute
@@ -521,14 +511,10 @@ export interface FileRoutesByFullPath {
   '/api/admin/media/move': typeof ApiAdminMediaMoveRoute
   '/api/admin/media/register': typeof ApiAdminMediaRegisterRoute
   '/api/admin/media/upload': typeof ApiAdminMediaUploadRoute
-  '/api/admin/stars/digest': typeof ApiAdminStarsDigestRoute
-  '/api/admin/stars/fetch': typeof ApiAdminStarsFetchRoute
-  '/api/admin/stars/leads': typeof ApiAdminStarsLeadsRoute
-  '/api/admin/stars/pipeline': typeof ApiAdminStarsPipelineRoute
-  '/api/admin/stars/research': typeof ApiAdminStarsResearchRoute
   '/api/og/blog/$slug': typeof ApiOgBlogSlugRoute
   '/api/og/share/link/$shareId': typeof ApiOgShareLinkShareIdRoute
   '/api/og/share/public/$publicSlug': typeof ApiOgSharePublicPublicSlugRoute
+  '/api/og/share/t/$linkId': typeof ApiOgShareTLinkIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -544,7 +530,9 @@ export interface FileRoutesByTo {
   '/api/templates': typeof ApiTemplatesRoute
   '/blog/$slug': typeof BlogSlugRoute
   '/changelog/$version': typeof ChangelogVersionRoute
+  '/invite/$code': typeof InviteCodeRoute
   '/share/$shareId': typeof ShareShareIdRoute
+  '/t/$linkId': typeof TLinkIdRoute
   '/blog': typeof BlogIndexRoute
   '/changelog': typeof ChangelogIndexRoute
   '/enterprise': typeof EnterpriseIndexRoute
@@ -594,14 +582,10 @@ export interface FileRoutesByTo {
   '/api/admin/media/move': typeof ApiAdminMediaMoveRoute
   '/api/admin/media/register': typeof ApiAdminMediaRegisterRoute
   '/api/admin/media/upload': typeof ApiAdminMediaUploadRoute
-  '/api/admin/stars/digest': typeof ApiAdminStarsDigestRoute
-  '/api/admin/stars/fetch': typeof ApiAdminStarsFetchRoute
-  '/api/admin/stars/leads': typeof ApiAdminStarsLeadsRoute
-  '/api/admin/stars/pipeline': typeof ApiAdminStarsPipelineRoute
-  '/api/admin/stars/research': typeof ApiAdminStarsResearchRoute
   '/api/og/blog/$slug': typeof ApiOgBlogSlugRoute
   '/api/og/share/link/$shareId': typeof ApiOgShareLinkShareIdRoute
   '/api/og/share/public/$publicSlug': typeof ApiOgSharePublicPublicSlugRoute
+  '/api/og/share/t/$linkId': typeof ApiOgShareTLinkIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -620,7 +604,9 @@ export interface FileRoutesById {
   '/api/templates': typeof ApiTemplatesRoute
   '/blog/$slug': typeof BlogSlugRoute
   '/changelog/$version': typeof ChangelogVersionRoute
+  '/invite/$code': typeof InviteCodeRoute
   '/share/$shareId': typeof ShareShareIdRoute
+  '/t/$linkId': typeof TLinkIdRoute
   '/blog/': typeof BlogIndexRoute
   '/changelog/': typeof ChangelogIndexRoute
   '/enterprise/': typeof EnterpriseIndexRoute
@@ -670,14 +656,10 @@ export interface FileRoutesById {
   '/api/admin/media/move': typeof ApiAdminMediaMoveRoute
   '/api/admin/media/register': typeof ApiAdminMediaRegisterRoute
   '/api/admin/media/upload': typeof ApiAdminMediaUploadRoute
-  '/api/admin/stars/digest': typeof ApiAdminStarsDigestRoute
-  '/api/admin/stars/fetch': typeof ApiAdminStarsFetchRoute
-  '/api/admin/stars/leads': typeof ApiAdminStarsLeadsRoute
-  '/api/admin/stars/pipeline': typeof ApiAdminStarsPipelineRoute
-  '/api/admin/stars/research': typeof ApiAdminStarsResearchRoute
   '/api/og/blog/$slug': typeof ApiOgBlogSlugRoute
   '/api/og/share/link/$shareId': typeof ApiOgShareLinkShareIdRoute
   '/api/og/share/public/$publicSlug': typeof ApiOgSharePublicPublicSlugRoute
+  '/api/og/share/t/$linkId': typeof ApiOgShareTLinkIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -696,7 +678,9 @@ export interface FileRouteTypes {
     | '/api/templates'
     | '/blog/$slug'
     | '/changelog/$version'
+    | '/invite/$code'
     | '/share/$shareId'
+    | '/t/$linkId'
     | '/blog/'
     | '/changelog/'
     | '/enterprise/'
@@ -746,14 +730,10 @@ export interface FileRouteTypes {
     | '/api/admin/media/move'
     | '/api/admin/media/register'
     | '/api/admin/media/upload'
-    | '/api/admin/stars/digest'
-    | '/api/admin/stars/fetch'
-    | '/api/admin/stars/leads'
-    | '/api/admin/stars/pipeline'
-    | '/api/admin/stars/research'
     | '/api/og/blog/$slug'
     | '/api/og/share/link/$shareId'
     | '/api/og/share/public/$publicSlug'
+    | '/api/og/share/t/$linkId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -769,7 +749,9 @@ export interface FileRouteTypes {
     | '/api/templates'
     | '/blog/$slug'
     | '/changelog/$version'
+    | '/invite/$code'
     | '/share/$shareId'
+    | '/t/$linkId'
     | '/blog'
     | '/changelog'
     | '/enterprise'
@@ -819,14 +801,10 @@ export interface FileRouteTypes {
     | '/api/admin/media/move'
     | '/api/admin/media/register'
     | '/api/admin/media/upload'
-    | '/api/admin/stars/digest'
-    | '/api/admin/stars/fetch'
-    | '/api/admin/stars/leads'
-    | '/api/admin/stars/pipeline'
-    | '/api/admin/stars/research'
     | '/api/og/blog/$slug'
     | '/api/og/share/link/$shareId'
     | '/api/og/share/public/$publicSlug'
+    | '/api/og/share/t/$linkId'
   id:
     | '__root__'
     | '/'
@@ -844,7 +822,9 @@ export interface FileRouteTypes {
     | '/api/templates'
     | '/blog/$slug'
     | '/changelog/$version'
+    | '/invite/$code'
     | '/share/$shareId'
+    | '/t/$linkId'
     | '/blog/'
     | '/changelog/'
     | '/enterprise/'
@@ -894,14 +874,10 @@ export interface FileRouteTypes {
     | '/api/admin/media/move'
     | '/api/admin/media/register'
     | '/api/admin/media/upload'
-    | '/api/admin/stars/digest'
-    | '/api/admin/stars/fetch'
-    | '/api/admin/stars/leads'
-    | '/api/admin/stars/pipeline'
-    | '/api/admin/stars/research'
     | '/api/og/blog/$slug'
     | '/api/og/share/link/$shareId'
     | '/api/og/share/public/$publicSlug'
+    | '/api/og/share/t/$linkId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -919,7 +895,9 @@ export interface RootRouteChildren {
   ApiTemplatesRoute: typeof ApiTemplatesRoute
   BlogSlugRoute: typeof BlogSlugRoute
   ChangelogVersionRoute: typeof ChangelogVersionRoute
+  InviteCodeRoute: typeof InviteCodeRoute
   ShareShareIdRoute: typeof ShareShareIdRoute
+  TLinkIdRoute: typeof TLinkIdRoute
   BlogIndexRoute: typeof BlogIndexRoute
   ChangelogIndexRoute: typeof ChangelogIndexRoute
   EnterpriseIndexRoute: typeof EnterpriseIndexRoute
@@ -956,14 +934,10 @@ export interface RootRouteChildren {
   ApiAdminMediaMoveRoute: typeof ApiAdminMediaMoveRoute
   ApiAdminMediaRegisterRoute: typeof ApiAdminMediaRegisterRoute
   ApiAdminMediaUploadRoute: typeof ApiAdminMediaUploadRoute
-  ApiAdminStarsDigestRoute: typeof ApiAdminStarsDigestRoute
-  ApiAdminStarsFetchRoute: typeof ApiAdminStarsFetchRoute
-  ApiAdminStarsLeadsRoute: typeof ApiAdminStarsLeadsRoute
-  ApiAdminStarsPipelineRoute: typeof ApiAdminStarsPipelineRoute
-  ApiAdminStarsResearchRoute: typeof ApiAdminStarsResearchRoute
   ApiOgBlogSlugRoute: typeof ApiOgBlogSlugRoute
   ApiOgShareLinkShareIdRoute: typeof ApiOgShareLinkShareIdRoute
   ApiOgSharePublicPublicSlugRoute: typeof ApiOgSharePublicPublicSlugRoute
+  ApiOgShareTLinkIdRoute: typeof ApiOgShareTLinkIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -1066,11 +1040,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BlogIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/t/$linkId': {
+      id: '/t/$linkId'
+      path: '/t/$linkId'
+      fullPath: '/t/$linkId'
+      preLoaderRoute: typeof TLinkIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/share/$shareId': {
       id: '/share/$shareId'
       path: '/share/$shareId'
       fullPath: '/share/$shareId'
       preLoaderRoute: typeof ShareShareIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/invite/$code': {
+      id: '/invite/$code'
+      path: '/invite/$code'
+      fullPath: '/invite/$code'
+      preLoaderRoute: typeof InviteCodeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/changelog/$version': {
@@ -1255,41 +1243,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiOgBlogSlugRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/admin/stars/research': {
-      id: '/api/admin/stars/research'
-      path: '/api/admin/stars/research'
-      fullPath: '/api/admin/stars/research'
-      preLoaderRoute: typeof ApiAdminStarsResearchRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/admin/stars/pipeline': {
-      id: '/api/admin/stars/pipeline'
-      path: '/api/admin/stars/pipeline'
-      fullPath: '/api/admin/stars/pipeline'
-      preLoaderRoute: typeof ApiAdminStarsPipelineRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/admin/stars/leads': {
-      id: '/api/admin/stars/leads'
-      path: '/api/admin/stars/leads'
-      fullPath: '/api/admin/stars/leads'
-      preLoaderRoute: typeof ApiAdminStarsLeadsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/admin/stars/fetch': {
-      id: '/api/admin/stars/fetch'
-      path: '/api/admin/stars/fetch'
-      fullPath: '/api/admin/stars/fetch'
-      preLoaderRoute: typeof ApiAdminStarsFetchRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/admin/stars/digest': {
-      id: '/api/admin/stars/digest'
-      path: '/api/admin/stars/digest'
-      fullPath: '/api/admin/stars/digest'
-      preLoaderRoute: typeof ApiAdminStarsDigestRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/api/admin/media/upload': {
       id: '/api/admin/media/upload'
       path: '/api/admin/media/upload'
@@ -1465,6 +1418,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAdminBlogUploadImageRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/og/share/t/$linkId': {
+      id: '/api/og/share/t/$linkId'
+      path: '/api/og/share/t/$linkId'
+      fullPath: '/api/og/share/t/$linkId'
+      preLoaderRoute: typeof ApiOgShareTLinkIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/og/share/public/$publicSlug': {
       id: '/api/og/share/public/$publicSlug'
       path: '/api/og/share/public/$publicSlug'
@@ -1545,7 +1505,9 @@ const rootRouteChildren: RootRouteChildren = {
   ApiTemplatesRoute: ApiTemplatesRoute,
   BlogSlugRoute: BlogSlugRoute,
   ChangelogVersionRoute: ChangelogVersionRoute,
+  InviteCodeRoute: InviteCodeRoute,
   ShareShareIdRoute: ShareShareIdRoute,
+  TLinkIdRoute: TLinkIdRoute,
   BlogIndexRoute: BlogIndexRoute,
   ChangelogIndexRoute: ChangelogIndexRoute,
   EnterpriseIndexRoute: EnterpriseIndexRoute,
@@ -1582,14 +1544,10 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminMediaMoveRoute: ApiAdminMediaMoveRoute,
   ApiAdminMediaRegisterRoute: ApiAdminMediaRegisterRoute,
   ApiAdminMediaUploadRoute: ApiAdminMediaUploadRoute,
-  ApiAdminStarsDigestRoute: ApiAdminStarsDigestRoute,
-  ApiAdminStarsFetchRoute: ApiAdminStarsFetchRoute,
-  ApiAdminStarsLeadsRoute: ApiAdminStarsLeadsRoute,
-  ApiAdminStarsPipelineRoute: ApiAdminStarsPipelineRoute,
-  ApiAdminStarsResearchRoute: ApiAdminStarsResearchRoute,
   ApiOgBlogSlugRoute: ApiOgBlogSlugRoute,
   ApiOgShareLinkShareIdRoute: ApiOgShareLinkShareIdRoute,
   ApiOgSharePublicPublicSlugRoute: ApiOgSharePublicPublicSlugRoute,
+  ApiOgShareTLinkIdRoute: ApiOgShareTLinkIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
