@@ -729,7 +729,7 @@ export const useRunBatch = (sessionId: string) => {
             }
           : null;
       const selectedTargetSupported =
-        selectedTarget &&. //   maybe this works better:      conn && selectedTarget
+        selectedTarget && //   maybe this works better:      conn && selectedTarget
         (!isOnDeviceSttModel(conn?.provider, selectedModel) ||  // if not, remove this
           isDesktopLocalSttAvailable(currentPlatform, currentArch)) // if not, remove this
           ? await canUseBatchTarget(

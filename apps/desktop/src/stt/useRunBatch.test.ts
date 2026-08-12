@@ -1239,7 +1239,7 @@ describe("useRunBatch", () => {
       "large-v3",
       expect.any(Array),
     );
-    expect(sonnerToastMessageMock).not.toHaveBeenCalled();
+    expect(sonnerToastWarningMock).not.toHaveBeenCalled();
   });
 
   test("falls back to local Soniqo when the selected provider does not support the languages", async () => {
